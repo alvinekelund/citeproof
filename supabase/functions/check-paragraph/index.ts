@@ -126,11 +126,11 @@ serve(async (req) => {
       );
     }
 
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-    if (!LOVABLE_API_KEY) {
-      console.error('LOVABLE_API_KEY not configured');
+    const GOOGLE_AI_API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
+    if (!GOOGLE_AI_API_KEY) {
+      console.error('GOOGLE_AI_API_KEY not configured');
       return new Response(
-        JSON.stringify({ error: 'AI features are unavailable. Please configure the API key.' }),
+        JSON.stringify({ error: 'AI features are unavailable. Please configure the Google AI API key.' }),
         { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -176,22 +176,26 @@ serve(async (req) => {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
       
-      console.log(`Calling Lovable AI Gateway (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+      console.log(`Calling Google Gemini API (attempt ${attempt + 1}/${MAX_RETRIES})...`);
 
       try {
-        response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${LOVABLE_API_KEY}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'google/gemini-2.5-flash',
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: userMessage }
+            contents: [
+              {
+                parts: [
+                  { text: SYSTEM_PROMPT + "\n\n" + userMessage }
+                ]
+              }
             ],
-            temperature: 0.2,
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 8192,
+            }
           }),
         });
 
@@ -237,10 +241,10 @@ serve(async (req) => {
     }
 
     const data = await response.json();
-    console.log('AI response received');
+    console.log('Gemini response received');
     
-    // Extract content from response
-    const content = data.choices?.[0]?.message?.content;
+    // Extract content from Gemini response format
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!content) {
       console.error('No content in response:', JSON.stringify(data));
