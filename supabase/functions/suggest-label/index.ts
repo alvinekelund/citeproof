@@ -98,16 +98,17 @@ From the document content, extract:
 1. Title - look for the main title at the start of the document
 2. Authors - look for author names, usually after the title or in headers
 3. Year - look for publication year, copyright notices, or dates
-4. For known papers (like "Attention Is All You Need"), use correct attribution
 
-Generate an in-text citation label according to the ${citation_style.toUpperCase()} style.
+IMPORTANT: For the in-text citation label, use the author whose surname comes FIRST ALPHABETICALLY among all authors.
+For example, if authors are "Nanda, M., Challapally, A., Pease, C.", sort alphabetically: Challapally, Nanda, Pease.
+So the first author alphabetically is "Challapally", and with 3+ authors the label would be "(Challapally et al., 2025)".
 
 Return JSON:
 {
-  "authors": "Surname, A., et al." or just "Surname, A." for single author,
+  "authors": "Surname, A., Surname2, B., etc." in original order from the paper,
   "year": 2024,
   "title": "The Full Title of the Paper",
-  "suggested_label": "(Author et al., 2024)"
+  "suggested_label": "(FirstAlphabeticalAuthor et al., Year)" - use ALPHABETICALLY first author
 }
 
 Return ONLY valid JSON, no explanation. Use null for fields you cannot determine.`
@@ -121,6 +122,8 @@ Common patterns:
 - "NIPS-2017-attention-is-all-you-need-Paper.pdf" → Vaswani et al., 2017
 - "1706.03762.pdf" → arXiv paper
 - "author2023title.pdf" → Author (2023)
+
+IMPORTANT: If multiple authors can be inferred, use the ALPHABETICALLY FIRST surname for the in-text label.
 
 Return JSON:
 {
