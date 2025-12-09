@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ExternalLink, Pencil, Trash2, Save, X, RefreshCw, Loader2 } from "lucide-react";
+import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -33,11 +33,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Source, CitationStyle, CITATION_STYLES } from "@/lib/types";
-import { updateSource, deleteSource, downloadSourceFile, openFileInNewTab } from "@/lib/client-storage";
+import { updateSource, deleteSource, downloadSourceFile } from "@/lib/client-storage";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { extractTextFromFile } from "@/lib/pdf-parser";
 import { extractMetadataFromText } from "@/lib/metadata-extractor";
+import { PdfViewerDialog } from "./PdfViewerDialog";
 
 interface SourceTableProps {
   sources: Source[];
@@ -49,6 +50,7 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
   const [editData, setEditData] = useState<Partial<Source>>({});
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [extractingId, setExtractingId] = useState<string | null>(null);
+  const [viewingSource, setViewingSource] = useState<Source | null>(null);
 
   const startEdit = (source: Source) => {
     setEditingId(source.id);
@@ -95,15 +97,8 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
     }
   };
 
-  const openFile = async (source: Source) => {
-    const success = await openFileInNewTab(source.file_path);
-    if (!success) {
-      toast({ 
-        title: "Could not open file", 
-        description: "The file may have been deleted or the browser blocked the popup.",
-        variant: "destructive" 
-      });
-    }
+  const openFile = (source: Source) => {
+    setViewingSource(source);
   };
 
   const extractMetadata = async (source: Source) => {
@@ -300,8 +295,8 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
                         onClick={() => openFile(source)}
                         className="text-primary hover:text-primary/80"
                       >
-                        <ExternalLink className="h-4 w-4 mr-1" />
-                        Open
+                        <Eye className="h-4 w-4 mr-1" />
+                        View
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
@@ -370,6 +365,13 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <PdfViewerDialog
+        open={!!viewingSource}
+        onOpenChange={(open) => !open && setViewingSource(null)}
+        filePath={viewingSource?.file_path || null}
+        fileName={viewingSource?.original_filename || "Document"}
+      />
     </>
   );
 }
