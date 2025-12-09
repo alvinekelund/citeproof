@@ -27,8 +27,6 @@ function extractIndividualCitations(text: string): string[] {
   const citations: string[] = [];
   
   // First, find all parenthetical content that looks like citations
-  // This handles: (Author, Year), (Author et al., Year), (Author & Author, Year)
-  // And compound: (Author, Year; Author2, Year2)
   const parenPattern = /\(([^)]+(?:\d{4})[^)]*)\)/g;
   let match;
   
@@ -97,32 +95,24 @@ function extractAuthorYear(normalized: string): { author: string; year: string }
 }
 
 /**
- * Parse authors string and extract first author surname (sorted alphabetically)
- * APA format: "Nanda, M., Challapally, A., Pease, C." -> ["Challapally", "Nanda", "Pease"] -> "Challapally"
+ * Parse authors string and extract FIRST author surname (by publication order - APA standard)
+ * APA format uses first listed author, reflecting contribution order
+ * Format: "Nanda, M., Challapally, A., Pease, C." -> "Nanda"
  */
-function extractFirstAuthorAlphabetical(authorsStr: string): string {
+function extractFirstAuthor(authorsStr: string): string {
   if (!authorsStr) return '';
   
-  const surnames: string[] = [];
   const trimmed = authorsStr.trim();
   
   // APA format: "Surname, Initial., Surname2, Initial.,"
-  const apaPattern = /([A-Z][a-zA-Z''-]+),\s*[A-Z]\.?/g;
-  let match;
-  
-  while ((match = apaPattern.exec(trimmed)) !== null) {
-    surnames.push(match[1]);
+  // First surname is the first listed author
+  const apaMatch = trimmed.match(/^([A-Z][a-zA-Z''-]+),\s*[A-Z]\.?/);
+  if (apaMatch) {
+    return apaMatch[1];
   }
   
-  if (surnames.length > 0) {
-    // Sort alphabetically and return first
-    surnames.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-    return surnames[0];
-  }
-  
-  // Fallback: simple split
-  const parts = trimmed.split(/[,;&]/).map(s => s.trim()).filter(Boolean);
-  const firstPart = parts[0] || '';
+  // Fallback: "Firstname Lastname" format - take last word
+  const firstPart = trimmed.split(/[,;&]/).map(s => s.trim()).filter(Boolean)[0] || '';
   const words = firstPart.split(/\s+/).filter(w => w.length > 1 && !/^[A-Z]\.?$/.test(w));
   return words[words.length - 1] || words[0] || '';
 }
@@ -157,7 +147,7 @@ function normalizeSourceLabel(source: Source): string[] {
   
   // Generate from authors and year
   if (source.authors && source.year) {
-    const firstAuthor = extractFirstAuthorAlphabetical(source.authors);
+    const firstAuthor = extractFirstAuthor(source.authors);
     const authorCount = countAuthors(source.authors);
     const year = source.year.toString();
     
