@@ -35,6 +35,7 @@ const Index = () => {
         <SourceLibrary 
           usedSourceIds={usedSourceIds} 
           unmatchedCitations={unmatchedCitations}
+          onSourcesUpdated={() => setSourceRefreshKey(k => k + 1)}
         />
       )}
       {activeTab === 'history' && <HistoryView />}
