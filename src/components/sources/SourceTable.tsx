@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, AlertCircle, Link2 } from "lucide-react";
+import { useState, useMemo, useEffect } from "react";
+import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, AlertCircle, Link2, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -38,7 +38,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Source, CitationStyle, CITATION_STYLES } from "@/lib/types";
-import { updateSource, deleteSource, downloadSourceFile } from "@/lib/client-storage";
+import { updateSource, deleteSource, downloadSourceFile, getSourcesTextStatus, storeExtractedText } from "@/lib/client-storage";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { extractTextFromFile } from "@/lib/pdf-parser";
@@ -304,7 +304,10 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
   const [isReextractingAll, setIsReextractingAll] = useState(false);
   
   const reextractAllSourceText = async () => {
-    const sourcesNeedingText = sources.filter(s => !s.extracted_text || s.extracted_text.length < 100);
+    // Check which sources need text based on IndexedDB status
+    const status = await getSourcesTextStatus();
+    const sourcesNeedingText = sources.filter(s => !status.get(s.id));
+    
     if (sourcesNeedingText.length === 0) {
       toast({ title: "All sources have text", description: "No re-extraction needed." });
       return;
@@ -320,24 +323,33 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
         if (file) {
           const text = await extractTextFromFile(file);
           if (text && text.length > 50) {
-            updateSource(source.id, { extracted_text: text });
+            // Store in IndexedDB via storeExtractedText, then update metadata
+            await storeExtractedText(source.id, text);
+            updateSource(source.id, {}); // Trigger metadata update
             successCount++;
           }
         }
       } catch (error) {
         console.error(`Failed to extract text from ${source.original_filename}:`, error);
       }
-      // Small delay
       await new Promise(r => setTimeout(r, 300));
     }
 
     setIsReextractingAll(false);
+    // Refresh text status
+    getSourcesTextStatus().then(setTextStatus);
     toast({ title: "Text extraction complete", description: `Extracted text from ${successCount}/${sourcesNeedingText.length} sources.` });
     onUpdate();
   };
 
-  // Count sources with/without text
-  const sourcesWithText = sources.filter(s => s.extracted_text && s.extracted_text.length > 100).length;
+  // Track which sources have text (async from IndexedDB)
+  const [textStatus, setTextStatus] = useState<Map<string, boolean>>(new Map());
+  
+  useEffect(() => {
+    getSourcesTextStatus().then(setTextStatus);
+  }, [sources]);
+  
+  const sourcesWithText = Array.from(textStatus.values()).filter(Boolean).length;
   const sourcesWithoutText = sources.length - sourcesWithText;
 
   const getStyleLabel = (style: CitationStyle) => {
