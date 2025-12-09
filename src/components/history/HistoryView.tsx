@@ -10,7 +10,7 @@ import {
 import { VerdictDot, VerdictBadge } from "@/components/ui/verdict-badge";
 import { CheckResult } from "@/components/audit/CheckResult";
 import { ParagraphCheck, Source } from "@/lib/types";
-import { getParagraphChecks, getSources } from "@/lib/supabase-helpers";
+import { getParagraphChecks, getSources } from "@/lib/client-storage";
 import { formatDistanceToNow } from "date-fns";
 
 export function HistoryView() {
@@ -26,10 +26,8 @@ export function HistoryView() {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [checksData, sourcesData] = await Promise.all([
-        getParagraphChecks(),
-        getSources(),
-      ]);
+      const checksData = getParagraphChecks();
+      const sourcesData = getSources();
       setChecks(checksData);
       setSources(sourcesData);
     } catch (error) {

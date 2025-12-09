@@ -1,10 +1,11 @@
 import { useCallback, useState } from "react";
 import { Upload, FileText, Loader2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { uploadFile, createSource, generateShorthandId, updateSource } from "@/lib/supabase-helpers";
-import { supabase } from "@/integrations/supabase/client";
+import { uploadFile, createSource, generateShorthandId, updateSource } from "@/lib/client-storage";
 import { toast } from "@/hooks/use-toast";
 import { CitationStyle, CITATION_STYLES } from "@/lib/types";
+import { extractTextFromFile } from "@/lib/pdf-parser";
+import { extractMetadataFromText } from "@/lib/metadata-extractor";
 import {
   Select,
   SelectContent,
@@ -42,12 +43,12 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
       try {
         setUploadProgress(prev => [...prev, `Uploading ${file.name}...`]);
         
-        // Upload file to storage
+        // Upload file to IndexedDB
         const filePath = await uploadFile(file, 'sources');
         const shorthandId = generateShorthandId(file.name);
         
         // Create source record
-        const source = await createSource({
+        const source = createSource({
           in_text_label: '',
           shorthand_id: shorthandId,
           filename: filePath.split('/').pop() || file.name,
@@ -56,29 +57,32 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
           citation_style: citationStyle,
         });
 
-        // Try to get AI suggestion for metadata
+        // Try to extract metadata from the file
         try {
           setUploadProgress(prev => [...prev, `Extracting metadata from ${file.name}...`]);
           
-          const { data, error } = await supabase.functions.invoke('suggest-label', {
-            body: { 
-              filename: file.name, 
-              shorthand_id: shorthandId,
-              citation_style: citationStyle,
-            }
-          });
+          const text = await extractTextFromFile(file);
           
-          if (!error && data) {
-            // Update the source with AI suggestions
-            const updates: any = {};
-            if (data.suggested_label) updates.in_text_label = data.suggested_label;
-            if (data.authors) updates.authors = data.authors;
-            if (data.year) updates.year = data.year;
-            if (data.title) updates.title = data.title;
+          if (text && text.length > 50) {
+            const metadata = await extractMetadataFromText(
+              text,
+              file.name,
+              citationStyle
+            );
             
-            if (Object.keys(updates).length > 0) {
-              await updateSource(source.id, updates);
-              setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded with metadata`]);
+            if (metadata && Object.keys(metadata).length > 0) {
+              const updates: any = {};
+              if (metadata.suggested_label) updates.in_text_label = metadata.suggested_label;
+              if (metadata.authors) updates.authors = metadata.authors;
+              if (metadata.year) updates.year = metadata.year;
+              if (metadata.title) updates.title = metadata.title;
+              
+              if (Object.keys(updates).length > 0) {
+                updateSource(source.id, updates);
+                setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded with metadata`]);
+              } else {
+                setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded`]);
+              }
             } else {
               setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded`]);
             }
