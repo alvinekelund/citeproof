@@ -112,6 +112,21 @@ export function getSources(): Source[] {
 
 export function createSource(source: Omit<Source, 'id' | 'created_at' | 'updated_at'>): Source {
   const sources = getSources();
+  
+  // Check for duplicate by original_filename
+  const existingIndex = sources.findIndex(s => s.original_filename === source.original_filename);
+  if (existingIndex !== -1) {
+    // Update existing instead of creating duplicate
+    const updated: Source = {
+      ...sources[existingIndex],
+      ...source,
+      updated_at: new Date().toISOString(),
+    };
+    sources[existingIndex] = updated;
+    setStorageItem(SOURCES_KEY, sources);
+    return updated;
+  }
+  
   const newSource: Source = {
     ...source,
     id: generateId(),
@@ -259,16 +274,25 @@ export function generateShorthandId(filename: string): string {
   return `${name}_${year}`;
 }
 
-// Open file from IndexedDB
+// Open file from IndexedDB - downloads the file since blob URLs get blocked in iframes
 export async function openFileInNewTab(filePath: string): Promise<boolean> {
   try {
     const file = await getFile(filePath);
     if (file) {
       const url = URL.createObjectURL(file);
-      const newWindow = window.open(url, '_blank');
+      
+      // Use download approach since window.open with blob URLs gets blocked in iframes
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
       // Clean up after a delay
       setTimeout(() => URL.revokeObjectURL(url), 60000);
-      return !!newWindow;
+      return true;
     }
     console.error('File not found in IndexedDB:', filePath);
     return false;
