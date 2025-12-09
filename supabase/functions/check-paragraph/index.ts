@@ -97,7 +97,21 @@ serve(async (req) => {
   }
 
   try {
-    const { paragraph, sources } = await req.json();
+    // Parse request body with error handling
+    let paragraph: string;
+    let sources: any[];
+    
+    try {
+      const body = await req.json();
+      paragraph = body.paragraph;
+      sources = body.sources || [];
+    } catch (parseError) {
+      console.error('Failed to parse request body:', parseError);
+      return new Response(
+        JSON.stringify({ error: 'Invalid request body' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     if (!paragraph) {
       return new Response(
