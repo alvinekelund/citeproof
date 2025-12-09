@@ -138,49 +138,82 @@ serve(async (req) => {
 
     const userMessage = `PARAGRAPH TO ANALYZE:\n"${paragraph}"${sourcesContext}\n\nAnalyze this paragraph and return the JSON result.`;
 
-    console.log('Calling Google Gemini API...');
+    // Retry logic with exponential backoff for rate limits
+    const MAX_RETRIES = 3;
+    const INITIAL_DELAY = 1000; // 1 second
+    
+    let lastError: Error | null = null;
+    let response: Response | null = null;
+    
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delay = INITIAL_DELAY * Math.pow(2, attempt - 1);
+        console.log(`Rate limited, waiting ${delay}ms before retry ${attempt + 1}/${MAX_RETRIES}...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      
+      console.log(`Calling Google Gemini API (attempt ${attempt + 1}/${MAX_RETRIES})...`);
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: SYSTEM_PROMPT + "\n\n" + userMessage }
-            ]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 4096,
+      try {
+        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: SYSTEM_PROMPT + "\n\n" + userMessage }
+                ]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 4096,
+            }
+          }),
+        });
+
+        if (response.ok) {
+          break; // Success, exit retry loop
         }
-      }),
-    });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('AI gateway error:', response.status, errorText);
-      
-      if (response.status === 429) {
+        if (response.status === 429) {
+          const errorText = await response.text();
+          console.log('Rate limit hit:', errorText);
+          lastError = new Error('Rate limit exceeded');
+          // Continue to next retry attempt
+          continue;
+        }
+
+        // Non-retryable error
+        const errorText = await response.text();
+        console.error('AI gateway error:', response.status, errorText);
+        
+        if (response.status === 402) {
+          return new Response(
+            JSON.stringify({ error: 'AI credits exhausted. Please add credits in Settings → Workspace → Usage.' }),
+            { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        
         return new Response(
-          JSON.stringify({ error: 'Rate limit exceeded. Please try again in a moment.' }),
-          { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          JSON.stringify({ error: 'AI service temporarily unavailable' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
+      } catch (fetchError) {
+        console.error('Fetch error:', fetchError);
+        lastError = fetchError instanceof Error ? fetchError : new Error('Network error');
       }
-      
-      if (response.status === 402) {
-        return new Response(
-          JSON.stringify({ error: 'AI credits exhausted. Please add credits in Settings → Workspace → Usage.' }),
-          { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      
+    }
+
+    // All retries exhausted
+    if (!response || !response.ok) {
+      console.error('All retries exhausted, returning rate limit error');
       return new Response(
-        JSON.stringify({ error: 'AI service temporarily unavailable' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: 'Rate limit exceeded. Please wait a few seconds and try again.' }),
+        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
