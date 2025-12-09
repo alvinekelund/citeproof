@@ -307,9 +307,46 @@ export function CopilotMode() {
         },
       });
 
-      if (error) throw error;
+      if (error) {
+        // Check for specific error codes
+        const errorMessage = error.message || '';
+        if (errorMessage.includes('402') || errorMessage.includes('credits')) {
+          toast({ 
+            title: "AI Credits Exhausted", 
+            description: "Please add credits in Settings → Workspace → Usage", 
+            variant: "destructive" 
+          });
+          return false;
+        }
+        if (errorMessage.includes('429') || errorMessage.includes('rate')) {
+          toast({ 
+            title: "Rate Limited", 
+            description: "Too many requests. Please wait a moment and try again.", 
+            variant: "destructive" 
+          });
+          return false;
+        }
+        throw error;
+      }
 
       if (data.error) {
+        // Check for specific errors in response
+        if (data.error.includes('402') || data.error.toLowerCase().includes('credit')) {
+          toast({ 
+            title: "AI Credits Exhausted", 
+            description: "Please add credits in Settings → Workspace → Usage", 
+            variant: "destructive" 
+          });
+          return false;
+        }
+        if (data.error.includes('429') || data.error.toLowerCase().includes('rate')) {
+          toast({ 
+            title: "Rate Limited", 
+            description: "Too many requests. Please wait a moment and try again.", 
+            variant: "destructive" 
+          });
+          return false;
+        }
         toast({ title: "AI Check Failed", description: data.error, variant: "destructive" });
         return false;
       }
@@ -337,7 +374,14 @@ export function CopilotMode() {
       return true;
     } catch (error: any) {
       console.error('Check error:', error);
-      toast({ title: "Failed to run check", description: error.message, variant: "destructive" });
+      const msg = error?.message || '';
+      if (msg.includes('402')) {
+        toast({ title: "AI Credits Exhausted", description: "Add credits in Settings → Workspace → Usage", variant: "destructive" });
+      } else if (msg.includes('429')) {
+        toast({ title: "Rate Limited", description: "Please wait and try again", variant: "destructive" });
+      } else {
+        toast({ title: "Failed to run check", description: msg, variant: "destructive" });
+      }
       return false;
     } finally {
       setIsChecking(false);
@@ -375,8 +419,8 @@ export function CopilotMode() {
         completed++;
         setBatchProgress((completed / totalToCheck) * 100);
         
-        // Small delay between requests to avoid rate limiting
-        await new Promise(r => setTimeout(r, 1000));
+        // Longer delay between requests to avoid rate limiting
+        await new Promise(r => setTimeout(r, 2500));
       }
     }
 
