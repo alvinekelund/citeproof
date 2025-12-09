@@ -194,8 +194,20 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setSelectedIndex(null);
     
     // Restore fullText from IndexedDB and re-analyze citations against current library
-    const sessionData = await getSessionMissingDataAsync(session.id);
+    let sessionData = await getSessionMissingDataAsync(session.id);
     console.log('[CopilotMode] Session data:', sessionData ? `${sessionData.fullText?.length} chars` : 'none');
+    
+    // If no fullText in IndexedDB, try to reconstruct from paragraphs
+    if (!sessionData?.fullText && session.paragraphs_data.length > 0) {
+      console.log('[CopilotMode] Reconstructing fullText from paragraphs');
+      const reconstructedText = session.paragraphs_data.map(p => p.text).join('\n\n');
+      if (reconstructedText.length > 100) {
+        // Save reconstructed text for future use
+        await saveSessionMissingDataAsync({ sessionId: session.id, fullText: reconstructedText });
+        sessionData = { sessionId: session.id, fullText: reconstructedText };
+        console.log('[CopilotMode] Reconstructed', reconstructedText.length, 'chars from paragraphs');
+      }
+    }
     
     if (sessionData?.fullText) {
       setFullText(sessionData.fullText);
@@ -251,6 +263,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const saveSession = async (thesisName: string, paragraphsData: ParagraphData[], textContent?: string): Promise<string | null> => {
     const checkedCount = paragraphsData.filter(p => p.checked).length;
     
+    // Use provided textContent or fall back to current fullText state
+    const textToSave = textContent || fullText;
+    
     try {
       let sessionId = currentSessionId;
       
@@ -284,8 +299,10 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       }
       
       // Save full text to IndexedDB for citation re-analysis when session is loaded
-      if (sessionId && textContent) {
-        await saveSessionMissingDataAsync({ sessionId, fullText: textContent });
+      // Always save if we have text, whether new or update
+      if (sessionId && textToSave) {
+        console.log('[CopilotMode] Saving fullText to IndexedDB for session:', sessionId, textToSave.length, 'chars');
+        await saveSessionMissingDataAsync({ sessionId, fullText: textToSave });
       }
       
       // Refresh sessions list
