@@ -6,49 +6,89 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
+interface TextItem {
+  str: string;
+  transform: number[];
+  height: number;
+}
+
 export async function extractTextFromPdf(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   
-  const textParts: string[] = [];
+  const allParagraphs: string[] = [];
   
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
+    const viewport = page.getViewport({ scale: 1.0 });
     
-    // Build text with position awareness for paragraph detection
-    let lastY: number | null = null;
-    let pageLines: string[] = [];
+    // Group text items by lines based on Y position
+    const lines: { y: number; text: string; height: number }[] = [];
     let currentLine = '';
+    let currentY: number | null = null;
+    let currentHeight = 0;
     
-    for (const item of textContent.items as any[]) {
-      const y = item.transform[5]; // Y position
+    for (const item of textContent.items as TextItem[]) {
+      const y = viewport.height - item.transform[5]; // Flip Y to top-down
+      const lineHeight = item.height || 12;
       
-      // Detect line breaks based on Y position changes
-      if (lastY !== null && Math.abs(y - lastY) > 5) {
+      // If this is a new line (different Y position)
+      if (currentY !== null && Math.abs(y - currentY) > lineHeight * 0.5) {
         if (currentLine.trim()) {
-          pageLines.push(currentLine.trim());
+          lines.push({ y: currentY, text: currentLine.trim(), height: currentHeight });
         }
-        currentLine = '';
-        
-        // Detect paragraph break (larger Y gap)
-        if (Math.abs(y - lastY) > 15) {
-          pageLines.push('\n'); // Mark paragraph break
+        currentLine = item.str;
+        currentY = y;
+        currentHeight = lineHeight;
+      } else {
+        currentLine += item.str;
+        if (currentY === null) currentY = y;
+        currentHeight = Math.max(currentHeight, lineHeight);
+      }
+    }
+    
+    // Don't forget the last line
+    if (currentLine.trim() && currentY !== null) {
+      lines.push({ y: currentY, text: currentLine.trim(), height: currentHeight });
+    }
+    
+    // Now group lines into paragraphs based on vertical gaps
+    let currentParagraph: string[] = [];
+    let lastLineY: number | null = null;
+    let avgLineHeight = lines.reduce((sum, l) => sum + l.height, 0) / (lines.length || 1);
+    
+    for (const line of lines) {
+      // Detect paragraph break: gap > 1.5x average line height
+      const gap = lastLineY !== null ? line.y - lastLineY : 0;
+      const isParagraphBreak = gap > avgLineHeight * 1.8;
+      
+      // Also detect paragraph break if line starts with indent or special patterns
+      const startsWithIndent = /^\s{4,}/.test(line.text);
+      const startsWithNumber = /^\d+[\.\)]\s/.test(line.text);
+      const startsWithBullet = /^[\-\•\*]\s/.test(line.text);
+      
+      if (isParagraphBreak || startsWithIndent || startsWithNumber || startsWithBullet) {
+        if (currentParagraph.length > 0) {
+          allParagraphs.push(currentParagraph.join(' '));
+          currentParagraph = [];
         }
       }
       
-      currentLine += item.str;
-      lastY = y;
+      currentParagraph.push(line.text);
+      lastLineY = line.y + line.height;
     }
     
-    if (currentLine.trim()) {
-      pageLines.push(currentLine.trim());
+    // Push remaining paragraph
+    if (currentParagraph.length > 0) {
+      allParagraphs.push(currentParagraph.join(' '));
     }
     
-    textParts.push(pageLines.join(' ').replace(/ \n /g, '\n\n'));
+    // Add page break marker
+    allParagraphs.push('\n');
   }
   
-  return textParts.join('\n\n');
+  return allParagraphs.join('\n\n');
 }
 
 export async function extractTextFromDocx(file: File): Promise<string> {
@@ -98,6 +138,13 @@ export async function extractTextFromFile(file: File): Promise<string> {
   throw new Error('Unsupported file type');
 }
 
+export interface ThesisSection {
+  type: 'chapter' | 'section' | 'subsection' | 'paragraph';
+  title?: string;
+  content: string;
+  index: number;
+}
+
 export function splitIntoParagraphs(text: string): string[] {
   // Normalize line endings
   let cleaned = text
@@ -105,60 +152,109 @@ export function splitIntoParagraphs(text: string): string[] {
     .replace(/\r/g, '\n')
     .replace(/\t/g, ' ');
   
-  // Split on double newlines (explicit paragraph breaks from PDF extraction)
+  // Split on double newlines (paragraph breaks)
   let paragraphs = cleaned.split(/\n\s*\n+/);
   
-  // Clean up paragraphs - join internal line breaks within paragraphs
+  // Clean up paragraphs
   paragraphs = paragraphs
-    .map(p => p.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim())
-    .filter(p => p.length > 0);
+    .map(p => p.replace(/\s+/g, ' ').trim())
+    .filter(p => p.length > 0 && p !== '\n');
   
-  // Merge very short segments (headers, page numbers, etc.) with next paragraph
-  const merged: string[] = [];
+  // Filter and merge
+  const result: string[] = [];
   let carryOver = '';
   
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i];
     const combined = carryOver ? carryOver + ' ' + p : p;
     
-    // Check if this looks like a header or very short content
-    const isShortHeader = combined.length < 80 && !combined.includes('. ');
-    const isChapterOrSection = /^(chapter|section|part|\d+\.|\d+\s)/i.test(combined);
+    // Skip page numbers, headers, footers
+    if (/^page\s*\d+$/i.test(combined) || /^\d+$/.test(combined)) {
+      continue;
+    }
     
-    if (isShortHeader && !isChapterOrSection && i < paragraphs.length - 1) {
-      // Carry over to next paragraph
-      carryOver = combined;
-    } else if (combined.length >= 50 && hasRealWords(combined)) {
-      merged.push(combined);
-      carryOver = '';
-    } else if (isChapterOrSection && combined.length >= 20) {
-      // Keep chapter/section headers
-      merged.push(combined);
-      carryOver = '';
+    // Check if this is a section header
+    const isSectionHeader = /^(chapter|section|part|abstract|introduction|conclusion|references|bibliography|\d+[\.\)]\s*[A-Z])/i.test(combined);
+    
+    // Minimum paragraph length (except for headers)
+    const minLength = isSectionHeader ? 10 : 100;
+    
+    if (combined.length >= minLength) {
+      // Check if it has enough sentence-like structure
+      const hasSentences = combined.includes('. ') || combined.includes('? ') || combined.includes('! ') || isSectionHeader;
+      
+      if (hasSentences || isSectionHeader) {
+        result.push(combined);
+        carryOver = '';
+      } else {
+        // Might be a fragment, carry over
+        carryOver = combined;
+      }
     } else {
-      // Too short, carry over
       carryOver = combined;
     }
   }
   
-  // Don't forget any remaining carryOver
-  if (carryOver && carryOver.length >= 30) {
-    merged.push(carryOver);
+  // Push any remaining content
+  if (carryOver.length >= 50) {
+    result.push(carryOver);
   }
   
-  return merged;
+  return result;
 }
 
-function hasRealWords(text: string): boolean {
-  const commonWords = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'this', 'that', 'with', 'from', 'they', 'will', 'what', 'when', 'there', 'their', 'which', 'about'];
-  const lowerText = text.toLowerCase();
+export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
+  const sections: ThesisSection[] = [];
   
-  let wordCount = 0;
-  for (const word of commonWords) {
-    if (lowerText.includes(` ${word} `)) {
-      wordCount++;
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i];
+    
+    // Detect chapter
+    const chapterMatch = p.match(/^(chapter\s*\d+[:\.\s]*)/i);
+    if (chapterMatch) {
+      sections.push({
+        type: 'chapter',
+        title: p.substring(0, 100),
+        content: p,
+        index: i,
+      });
+      continue;
     }
+    
+    // Detect section headers (numbered sections like "1.1 Introduction")
+    const sectionMatch = p.match(/^(\d+\.?\d*[\.\)]\s*[A-Z])/);
+    if (sectionMatch && p.length < 200) {
+      sections.push({
+        type: 'section',
+        title: p,
+        content: p,
+        index: i,
+      });
+      continue;
+    }
+    
+    // Detect common thesis sections
+    const commonSections = ['abstract', 'introduction', 'literature review', 'methodology', 'methods', 'results', 'discussion', 'conclusion', 'references', 'bibliography', 'acknowledgements', 'appendix'];
+    const lowerP = p.toLowerCase();
+    const isCommonSection = commonSections.some(s => lowerP.startsWith(s) && p.length < 100);
+    
+    if (isCommonSection) {
+      sections.push({
+        type: 'section',
+        title: p,
+        content: p,
+        index: i,
+      });
+      continue;
+    }
+    
+    // Regular paragraph
+    sections.push({
+      type: 'paragraph',
+      content: p,
+      index: i,
+    });
   }
   
-  return wordCount >= 2;
+  return sections;
 }

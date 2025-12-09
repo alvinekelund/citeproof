@@ -22,16 +22,17 @@ interface PdfViewerDialogProps {
   onOpenChange: (open: boolean) => void;
   filePath: string | null;
   fileName: string;
+  initialPage?: number;
 }
 
-export function PdfViewerDialog({ open, onOpenChange, filePath, fileName }: PdfViewerDialogProps) {
+export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initialPage = 1 }: PdfViewerDialogProps) {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(initialPage);
   const [totalPages, setTotalPages] = useState(0);
   const [scale, setScale] = useState(1.2);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pageInputValue, setPageInputValue] = useState("1");
+  const [pageInputValue, setPageInputValue] = useState(String(initialPage));
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -56,6 +57,14 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName }: PdfV
     };
   }, [open, filePath]);
 
+  // Set initial page when initialPage prop changes
+  useEffect(() => {
+    if (open && initialPage && initialPage !== currentPage) {
+      setCurrentPage(initialPage);
+      setPageInputValue(String(initialPage));
+    }
+  }, [open, initialPage]);
+
   // Render page when page number or scale changes
   useEffect(() => {
     if (pdfDoc) {
@@ -68,8 +77,10 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName }: PdfV
     
     setIsLoading(true);
     setError(null);
-    setCurrentPage(1);
-    setPageInputValue("1");
+    // Use initialPage or default to 1
+    const startPage = initialPage || 1;
+    setCurrentPage(startPage);
+    setPageInputValue(String(startPage));
     
     try {
       const file = await getFile(filePath);

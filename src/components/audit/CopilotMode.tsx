@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2 } from "lucide-react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { extractTextFromFile, splitIntoParagraphs } from "@/lib/pdf-parser";
+import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, ThesisSection } from "@/lib/pdf-parser";
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
@@ -19,6 +19,8 @@ interface ParagraphData {
   text: string;
   checked: boolean;
   result?: CheckResultType;
+  sectionType?: 'chapter' | 'section' | 'subsection' | 'paragraph';
+  sectionTitle?: string;
 }
 
 export function CopilotMode() {
@@ -30,6 +32,7 @@ export function CopilotMode() {
   const [isBatchChecking, setIsBatchChecking] = useState(false);
   const [batchProgress, setBatchProgress] = useState(0);
   const [sources, setSources] = useState<Source[]>([]);
+  const [showStructure, setShowStructure] = useState(true);
   const abortRef = useRef(false);
 
   useEffect(() => {
@@ -62,16 +65,19 @@ export function CopilotMode() {
       }
 
       const paragraphTexts = splitIntoParagraphs(text);
+      const sections = identifyThesisSections(paragraphTexts);
       
       if (paragraphTexts.length === 0) {
         toast({ title: "No paragraphs found", variant: "destructive" });
         return;
       }
 
-      setParagraphs(paragraphTexts.map((text, index) => ({
-        index,
-        text,
+      setParagraphs(sections.map((section) => ({
+        index: section.index,
+        text: section.content,
         checked: false,
+        sectionType: section.type,
+        sectionTitle: section.title,
       })));
 
       toast({ title: "File loaded", description: `Found ${paragraphTexts.length} paragraphs` });
@@ -148,7 +154,8 @@ export function CopilotMode() {
       return;
     }
 
-    const uncheckedParagraphs = paragraphs.filter(p => !p.checked);
+    // Only check paragraphs (not section headers)
+    const uncheckedParagraphs = paragraphs.filter(p => !p.checked && p.sectionType === 'paragraph');
     if (uncheckedParagraphs.length === 0) {
       toast({ title: "All paragraphs already checked" });
       return;
@@ -167,7 +174,7 @@ export function CopilotMode() {
         break;
       }
 
-      if (!paragraph.checked) {
+      if (!paragraph.checked && paragraph.sectionType === 'paragraph') {
         await checkParagraph(paragraph.index);
         completed++;
         setBatchProgress((completed / totalToCheck) * 100);
@@ -207,21 +214,55 @@ export function CopilotMode() {
     }
   };
 
+  const getSectionIcon = (type?: string) => {
+    switch (type) {
+      case 'chapter': return '📚';
+      case 'section': return '📖';
+      case 'subsection': return '📄';
+      default: return '¶';
+    }
+  };
+
   const checkedCount = paragraphs.filter(p => p.checked).length;
+  const paragraphOnlyCount = paragraphs.filter(p => p.sectionType === 'paragraph').length;
   const greenCount = paragraphs.filter(p => p.result?.overall_color === 'green').length;
   const yellowCount = paragraphs.filter(p => p.result?.overall_color === 'yellow').length;
   const redCount = paragraphs.filter(p => p.result?.overall_color === 'red').length;
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center gap-3">
-        <BookOpen className="h-6 w-6 text-primary" />
-        <div>
-          <h2 className="scholarly-heading text-2xl font-bold">Copilot Mode</h2>
-          <p className="text-sm text-muted-foreground">
-            Parse your thesis and check paragraphs interactively
-          </p>
+      {/* Header with thesis info */}
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div className="flex items-center gap-3">
+          <BookOpen className="h-6 w-6 text-primary" />
+          <div>
+            <h2 className="scholarly-heading text-2xl font-bold">Copilot Mode</h2>
+            <p className="text-sm text-muted-foreground">
+              {file ? (
+                <span className="flex items-center gap-2">
+                  <FileText className="h-4 w-4" />
+                  <span className="font-medium">{file.name}</span>
+                  <span className="text-muted-foreground">• {paragraphs.length} sections</span>
+                </span>
+              ) : (
+                "Parse your thesis and check paragraphs interactively"
+              )}
+            </p>
+          </div>
         </div>
+        
+        {file && (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowStructure(!showStructure)}
+            >
+              {showStructure ? <List className="h-4 w-4 mr-1" /> : <FolderOpen className="h-4 w-4 mr-1" />}
+              {showStructure ? 'List View' : 'Structure View'}
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* File Upload */}
@@ -258,9 +299,8 @@ export function CopilotMode() {
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4" />
-                <span className="font-medium truncate max-w-[150px]">{file.name}</span>
-                <Badge variant="secondary">{paragraphs.length} ¶</Badge>
+                <Badge variant="outline">{paragraphOnlyCount} paragraphs</Badge>
+                <Badge variant="secondary">{paragraphs.length - paragraphOnlyCount} headers</Badge>
               </div>
               <div className="flex gap-2">
                 {!isBatchChecking ? (
@@ -268,10 +308,10 @@ export function CopilotMode() {
                     variant="default" 
                     size="sm" 
                     onClick={startBatchCheck}
-                    disabled={checkedCount === paragraphs.length || sources.length === 0}
+                    disabled={checkedCount === paragraphOnlyCount || sources.length === 0}
                   >
                     <Play className="h-4 w-4 mr-1" />
-                    Check All ({paragraphs.length - checkedCount})
+                    Check All ({paragraphOnlyCount - paragraphs.filter(p => p.checked && p.sectionType === 'paragraph').length})
                   </Button>
                 ) : (
                   <Button 
@@ -297,7 +337,7 @@ export function CopilotMode() {
             {checkedCount > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                  <span>{checkedCount}/{paragraphs.length} checked</span>
+                  <span>{checkedCount} checked</span>
                   <div className="flex gap-3">
                     {greenCount > 0 && <span className="text-verdict-green">{greenCount} ✓</span>}
                     {yellowCount > 0 && <span className="text-verdict-yellow">{yellowCount} ⚠</span>}
@@ -311,45 +351,66 @@ export function CopilotMode() {
             )}
 
             <ScrollArea className="h-[550px] border rounded-lg">
-              <div className="p-2 space-y-2">
-                {paragraphs.map((p, i) => (
-                  <Card
-                    key={i}
-                    className={cn(
-                      "p-3 cursor-pointer transition-all hover:shadow-md border-l-4",
-                      selectedIndex === i && "ring-2 ring-primary",
-                      p.checked ? getColorClass(p.result) : "border-l-transparent",
-                    )}
-                    onClick={() => setSelectedIndex(i)}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-xs font-medium text-muted-foreground">¶{i + 1}</span>
-                          {p.checked && p.result && (
-                            <VerdictBadge color={p.result.overall_color} size="sm" />
-                          )}
+              <div className="p-2 space-y-1">
+                {paragraphs.map((p, i) => {
+                  const isSection = p.sectionType === 'chapter' || p.sectionType === 'section';
+                  
+                  return (
+                    <Card
+                      key={i}
+                      className={cn(
+                        "p-3 cursor-pointer transition-all hover:shadow-md border-l-4",
+                        selectedIndex === i && "ring-2 ring-primary",
+                        p.checked ? getColorClass(p.result) : "border-l-transparent",
+                        isSection && "bg-secondary/30",
+                      )}
+                      onClick={() => setSelectedIndex(i)}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs">{getSectionIcon(p.sectionType)}</span>
+                            {isSection ? (
+                              <span className="text-xs font-semibold text-primary uppercase">
+                                {p.sectionType}
+                              </span>
+                            ) : (
+                              <span className="text-xs font-medium text-muted-foreground">
+                                ¶{i + 1}
+                              </span>
+                            )}
+                            {p.checked && p.result && (
+                              <VerdictBadge color={p.result.overall_color} size="sm" />
+                            )}
+                          </div>
+                          <p className={cn(
+                            "text-sm",
+                            isSection ? "font-semibold line-clamp-1" : "line-clamp-2"
+                          )}>
+                            {p.text}
+                          </p>
                         </div>
-                        <p className="text-sm line-clamp-2">{p.text}</p>
-                      </div>
-                      <Button
-                        variant={p.checked ? "outline" : "default"}
-                        size="sm"
-                        onClick={(e) => { e.stopPropagation(); checkParagraph(i); }}
-                        disabled={(isChecking && selectedIndex === i) || isBatchChecking}
-                        className="shrink-0"
-                      >
-                        {isChecking && selectedIndex === i ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : p.checked ? (
-                          <CheckCircle2 className="h-4 w-4" />
-                        ) : (
-                          <Sparkles className="h-4 w-4" />
+                        {!isSection && (
+                          <Button
+                            variant={p.checked ? "outline" : "default"}
+                            size="sm"
+                            onClick={(e) => { e.stopPropagation(); checkParagraph(i); }}
+                            disabled={(isChecking && selectedIndex === i) || isBatchChecking}
+                            className="shrink-0"
+                          >
+                            {isChecking && selectedIndex === i ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : p.checked ? (
+                              <CheckCircle2 className="h-4 w-4" />
+                            ) : (
+                              <Sparkles className="h-4 w-4" />
+                            )}
+                          </Button>
                         )}
-                      </Button>
-                    </div>
-                  </Card>
-                ))}
+                      </div>
+                    </Card>
+                  );
+                })}
               </div>
             </ScrollArea>
           </div>
@@ -359,7 +420,14 @@ export function CopilotMode() {
             {selectedParagraph && (
               <>
                 <div className="flex items-center justify-between">
-                  <span className="font-medium">Paragraph {selectedIndex! + 1} of {paragraphs.length}</span>
+                  <div>
+                    <span className="font-medium">
+                      {selectedParagraph.sectionType === 'chapter' || selectedParagraph.sectionType === 'section' 
+                        ? `${selectedParagraph.sectionType.charAt(0).toUpperCase() + selectedParagraph.sectionType.slice(1)}: `
+                        : `Paragraph ${selectedIndex! + 1} of ${paragraphs.length}`
+                      }
+                    </span>
+                  </div>
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
@@ -394,7 +462,7 @@ export function CopilotMode() {
                     paragraphText={selectedParagraph.text}
                     sources={sources}
                   />
-                ) : (
+                ) : selectedParagraph.sectionType === 'paragraph' ? (
                   <div className="flex flex-col items-center justify-center py-12 text-muted-foreground border-2 border-dashed rounded-lg">
                     <Sparkles className="h-12 w-12 mb-4 opacity-50" />
                     <p>Click "Check" to analyze this paragraph</p>
@@ -413,6 +481,14 @@ export function CopilotMode() {
                     {sources.length === 0 && (
                       <p className="text-xs text-destructive mt-2">Add sources to your library first</p>
                     )}
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-12 text-muted-foreground border-2 border-dashed rounded-lg">
+                    <FolderOpen className="h-12 w-12 mb-4 opacity-50" />
+                    <p className="text-center">
+                      This is a section header.<br />
+                      Select a paragraph to check citations.
+                    </p>
                   </div>
                 )}
               </>
