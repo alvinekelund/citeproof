@@ -156,14 +156,30 @@ function normalizeCitation(citation: string): string {
 }
 
 /**
- * Extract author surname and year from a normalized citation
+ * Extract author surname and year from a citation (normalized or raw)
+ * Handles both "(Author et al., 2025)" and "Author et al. (2025)" formats
  */
-function extractAuthorYear(normalized: string): { author: string; year: string } | null {
-  // Pattern: author (possibly with "et al."), then year
-  const match = normalized.match(/^([a-z][a-z''-]+)(?:\s+(?:et\s+al\.?|&\s+[a-z][a-z''-]+))?[,\s]+(\d{4})/i);
+function extractAuthorYear(citation: string): { author: string; year: string } | null {
+  const normalized = citation.toLowerCase().trim();
+  
+  // Pattern 1: "author et al., 2025" or "author, 2025" (parenthetical style, normalized)
+  let match = normalized.match(/^([a-z][a-zäöüéèêëàâôîûç''-]+)(?:\s+(?:et\s+al\.?|&\s+[a-z][a-zäöüéèêëàâôîûç''-]+))?[,\s]+(\d{4})/i);
   if (match) {
     return { author: match[1].toLowerCase(), year: match[2] };
   }
+  
+  // Pattern 2: "author et al. (2025)" or "author (2025)" (narrative style)
+  match = normalized.match(/^([a-z][a-zäöüéèêëàâôîûç''-]+)(?:\s+(?:et\s+al\.?|&\s+[a-z][a-zäöüéèêëàâôîûç''-]+))?\s*\(?(\d{4})\)?/i);
+  if (match) {
+    return { author: match[1].toLowerCase(), year: match[2] };
+  }
+  
+  // Pattern 3: Just extract any author-like word followed by a year anywhere
+  match = normalized.match(/([a-z][a-zäöüéèêëàâôîûç''-]+).*?(\d{4})/i);
+  if (match) {
+    return { author: match[1].toLowerCase(), year: match[2] };
+  }
+  
   return null;
 }
 
