@@ -74,6 +74,21 @@ export function getFileUrl(filePath: string): string {
   return data.publicUrl;
 }
 
+export async function downloadSourceFile(filePath: string): Promise<File | null> {
+  const { data, error } = await supabase.storage
+    .from('thesis-files')
+    .download(filePath);
+  
+  if (error || !data) {
+    console.error('Download error:', error);
+    return null;
+  }
+  
+  // Convert blob to File
+  const filename = filePath.split('/').pop() || 'file';
+  return new File([data], filename, { type: data.type });
+}
+
 // Thesis documents
 export async function getThesisDocuments(): Promise<ThesisDocument[]> {
   const { data, error } = await supabase

@@ -39,3 +39,6 @@ verify_jwt = false
 
 [functions.parse-thesis]
 verify_jwt = false
+
+[functions.ai-chat]
+verify_jwt = false

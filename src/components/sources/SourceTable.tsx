@@ -33,10 +33,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Source, CitationStyle, CITATION_STYLES } from "@/lib/types";
-import { updateSource, deleteSource, getFileUrl } from "@/lib/supabase-helpers";
+import { updateSource, deleteSource, getFileUrl, downloadSourceFile } from "@/lib/supabase-helpers";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { extractTextFromFile } from "@/lib/pdf-parser";
+import { extractMetadataFromText } from "@/lib/metadata-extractor";
 
 interface SourceTableProps {
   sources: Source[];
@@ -103,35 +105,46 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
   const extractMetadata = async (source: Source) => {
     setExtractingId(source.id);
     try {
-      const { data, error } = await supabase.functions.invoke('suggest-label', {
-        body: { 
-          filename: source.original_filename,
-          file_path: source.file_path,
-          shorthand_id: source.shorthand_id,
-          citation_style: source.citation_style || 'apa7',
-        }
-      });
+      // Download the file from storage
+      const file = await downloadSourceFile(source.file_path);
       
-      if (error) throw error;
+      if (!file) {
+        throw new Error('Could not download file');
+      }
       
-      if (data) {
+      // Extract text client-side
+      const text = await extractTextFromFile(file);
+      
+      if (!text || text.length < 50) {
+        toast({ title: "No text found", description: "Could not extract text from file.", variant: "destructive" });
+        return;
+      }
+      
+      // Use AI to extract metadata from text
+      const metadata = await extractMetadataFromText(
+        text,
+        source.original_filename,
+        source.citation_style || 'apa7'
+      );
+      
+      if (metadata && Object.keys(metadata).length > 0) {
         const updates: Partial<Source> = {};
-        if (data.suggested_label) updates.in_text_label = data.suggested_label;
-        if (data.authors) updates.authors = data.authors;
-        if (data.year) updates.year = data.year;
-        if (data.title) updates.title = data.title;
+        if (metadata.suggested_label) updates.in_text_label = metadata.suggested_label;
+        if (metadata.authors) updates.authors = metadata.authors;
+        if (metadata.year) updates.year = metadata.year;
+        if (metadata.title) updates.title = metadata.title;
         
         if (Object.keys(updates).length > 0) {
           await updateSource(source.id, updates);
           toast({ title: "Metadata extracted", description: "Source updated with AI-extracted metadata." });
           onUpdate();
         } else {
-          toast({ title: "No metadata found", description: "Could not extract metadata from filename.", variant: "destructive" });
+          toast({ title: "No metadata found", description: "Could not extract metadata from file.", variant: "destructive" });
         }
       }
     } catch (error) {
       console.error('Extraction error:', error);
-      toast({ title: "Extraction failed", variant: "destructive" });
+      toast({ title: "Extraction failed", description: String(error), variant: "destructive" });
     } finally {
       setExtractingId(null);
     }
