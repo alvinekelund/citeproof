@@ -510,15 +510,18 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
 
       const result: CheckResultType = data.result;
 
-      // Update paragraph with result
-      const newParagraphs = paragraphs.map((p, i) => 
-        i === index ? { ...p, checked: true, result } : p
-      );
-      setParagraphs(newParagraphs);
+      // Update paragraph with result using functional update to avoid stale closure
+      let updatedParagraphs: ParagraphData[] = [];
+      setParagraphs(prevParagraphs => {
+        updatedParagraphs = prevParagraphs.map((p, i) => 
+          i === index ? { ...p, checked: true, result } : p
+        );
+        return updatedParagraphs;
+      });
       
       // Save session with updated paragraphs
-      if (file) {
-        await saveSession(file.name, newParagraphs);
+      if (file && updatedParagraphs.length > 0) {
+        await saveSession(file.name, updatedParagraphs);
       }
 
       // Save to history
