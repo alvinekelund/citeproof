@@ -1,7 +1,12 @@
 import { useState, useMemo } from "react";
-import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, AlertCircle } from "lucide-react";
+import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, AlertCircle, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -58,6 +63,24 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: 
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [viewingSource, setViewingSource] = useState<Source | null>(null);
   const [sortField, setSortField] = useState<SortField>('status');
+  const [linkingCitation, setLinkingCitation] = useState<string | null>(null);
+
+  // Get unused sources for linking
+  const unusedSources = useMemo(() => {
+    return sources.filter(s => !usedSourceIds || !usedSourceIds.has(s.id));
+  }, [sources, usedSourceIds]);
+
+  // Link a missing citation to an existing source
+  const linkCitationToSource = (citationLabel: string, sourceId: string) => {
+    try {
+      updateSource(sourceId, { in_text_label: citationLabel });
+      toast({ title: "Citation linked", description: `Source updated with label: ${citationLabel}` });
+      setLinkingCitation(null);
+      onUpdate();
+    } catch (error) {
+      toast({ title: "Failed to link citation", variant: "destructive" });
+    }
+  };
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
   // If libraryItems provided with content, use those; otherwise fall back to sources
@@ -330,6 +353,7 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: 
             {displayItems.map((item, idx) => {
               if (item.type === 'unmatched') {
                 // Render unmatched citation row (red)
+                const citationLabel = item.data.label;
                 return (
                   <TableRow key={`unmatched-${idx}`} className="bg-destructive/10">
                     <TableCell>
@@ -340,7 +364,7 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: 
                     </TableCell>
                     <TableCell>
                       <span className="font-mono text-sm text-destructive">
-                        {item.data.label}
+                        {citationLabel}
                       </span>
                     </TableCell>
                     <TableCell>
@@ -355,7 +379,42 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: 
                       <span className="text-muted-foreground text-sm">No file</span>
                     </TableCell>
                     <TableCell>
-                      <span className="text-xs text-muted-foreground">Upload PDF to match</span>
+                      {unusedSources.length > 0 ? (
+                        <Popover open={linkingCitation === citationLabel} onOpenChange={(open) => setLinkingCitation(open ? citationLabel : null)}>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" size="sm" className="h-7 text-xs">
+                              <Link2 className="h-3 w-3 mr-1" />
+                              Link to source
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-72 p-2" align="end">
+                            <div className="space-y-1">
+                              <p className="text-xs font-medium text-muted-foreground mb-2">
+                                Select a source to link:
+                              </p>
+                              <div className="max-h-48 overflow-y-auto space-y-1">
+                                {unusedSources.map(source => (
+                                  <button
+                                    key={source.id}
+                                    onClick={() => linkCitationToSource(citationLabel, source.id)}
+                                    className="w-full text-left px-2 py-1.5 rounded hover:bg-secondary text-sm transition-colors"
+                                  >
+                                    <div className="font-medium truncate">
+                                      {source.authors || source.original_filename}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground truncate">
+                                      {source.title || source.original_filename}
+                                      {source.year && ` (${source.year})`}
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Upload PDF to match</span>
+                      )}
                     </TableCell>
                   </TableRow>
                 );
