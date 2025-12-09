@@ -161,27 +161,89 @@ function normalizeCitation(citation: string): string {
  * Handles both "(Author et al., 2025)" and "Author et al. (2025)" formats
  */
 function extractAuthorYear(citation: string): { author: string; year: string } | null {
-  const normalized = citation.toLowerCase().trim();
+  // Strip all parentheses and extra punctuation first
+  const cleaned = citation
+    .replace(/[()]/g, '')
+    .replace(/['']/g, "'")
+    .toLowerCase()
+    .trim();
   
-  // Pattern 1: "author et al., 2025" or "author, 2025" (parenthetical style, normalized)
-  let match = normalized.match(/^([a-z][a-zäöüéèêëàâôîûç''-]+)(?:\s+(?:et\s+al\.?|&\s+[a-z][a-zäöüéèêëàâôîûç''-]+))?[,\s]+(\d{4})/i);
+  // Pattern 1: "author et al., 2025" or "author, 2025"
+  let match = cleaned.match(/^([a-z][a-zäöüéèêëàâôîûç''-]+)(?:\s+(?:et\s+al\.?|&\s+[a-z][a-zäöüéèêëàâôîûç''-]+))?[,\s]+(\d{4})/i);
   if (match) {
-    return { author: match[1].toLowerCase(), year: match[2] };
+    return { author: match[1].replace(/['-]/g, ''), year: match[2] };
   }
   
-  // Pattern 2: "author et al. (2025)" or "author (2025)" (narrative style)
-  match = normalized.match(/^([a-z][a-zäöüéèêëàâôîûç''-]+)(?:\s+(?:et\s+al\.?|&\s+[a-z][a-zäöüéèêëàâôîûç''-]+))?\s*\(?(\d{4})\)?/i);
-  if (match) {
-    return { author: match[1].toLowerCase(), year: match[2] };
+  // Pattern 2: "author & coauthor, 2025"
+  match = cleaned.match(/^([a-z][a-zäöüéèêëàâôîûç''-]+)\s*&/i);
+  const yearMatch = cleaned.match(/(\d{4})/);
+  if (match && yearMatch) {
+    return { author: match[1].replace(/['-]/g, ''), year: yearMatch[1] };
   }
   
-  // Pattern 3: Just extract any author-like word followed by a year anywhere
-  match = normalized.match(/([a-z][a-zäöüéèêëàâôîûç''-]+).*?(\d{4})/i);
+  // Pattern 3: Just extract first word and year
+  match = cleaned.match(/([a-z][a-zäöüéèêëàâôîûç]+).*?(\d{4})/i);
   if (match) {
-    return { author: match[1].toLowerCase(), year: match[2] };
+    return { author: match[1].replace(/['-]/g, ''), year: match[2] };
   }
   
   return null;
+}
+
+/**
+ * Create a deduplication key from citation (author+year)
+ */
+function getDedupeKey(citation: string): string {
+  const extracted = extractAuthorYear(citation);
+  if (extracted) {
+    return `${extracted.author}_${extracted.year}`;
+  }
+  // Fallback: aggressive normalization
+  return citation.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Client-side deduplication based on author+year
+ */
+export function clientSideDedup(citations: DetectedCitation[]): DetectedCitation[] {
+  const groups = new Map<string, DetectedCitation[]>();
+  
+  for (const citation of citations) {
+    const key = getDedupeKey(citation.raw);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key)!.push(citation);
+  }
+  
+  const result: DetectedCitation[] = [];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      result.push(group[0]);
+    } else {
+      // Pick best canonical form and sum counts
+      const sorted = [...group].sort((a, b) => {
+        // Prefer matched citations
+        if (a.matched !== b.matched) return a.matched ? -1 : 1;
+        // Prefer parenthetical format "(Author...)"
+        const aParens = a.raw.startsWith('(');
+        const bParens = b.raw.startsWith('(');
+        if (aParens !== bParens) return aParens ? -1 : 1;
+        // Prefer longer (more complete)
+        return b.raw.length - a.raw.length;
+      });
+      
+      const canonical = sorted[0];
+      const totalCount = group.reduce((sum, c) => sum + c.count, 0);
+      
+      result.push({
+        ...canonical,
+        count: totalCount
+      });
+    }
+  }
+  
+  return result;
 }
 
 /**
@@ -365,30 +427,50 @@ export function parseCitationForPlaceholder(citation: string): { author: string;
 }
 
 /**
- * Use AI to deduplicate citations that refer to the same source
+ * Deduplicate citations - uses client-side dedup as primary method
+ */
+export function deduplicateCitationsSync(analysis: CitationAnalysis): CitationAnalysis {
+  const dedupedCitations = clientSideDedup(analysis.detectedCitations);
+  const matchedCount = dedupedCitations.filter(c => c.matched).length;
+  
+  console.log(`Client-side dedup: ${analysis.detectedCitations.length} -> ${dedupedCitations.length} citations`);
+  
+  return {
+    detectedCitations: dedupedCitations.sort((a, b) => b.count - a.count),
+    matchedCount,
+    missingCount: dedupedCitations.length - matchedCount,
+    totalCitations: dedupedCitations.length,
+  };
+}
+
+/**
+ * Use AI to deduplicate citations (with client-side fallback)
  */
 export async function deduplicateCitations(analysis: CitationAnalysis): Promise<CitationAnalysis> {
-  // Only deduplicate if there are unmatched citations
-  const unmatchedCount = analysis.detectedCitations.filter(c => !c.matched).length;
+  // Always apply client-side dedup first
+  const clientDeduped = deduplicateCitationsSync(analysis);
+  
+  // Only call AI if there are still multiple unmatched citations
+  const unmatchedCount = clientDeduped.detectedCitations.filter(c => !c.matched).length;
   if (unmatchedCount <= 1) {
-    return analysis;
+    return clientDeduped;
   }
 
   try {
     const { data, error } = await supabase.functions.invoke('dedupe-citations', {
-      body: { citations: analysis.detectedCitations }
+      body: { citations: clientDeduped.detectedCitations }
     });
 
     if (error) {
-      console.error('Deduplication error:', error);
-      return analysis;
+      console.error('AI deduplication error:', error);
+      return clientDeduped;
     }
 
     if (data?.citations) {
       const dedupedCitations = data.citations as DetectedCitation[];
       const matchedCount = dedupedCitations.filter(c => c.matched).length;
       
-      console.log(`Deduplication complete: ${data.deduped || 0} duplicates removed`);
+      console.log(`AI dedup: ${data.deduped || 0} additional duplicates removed`);
       
       return {
         detectedCitations: dedupedCitations.sort((a, b) => b.count - a.count),
@@ -398,9 +480,9 @@ export async function deduplicateCitations(analysis: CitationAnalysis): Promise<
       };
     }
 
-    return analysis;
+    return clientDeduped;
   } catch (error) {
-    console.error('Failed to deduplicate citations:', error);
-    return analysis;
+    console.error('Failed to call AI deduplication:', error);
+    return clientDeduped;
   }
 }
