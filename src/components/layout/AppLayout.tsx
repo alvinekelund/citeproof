@@ -1,5 +1,7 @@
 import { ReactNode } from "react";
-import { BookOpen, Library, History, FileCheck } from "lucide-react";
+import { BookOpen, Library, History, FileCheck, LogOut } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
@@ -15,6 +17,8 @@ const tabs = [
 ];
 
 export function AppLayout({ children, activeTab, onTabChange }: AppLayoutProps) {
+  const { user, logout } = useAuth();
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -52,6 +56,17 @@ export function AppLayout({ children, activeTab, onTabChange }: AppLayoutProps) 
                 );
               })}
             </nav>
+
+            {/* User Menu */}
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground hidden sm:inline">
+                {user?.username}
+              </span>
+              <Button variant="ghost" size="sm" onClick={logout}>
+                <LogOut className="h-4 w-4 mr-2" />
+                <span className="hidden sm:inline">Logout</span>
+              </Button>
+            </div>
           </div>
         </div>
       </header>

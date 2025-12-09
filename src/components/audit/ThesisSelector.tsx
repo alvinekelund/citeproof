@@ -14,8 +14,7 @@ import {
   AlertTitle,
 } from "@/components/ui/alert";
 import { ThesisDocument, ThesisParagraph } from "@/lib/types";
-import { uploadFile, createThesisDocument, createThesisParagraphs, getThesisParagraph } from "@/lib/supabase-helpers";
-import { supabase } from "@/integrations/supabase/client";
+import { uploadFile, createThesisDocument, createThesisParagraphs, getThesisParagraph, updateThesisDocument } from "@/lib/client-storage";
 import { toast } from "@/hooks/use-toast";
 import { extractTextFromFile, splitIntoParagraphs } from "@/lib/pdf-parser";
 
@@ -61,12 +60,12 @@ export function ThesisSelector({
     setUploadStatus('Uploading file...');
     
     try {
-      // Upload file to storage
+      // Upload file to IndexedDB
       const filePath = await uploadFile(file, 'thesis');
       setUploadStatus('File uploaded, extracting text...');
       
       // Create document record first
-      const doc = await createThesisDocument({
+      const doc = createThesisDocument({
         filename: filePath.split('/').pop() || file.name,
         file_path: filePath,
         title: file.name.replace(/\.(pdf|docx|txt)$/i, ''),
@@ -91,7 +90,7 @@ export function ThesisSelector({
             setUploadStatus(`Found ${paragraphs.length} paragraphs, saving...`);
             
             // Create paragraph records
-            await createThesisParagraphs(
+            createThesisParagraphs(
               paragraphs.map((text: string, index: number) => ({
                 thesis_document_id: doc.id,
                 index,
@@ -100,10 +99,7 @@ export function ThesisSelector({
             );
 
             // Update the document with paragraph count
-            await supabase
-              .from('thesis_documents')
-              .update({ total_paragraphs: paragraphs.length })
-              .eq('id', doc.id);
+            updateThesisDocument(doc.id, { total_paragraphs: paragraphs.length });
 
             toast({
               title: "Thesis uploaded",
@@ -151,7 +147,7 @@ export function ThesisSelector({
 
     setIsNavigating(true);
     try {
-      const paragraph = await getThesisParagraph(selectedDocId, newIndex);
+      const paragraph = getThesisParagraph(selectedDocId, newIndex);
       onParagraphChange(paragraph);
     } catch (error) {
       console.error('Navigation error:', error);
@@ -165,7 +161,7 @@ export function ThesisSelector({
     setIsNavigating(true);
     setParseError(null);
     try {
-      const paragraph = await getThesisParagraph(docId, 0);
+      const paragraph = getThesisParagraph(docId, 0);
       onParagraphChange(paragraph);
     } catch (error) {
       console.error('Error loading first paragraph:', error);

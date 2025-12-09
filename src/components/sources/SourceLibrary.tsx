@@ -4,16 +4,16 @@ import { Button } from "@/components/ui/button";
 import { SourceDropzone } from "./SourceDropzone";
 import { SourceTable } from "./SourceTable";
 import { Source } from "@/lib/types";
-import { getSources } from "@/lib/supabase-helpers";
+import { getSources } from "@/lib/client-storage";
 
 export function SourceLibrary() {
   const [sources, setSources] = useState<Source[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadSources = async () => {
+  const loadSources = () => {
     setIsLoading(true);
     try {
-      const data = await getSources();
+      const data = getSources();
       setSources(data);
     } catch (error) {
       console.error('Failed to load sources:', error);

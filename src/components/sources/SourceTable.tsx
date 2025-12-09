@@ -33,8 +33,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Source, CitationStyle, CITATION_STYLES } from "@/lib/types";
-import { updateSource, deleteSource, getFileUrl, downloadSourceFile } from "@/lib/supabase-helpers";
-import { supabase } from "@/integrations/supabase/client";
+import { updateSource, deleteSource, downloadSourceFile, openFileInNewTab } from "@/lib/client-storage";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { extractTextFromFile } from "@/lib/pdf-parser";
@@ -72,7 +71,7 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
     if (!editingId) return;
     
     try {
-      await updateSource(editingId, editData);
+      updateSource(editingId, editData);
       toast({ title: "Source updated" });
       onUpdate();
     } catch (error) {
@@ -86,7 +85,7 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
     if (!deleteId) return;
     
     try {
-      await deleteSource(deleteId);
+      deleteSource(deleteId);
       toast({ title: "Source deleted" });
       onUpdate();
     } catch (error) {
@@ -96,20 +95,18 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
     }
   };
 
-  const openFile = (source: Source) => {
-    const url = getFileUrl(source.file_path);
-    console.log('Opening file:', url);
-    window.open(url, '_blank');
+  const openFile = async (source: Source) => {
+    await openFileInNewTab(source.file_path);
   };
 
   const extractMetadata = async (source: Source) => {
     setExtractingId(source.id);
     try {
-      // Download the file from storage
+      // Download the file from IndexedDB
       const file = await downloadSourceFile(source.file_path);
       
       if (!file) {
-        throw new Error('Could not download file');
+        throw new Error('Could not find file');
       }
       
       // Extract text client-side
@@ -135,7 +132,7 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
         if (metadata.title) updates.title = metadata.title;
         
         if (Object.keys(updates).length > 0) {
-          await updateSource(source.id, updates);
+          updateSource(source.id, updates);
           toast({ title: "Metadata extracted", description: "Source updated with AI-extracted metadata." });
           onUpdate();
         } else {

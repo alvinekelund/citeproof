@@ -5,7 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ThesisSelector } from "./ThesisSelector";
 import { CheckResult } from "./CheckResult";
 import { ThesisDocument, ThesisParagraph, CheckResult as CheckResultType, Source } from "@/lib/types";
-import { getSources, getThesisDocuments, createParagraphCheck } from "@/lib/supabase-helpers";
+import { getSources, getThesisDocuments, createParagraphCheck } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 
@@ -22,12 +22,10 @@ export function AuditParagraph() {
     loadData();
   }, []);
 
-  const loadData = async () => {
+  const loadData = () => {
     try {
-      const [sourcesData, docsData] = await Promise.all([
-        getSources(),
-        getThesisDocuments(),
-      ]);
+      const sourcesData = getSources();
+      const docsData = getThesisDocuments();
       setSources(sourcesData);
       setThesisDocs(docsData);
     } catch (error) {
@@ -92,8 +90,8 @@ export function AuditParagraph() {
       const result: CheckResultType = data.result;
       setCheckResult(result);
 
-      // Save to history
-      await createParagraphCheck({
+      // Save to history (client-side)
+      createParagraphCheck({
         thesis_paragraph_id: currentParagraph?.id,
         raw_paragraph_text: paragraphText,
         result_json: result,
