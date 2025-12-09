@@ -45,12 +45,10 @@ serve(async (req) => {
     const arrayBuffer = await fileData.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
 
-    // Extract text from PDF using a simple approach
-    // This extracts text between stream markers and decodes it
-    const text = extractPdfText(bytes);
+    // Extract text from PDF
+    const text = await extractPdfText(bytes);
 
     if (!text || text.length < 100) {
-      // If extraction failed, return a message
       return new Response(
         JSON.stringify({ 
           error: 'Could not extract text from PDF',
@@ -82,49 +80,65 @@ serve(async (req) => {
   }
 });
 
-function extractPdfText(bytes: Uint8Array): string {
-  // Convert bytes to string for processing
+async function extractPdfText(bytes: Uint8Array): Promise<string> {
   const decoder = new TextDecoder('latin1');
   const pdfContent = decoder.decode(bytes);
   
   const extractedTexts: string[] = [];
   
-  // Method 1: Extract text from text objects (BT...ET blocks)
-  // This is a simplified approach that works for many PDFs
+  // Method 1: Try to decompress and extract from FlateDecode streams
+  const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let streamMatch;
+  
+  while ((streamMatch = streamRegex.exec(pdfContent)) !== null) {
+    const streamData = streamMatch[1];
+    
+    // Check if this might be text content by looking for readable patterns after decompression
+    try {
+      // Try to decompress using DecompressionStream (available in Deno)
+      const streamBytes = new Uint8Array(streamData.length);
+      for (let i = 0; i < streamData.length; i++) {
+        streamBytes[i] = streamData.charCodeAt(i);
+      }
+      
+      try {
+        const decompressed = await decompressData(streamBytes);
+        const decompressedText = new TextDecoder('latin1').decode(decompressed);
+        
+        // Extract text from the decompressed content
+        const texts = extractTextFromContent(decompressedText);
+        if (texts.length > 0) {
+          extractedTexts.push(...texts);
+        }
+      } catch {
+        // Not compressed or different compression, try raw
+        const texts = extractTextFromContent(streamData);
+        if (texts.length > 0) {
+          extractedTexts.push(...texts);
+        }
+      }
+    } catch {
+      // Skip this stream
+    }
+  }
+  
+  // Method 2: Extract text from BT...ET blocks (uncompressed PDFs)
   const textObjectRegex = /BT\s*([\s\S]*?)\s*ET/g;
   let match;
   
   while ((match = textObjectRegex.exec(pdfContent)) !== null) {
     const block = match[1];
-    
-    // Extract strings from Tj and TJ operators
-    const stringRegex = /\(([^)]*)\)\s*Tj|\[(.*?)\]\s*TJ/g;
-    let stringMatch;
-    
-    while ((stringMatch = stringRegex.exec(block)) !== null) {
-      if (stringMatch[1]) {
-        // Simple (string) Tj
-        extractedTexts.push(decodePdfString(stringMatch[1]));
-      } else if (stringMatch[2]) {
-        // Array [(string) num (string) ...] TJ
-        const arrayContent = stringMatch[2];
-        const parts = arrayContent.match(/\(([^)]*)\)/g);
-        if (parts) {
-          for (const part of parts) {
-            extractedTexts.push(decodePdfString(part.slice(1, -1)));
-          }
-        }
-      }
+    const texts = extractTextFromContent(block);
+    if (texts.length > 0) {
+      extractedTexts.push(...texts);
     }
   }
   
-  // Method 2: If no text found, try to find readable ASCII sequences
+  // Method 3: If still no text, look for readable ASCII sequences
   if (extractedTexts.length === 0) {
-    // Look for sequences of printable ASCII characters
-    const asciiRegex = /[\x20-\x7E]{20,}/g;
+    const asciiRegex = /[\x20-\x7E]{30,}/g;
     let asciiMatch;
     while ((asciiMatch = asciiRegex.exec(pdfContent)) !== null) {
-      // Filter out PDF commands and binary-looking content
       const text = asciiMatch[0];
       if (!isPdfCommand(text) && hasRealWords(text)) {
         extractedTexts.push(text);
@@ -135,14 +149,77 @@ function extractPdfText(bytes: Uint8Array): string {
   // Join and clean up
   let result = extractedTexts.join(' ');
   
-  // Clean up the text
   result = result
     .replace(/\s+/g, ' ')
-    .replace(/([a-z])([A-Z])/g, '$1 $2') // Add space between camelCase
-    .replace(/\. ([A-Z])/g, '.\n\n$1') // Paragraph breaks at sentences
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\. ([A-Z])/g, '.\n\n$1')
     .trim();
   
   return result;
+}
+
+async function decompressData(data: Uint8Array): Promise<Uint8Array> {
+  // Use pako-style zlib decompression via DecompressionStream
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  
+  // Skip zlib header (first 2 bytes) if present
+  const startOffset = (data[0] === 0x78) ? 2 : 0;
+  const inputData = data.slice(startOffset);
+  
+  writer.write(inputData);
+  writer.close();
+  
+  const chunks: Uint8Array[] = [];
+  const reader = ds.readable.getReader();
+  
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  
+  const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  
+  return result;
+}
+
+function extractTextFromContent(content: string): string[] {
+  const texts: string[] = [];
+  
+  // Extract from Tj operator: (text) Tj
+  const tjRegex = /\(([^)]+)\)\s*Tj/g;
+  let tjMatch;
+  while ((tjMatch = tjRegex.exec(content)) !== null) {
+    const decoded = decodePdfString(tjMatch[1]);
+    if (decoded.length > 1) {
+      texts.push(decoded);
+    }
+  }
+  
+  // Extract from TJ operator: [(text) num (text) ...] TJ
+  const tjArrayRegex = /\[((?:[^[\]]*|\[[^\]]*\])*)\]\s*TJ/gi;
+  let tjArrayMatch;
+  while ((tjArrayMatch = tjArrayRegex.exec(content)) !== null) {
+    const arrayContent = tjArrayMatch[1];
+    const stringParts = arrayContent.match(/\(([^)]*)\)/g);
+    if (stringParts) {
+      const combined = stringParts
+        .map(p => decodePdfString(p.slice(1, -1)))
+        .join('');
+      if (combined.length > 1) {
+        texts.push(combined);
+      }
+    }
+  }
+  
+  return texts;
 }
 
 function decodePdfString(str: string): string {
