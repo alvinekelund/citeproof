@@ -1,18 +1,19 @@
 import { ReactNode } from "react";
-import { BookOpen, Library, History, FileCheck, LogOut } from "lucide-react";
+import { BookOpen, Library, History, FileCheck, LogOut, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
   children: ReactNode;
-  activeTab: 'audit' | 'library' | 'history';
-  onTabChange: (tab: 'audit' | 'library' | 'history') => void;
+  activeTab: 'audit' | 'copilot' | 'library' | 'history';
+  onTabChange: (tab: 'audit' | 'copilot' | 'library' | 'history') => void;
 }
 
 const tabs = [
-  { id: 'audit' as const, label: 'Audit Paragraph', icon: FileCheck },
-  { id: 'library' as const, label: 'Source Library', icon: Library },
+  { id: 'audit' as const, label: 'Audit', icon: FileCheck },
+  { id: 'copilot' as const, label: 'Copilot', icon: Bot },
+  { id: 'library' as const, label: 'Library', icon: Library },
   { id: 'history' as const, label: 'History', icon: History },
 ];
 
