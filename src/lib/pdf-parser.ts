@@ -145,6 +145,50 @@ export interface ThesisSection {
   index: number;
 }
 
+// Maximum chunk size in characters (roughly 300-400 words)
+const MAX_CHUNK_SIZE = 2000;
+// Minimum chunk size to be considered a valid paragraph
+const MIN_CHUNK_SIZE = 100;
+
+function splitBySentences(text: string): string[] {
+  // Split by sentence-ending punctuation followed by space or end of string
+  // This regex keeps the punctuation with the sentence
+  const sentencePattern = /(?<=[.!?])\s+(?=[A-Z])/g;
+  return text.split(sentencePattern).filter(s => s.trim().length > 0);
+}
+
+function chunkSentencesIntoPargrahs(sentences: string[], maxSize: number): string[] {
+  const chunks: string[] = [];
+  let currentChunk = '';
+  
+  for (const sentence of sentences) {
+    const trimmedSentence = sentence.trim();
+    if (!trimmedSentence) continue;
+    
+    // If adding this sentence would exceed max size, save current chunk first
+    if (currentChunk && (currentChunk.length + trimmedSentence.length + 1) > maxSize) {
+      chunks.push(currentChunk.trim());
+      currentChunk = '';
+    }
+    
+    // If a single sentence is longer than max size, we have to include it anyway
+    // but we'll add it as its own chunk
+    if (trimmedSentence.length > maxSize && !currentChunk) {
+      chunks.push(trimmedSentence);
+      continue;
+    }
+    
+    currentChunk = currentChunk ? currentChunk + ' ' + trimmedSentence : trimmedSentence;
+  }
+  
+  // Don't forget the last chunk
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+  
+  return chunks;
+}
+
 export function splitIntoParagraphs(text: string): string[] {
   // Normalize line endings
   let cleaned = text
@@ -153,19 +197,19 @@ export function splitIntoParagraphs(text: string): string[] {
     .replace(/\t/g, ' ');
   
   // Split on double newlines (paragraph breaks)
-  let paragraphs = cleaned.split(/\n\s*\n+/);
+  let rawParagraphs = cleaned.split(/\n\s*\n+/);
   
   // Clean up paragraphs
-  paragraphs = paragraphs
+  rawParagraphs = rawParagraphs
     .map(p => p.replace(/\s+/g, ' ').trim())
     .filter(p => p.length > 0 && p !== '\n');
   
-  // Filter and merge
+  // Process and chunk
   const result: string[] = [];
   let carryOver = '';
   
-  for (let i = 0; i < paragraphs.length; i++) {
-    const p = paragraphs[i];
+  for (let i = 0; i < rawParagraphs.length; i++) {
+    const p = rawParagraphs[i];
     const combined = carryOver ? carryOver + ' ' + p : p;
     
     // Skip page numbers, headers, footers
@@ -176,22 +220,52 @@ export function splitIntoParagraphs(text: string): string[] {
     // Check if this is a section header
     const isSectionHeader = /^(chapter|section|part|abstract|introduction|conclusion|references|bibliography|\d+[\.\)]\s*[A-Z])/i.test(combined);
     
-    // Minimum paragraph length (except for headers)
-    const minLength = isSectionHeader ? 10 : 100;
-    
-    if (combined.length >= minLength) {
-      // Check if it has enough sentence-like structure
-      const hasSentences = combined.includes('. ') || combined.includes('? ') || combined.includes('! ') || isSectionHeader;
-      
-      if (hasSentences || isSectionHeader) {
-        result.push(combined);
+    // If it's a section header, add it as-is
+    if (isSectionHeader && combined.length < 200) {
+      if (carryOver) {
+        // Push any carried over content first
+        result.push(carryOver);
         carryOver = '';
-      } else {
-        // Might be a fragment, carry over
-        carryOver = combined;
+      }
+      result.push(combined);
+      continue;
+    }
+    
+    // If combined text is too short, carry it over
+    if (combined.length < MIN_CHUNK_SIZE) {
+      carryOver = combined;
+      continue;
+    }
+    
+    carryOver = '';
+    
+    // If the paragraph is within acceptable size, add it
+    if (combined.length <= MAX_CHUNK_SIZE) {
+      // Ensure it ends with proper punctuation (complete sentences)
+      const sentences = splitBySentences(combined);
+      if (sentences.length > 0) {
+        result.push(combined);
       }
     } else {
-      carryOver = combined;
+      // Paragraph is too long - split by sentences respecting max size
+      const sentences = splitBySentences(combined);
+      const chunks = chunkSentencesIntoPargrahs(sentences, MAX_CHUNK_SIZE);
+      
+      for (const chunk of chunks) {
+        if (chunk.length >= MIN_CHUNK_SIZE) {
+          result.push(chunk);
+        } else if (result.length > 0) {
+          // Append short chunks to the previous result if possible
+          const lastIdx = result.length - 1;
+          if (result[lastIdx].length + chunk.length + 1 <= MAX_CHUNK_SIZE) {
+            result[lastIdx] = result[lastIdx] + ' ' + chunk;
+          } else {
+            result.push(chunk);
+          }
+        } else {
+          carryOver = chunk;
+        }
+      }
     }
   }
   
