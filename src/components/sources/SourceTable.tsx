@@ -60,9 +60,11 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: 
   const [sortField, setSortField] = useState<SortField>('status');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
-  // If libraryItems provided, use those; otherwise fall back to sorting sources
+  // If libraryItems provided with content, use those; otherwise fall back to sources
   const displayItems = useMemo(() => {
-    if (libraryItems && libraryItems.length > 0) {
+    // Use libraryItems if it has content, otherwise build from sources
+    const hasLibraryItems = libraryItems && libraryItems.length > 0;
+    if (hasLibraryItems) {
       // Already sorted by status in SourceLibrary, but allow re-sorting
       return [...libraryItems].sort((a, b) => {
         // Status order: unmatched (0) < unused (1) < used (2)
@@ -104,7 +106,7 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: 
       });
     }
     
-    // Fallback: use old sorting logic for sources only
+    // Fallback: use sources directly when no libraryItems available
     return [...sources].sort((a, b) => {
       let aVal: any, bVal: any;
       
