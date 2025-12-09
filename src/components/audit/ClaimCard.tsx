@@ -1,14 +1,13 @@
-import { ExternalLink, AlertTriangle, Lightbulb } from "lucide-react";
+import { Eye, AlertTriangle, Lightbulb } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Claim, Source } from "@/lib/types";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { cn } from "@/lib/utils";
-import { getFileUrl } from "@/lib/supabase-helpers";
-import { toast } from "@/hooks/use-toast";
 
 interface ClaimCardProps {
   claim: Claim;
   sources: Source[];
+  onOpenSource?: (source: Source, pageNumber: number) => void;
 }
 
 function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | 'yellow' | 'red' {
@@ -28,7 +27,7 @@ function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | '
   return 'yellow';
 }
 
-export function ClaimCard({ claim, sources }: ClaimCardProps) {
+export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
   const verdictColor = getVerdictColor(claim.verdict, claim.common_knowledge);
 
   const findSourceByLabel = (label: string): Source | undefined => {
@@ -79,28 +78,13 @@ export function ClaimCard({ claim, sources }: ClaimCardProps) {
     });
   };
 
-  const openSourceAtPage = (label: string, pageNumber: number) => {
+  const handleOpenSource = (label: string, pageNumber: number) => {
     const source = findSourceByLabel(label);
-    if (source) {
-      const url = getFileUrl(source.file_path);
-      // Open PDF with page parameter
-      window.open(`${url}#page=${pageNumber}`, '_blank');
-    } else {
-      // Try to open first available source as fallback
-      if (sources.length > 0) {
-        const url = getFileUrl(sources[0].file_path);
-        window.open(`${url}#page=${pageNumber}`, '_blank');
-        toast({
-          title: "Source not matched",
-          description: `Opened first available source. Consider updating the in-text label for "${label}".`,
-        });
-      } else {
-        toast({
-          title: "No source found",
-          description: `Could not find source matching "${label}". Add it to your source library first.`,
-          variant: "destructive",
-        });
-      }
+    if (source && onOpenSource) {
+      onOpenSource(source, pageNumber);
+    } else if (sources.length > 0 && onOpenSource) {
+      // Fallback to first source
+      onOpenSource(sources[0], pageNumber);
     }
   };
 
@@ -146,10 +130,10 @@ export function ClaimCard({ claim, sources }: ClaimCardProps) {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => openSourceAtPage(ev.label, ev.page_number)}
+                  onClick={() => handleOpenSource(ev.label, ev.page_number)}
                   className="h-7 text-xs gap-1"
                 >
-                  <ExternalLink className="h-3 w-3" />
+                  <Eye className="h-3 w-3" />
                   Page {ev.page_number}
                 </Button>
               </div>

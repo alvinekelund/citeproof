@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { ClaimCard } from "./ClaimCard";
 import { AlertTriangle } from "lucide-react";
+import { PdfViewerDialog } from "@/components/sources/PdfViewerDialog";
 
 interface CheckResultProps {
   result: CheckResultType;
@@ -10,6 +12,16 @@ interface CheckResultProps {
 }
 
 export function CheckResult({ result, paragraphText, sources }: CheckResultProps) {
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerSource, setViewerSource] = useState<Source | null>(null);
+  const [viewerPage, setViewerPage] = useState(1);
+
+  const handleOpenSource = (source: Source, pageNumber: number) => {
+    setViewerSource(source);
+    setViewerPage(pageNumber);
+    setViewerOpen(true);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Overall verdict */}
@@ -37,7 +49,12 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
       <div className="space-y-4">
         <h3 className="font-semibold">Claims Analysis ({result.claims.length})</h3>
         {result.claims.map((claim) => (
-          <ClaimCard key={claim.index} claim={claim} sources={sources} />
+          <ClaimCard 
+            key={claim.index} 
+            claim={claim} 
+            sources={sources} 
+            onOpenSource={handleOpenSource}
+          />
         ))}
       </div>
 
@@ -58,6 +75,15 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
           </ul>
         </div>
       )}
+
+      {/* PDF Viewer Dialog */}
+      <PdfViewerDialog
+        open={viewerOpen}
+        onOpenChange={setViewerOpen}
+        filePath={viewerSource?.file_path || null}
+        fileName={viewerSource?.original_filename || "Document"}
+        initialPage={viewerPage}
+      />
     </div>
   );
 }
