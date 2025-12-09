@@ -260,12 +260,20 @@ export function generateShorthandId(filename: string): string {
 }
 
 // Open file from IndexedDB
-export async function openFileInNewTab(filePath: string): Promise<void> {
-  const file = await getFile(filePath);
-  if (file) {
-    const url = URL.createObjectURL(file);
-    window.open(url, '_blank');
-    // Clean up after a delay
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+export async function openFileInNewTab(filePath: string): Promise<boolean> {
+  try {
+    const file = await getFile(filePath);
+    if (file) {
+      const url = URL.createObjectURL(file);
+      const newWindow = window.open(url, '_blank');
+      // Clean up after a delay
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return !!newWindow;
+    }
+    console.error('File not found in IndexedDB:', filePath);
+    return false;
+  } catch (error) {
+    console.error('Error opening file:', error);
+    return false;
   }
 }

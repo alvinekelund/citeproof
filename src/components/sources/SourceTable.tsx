@@ -96,7 +96,14 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
   };
 
   const openFile = async (source: Source) => {
-    await openFileInNewTab(source.file_path);
+    const success = await openFileInNewTab(source.file_path);
+    if (!success) {
+      toast({ 
+        title: "Could not open file", 
+        description: "The file may have been deleted or the browser blocked the popup.",
+        variant: "destructive" 
+      });
+    }
   };
 
   const extractMetadata = async (source: Source) => {
