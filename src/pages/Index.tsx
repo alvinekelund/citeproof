@@ -8,6 +8,7 @@ import { HistoryView } from "@/components/history/HistoryView";
 const Index = () => {
   const [activeTab, setActiveTab] = useState<'audit' | 'copilot' | 'library' | 'history'>('copilot');
   const [sourceRefreshKey, setSourceRefreshKey] = useState(0);
+  const [usedSourceIds, setUsedSourceIds] = useState<Set<string>>(new Set());
 
   // Callback to trigger source refresh when switching tabs
   const handleTabChange = useCallback((tab: 'audit' | 'copilot' | 'library' | 'history') => {
@@ -21,8 +22,14 @@ const Index = () => {
   return (
     <AppLayout activeTab={activeTab} onTabChange={handleTabChange}>
       {activeTab === 'audit' && <AuditParagraph />}
-      {activeTab === 'copilot' && <CopilotMode key={sourceRefreshKey} onSourcesChange={() => setSourceRefreshKey(k => k + 1)} />}
-      {activeTab === 'library' && <SourceLibrary />}
+      {activeTab === 'copilot' && (
+        <CopilotMode 
+          key={sourceRefreshKey} 
+          onSourcesChange={() => setSourceRefreshKey(k => k + 1)}
+          onUsedSourcesChange={setUsedSourceIds}
+        />
+      )}
+      {activeTab === 'library' && <SourceLibrary usedSourceIds={usedSourceIds} />}
       {activeTab === 'history' && <HistoryView />}
     </AppLayout>
   );
