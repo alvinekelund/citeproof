@@ -90,13 +90,13 @@ export function CopilotMode({ onSourcesChange }: CopilotModeProps) {
     }
   }, [fullText]);
 
-  // Load sources and sessions on mount
+  // Load sources and sessions on mount - auto-load most recent session
   useEffect(() => {
-    refreshSourcesAndCitations();
-    loadSessions();
+    setSources(getSources());
+    loadSessions(true); // Auto-load most recent session
   }, []);
 
-  const loadSessions = async () => {
+  const loadSessions = async (autoLoadMostRecent = false) => {
     setLoadingSessions(true);
     try {
       const { data, error } = await supabase
@@ -112,13 +112,43 @@ export function CopilotMode({ onSourcesChange }: CopilotModeProps) {
         paragraphs_data: Array.isArray(s.paragraphs_data) 
           ? (s.paragraphs_data as unknown as ParagraphData[]) 
           : []
-      }));
+      })) as CopilotSession[];
       
-      setSessions(parsedSessions as CopilotSession[]);
+      setSessions(parsedSessions);
+      
+      // Auto-load most recent session if requested and no session is currently loaded
+      if (autoLoadMostRecent && parsedSessions.length > 0 && !currentSessionId && !file) {
+        const mostRecent = parsedSessions[0];
+        loadSessionData(mostRecent);
+      }
     } catch (error) {
       console.error('Failed to load sessions:', error);
     } finally {
       setLoadingSessions(false);
+    }
+  };
+  
+  // Helper to load session data without triggering toast (for auto-load)
+  const loadSessionData = (session: CopilotSession, showToast = false) => {
+    setCurrentSessionId(session.id);
+    setParagraphs(session.paragraphs_data);
+    setFile({ name: session.thesis_name } as File);
+    setSelectedIndex(null);
+    
+    // Restore fullText and re-analyze citations against current library
+    const sessionData = getSessionMissingData(session.id);
+    if (sessionData?.fullText) {
+      setFullText(sessionData.fullText);
+      const currentSources = getSources();
+      const analysis = analyzeCitations(sessionData.fullText, currentSources);
+      setCitationAnalysis(analysis);
+    } else {
+      setFullText('');
+      setCitationAnalysis(null);
+    }
+    
+    if (showToast) {
+      toast({ title: "Session loaded", description: `Loaded "${session.thesis_name}"` });
     }
   };
 
@@ -172,24 +202,7 @@ export function CopilotMode({ onSourcesChange }: CopilotModeProps) {
   };
 
   const loadSession = (session: CopilotSession) => {
-    setCurrentSessionId(session.id);
-    setParagraphs(session.paragraphs_data);
-    setFile({ name: session.thesis_name } as File);
-    setSelectedIndex(null);
-    
-    // Restore fullText and re-analyze citations against current library
-    const sessionData = getSessionMissingData(session.id);
-    if (sessionData?.fullText) {
-      setFullText(sessionData.fullText);
-      const currentSources = getSources();
-      const analysis = analyzeCitations(sessionData.fullText, currentSources);
-      setCitationAnalysis(analysis);
-    } else {
-      setFullText('');
-      setCitationAnalysis(null);
-    }
-    
-    toast({ title: "Session loaded", description: `Loaded "${session.thesis_name}"` });
+    loadSessionData(session, true);
   };
 
   const deleteSession = async (sessionId: string) => {
