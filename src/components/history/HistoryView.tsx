@@ -10,7 +10,7 @@ import {
 import { VerdictDot, VerdictBadge } from "@/components/ui/verdict-badge";
 import { CheckResult } from "@/components/audit/CheckResult";
 import { ParagraphCheck, Source } from "@/lib/types";
-import { getParagraphChecks, getSources } from "@/lib/client-storage";
+import { getParagraphChecksAsync, getSources } from "@/lib/client-storage";
 import { formatDistanceToNow } from "date-fns";
 
 export function HistoryView() {
@@ -26,7 +26,7 @@ export function HistoryView() {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const checksData = getParagraphChecks();
+      const checksData = await getParagraphChecksAsync();
       const sourcesData = getSources();
       setChecks(checksData);
       setSources(sourcesData);
