@@ -95,14 +95,39 @@ function extractIndividualCitations(text: string): string[] {
   }
   
   // Also find narrative citations: Author (Year) or Author et al. (Year)
+  // But exclude cases where it's part of a parenthetical citation like "(Blümelhuber & Novak, 2025)"
   const narrativePattern = /([A-Z][a-zA-Z''-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-zA-Z''-]+))?)\s*\((\d{4}[a-z]?)\)/g;
   
   while ((match = narrativePattern.exec(text)) !== null) {
     const author = match[1].trim();
     const year = match[2];
+    const fullMatch = match[0];
+    const startIdx = match.index;
+    
+    // Check if this match is inside a parenthetical citation
+    // Look backward from the match to see if we're inside parentheses
+    let depth = 0;
+    let isInsideParens = false;
+    for (let i = startIdx - 1; i >= Math.max(0, startIdx - 100); i--) {
+      if (text[i] === ')') depth++;
+      if (text[i] === '(') {
+        depth--;
+        if (depth < 0) {
+          // We found an opening paren before a closing one - we're inside parentheses
+          isInsideParens = true;
+          break;
+        }
+      }
+    }
+    
+    if (isInsideParens) continue;
+    
+    // Also check the character before - if it's & or "and", it's part of a compound author
+    const textBefore = text.slice(Math.max(0, startIdx - 10), startIdx);
+    if (/[&]\s*$/.test(textBefore) || /\band\s+$/i.test(textBefore)) continue;
     
     // Check it's not already captured inside parentheses
-    const prevChar = text[match.index - 1];
+    const prevChar = text[startIdx - 1];
     if (prevChar !== '(' && prevChar !== ';') {
       const citation = `${author} (${year})`;
       if (isValidCitation(`${author}, ${year}`)) {
