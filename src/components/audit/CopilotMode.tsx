@@ -11,7 +11,7 @@ import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, Thesi
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
-import { getSources, createParagraphCheck, addPendingCitation, clearPendingCitations } from "@/lib/client-storage";
+import { getSources, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingData, getSessionMissingData, deleteSessionMissingData } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
 import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder } from "@/lib/citation-detector";
 import {
@@ -106,10 +106,12 @@ export function CopilotMode() {
     }
   };
 
-  const saveSession = async (thesisName: string, paragraphsData: ParagraphData[]) => {
+  const saveSession = async (thesisName: string, paragraphsData: ParagraphData[], textContent?: string): Promise<string | null> => {
     const checkedCount = paragraphsData.filter(p => p.checked).length;
     
     try {
+      let sessionId = currentSessionId;
+      
       if (currentSessionId) {
         // Update existing session
         const { error } = await supabase
@@ -135,13 +137,21 @@ export function CopilotMode() {
           .single();
         
         if (error) throw error;
+        sessionId = data.id;
         setCurrentSessionId(data.id);
+      }
+      
+      // Save full text for citation re-analysis when session is loaded
+      if (sessionId && textContent) {
+        saveSessionMissingData({ sessionId, fullText: textContent });
       }
       
       // Refresh sessions list
       loadSessions();
+      return sessionId;
     } catch (error) {
       console.error('Failed to save session:', error);
+      return null;
     }
   };
 
@@ -150,6 +160,19 @@ export function CopilotMode() {
     setParagraphs(session.paragraphs_data);
     setFile({ name: session.thesis_name } as File);
     setSelectedIndex(null);
+    
+    // Restore fullText and re-analyze citations against current library
+    const sessionData = getSessionMissingData(session.id);
+    if (sessionData?.fullText) {
+      setFullText(sessionData.fullText);
+      const currentSources = getSources();
+      const analysis = analyzeCitations(sessionData.fullText, currentSources);
+      setCitationAnalysis(analysis);
+    } else {
+      setFullText('');
+      setCitationAnalysis(null);
+    }
+    
     toast({ title: "Session loaded", description: `Loaded "${session.thesis_name}"` });
   };
 
@@ -167,7 +190,12 @@ export function CopilotMode() {
         setFile(null);
         setParagraphs([]);
         setSelectedIndex(null);
+        setCitationAnalysis(null);
+        setFullText('');
       }
+      
+      // Also delete session missing data
+      deleteSessionMissingData(sessionId);
       
       loadSessions();
       toast({ title: "Session deleted" });
@@ -267,8 +295,8 @@ export function CopilotMode() {
 
       setParagraphs(newParagraphs);
       
-      // Save new session
-      await saveSession(uploadedFile.name, newParagraphs);
+      // Save new session with full text for citation persistence
+      await saveSession(uploadedFile.name, newParagraphs, text);
 
       toast({ title: "File loaded", description: `Found ${paragraphTexts.length} paragraphs` });
     } catch (error) {

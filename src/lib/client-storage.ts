@@ -358,3 +358,34 @@ export function findMatchingPendingCitation(author: string, year: number | null)
     return pendingAuthorLower === authorLower && yearMatches;
   }) || null;
 }
+
+// Session missing citations - persisted per session
+const SESSION_MISSING_KEY = 'thesis-checker-session-missing';
+
+export interface SessionMissingCitations {
+  sessionId: string;
+  fullText: string; // Store full text for re-analysis
+}
+
+export function getSessionMissingData(sessionId: string): SessionMissingCitations | null {
+  const all = getStorageItem<SessionMissingCitations[]>(SESSION_MISSING_KEY, []);
+  return all.find(s => s.sessionId === sessionId) || null;
+}
+
+export function saveSessionMissingData(data: SessionMissingCitations): void {
+  const all = getStorageItem<SessionMissingCitations[]>(SESSION_MISSING_KEY, []);
+  const existing = all.findIndex(s => s.sessionId === data.sessionId);
+  if (existing >= 0) {
+    all[existing] = data;
+  } else {
+    all.push(data);
+  }
+  // Keep only last 10 sessions
+  while (all.length > 10) all.shift();
+  setStorageItem(SESSION_MISSING_KEY, all);
+}
+
+export function deleteSessionMissingData(sessionId: string): void {
+  const all = getStorageItem<SessionMissingCitations[]>(SESSION_MISSING_KEY, []);
+  setStorageItem(SESSION_MISSING_KEY, all.filter(s => s.sessionId !== sessionId));
+}

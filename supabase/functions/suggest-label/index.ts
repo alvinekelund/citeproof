@@ -62,9 +62,10 @@ serve(async (req) => {
       }
     }
 
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-    if (!LOVABLE_API_KEY) {
+    const GOOGLE_AI_API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
+    if (!GOOGLE_AI_API_KEY) {
       // Return basic extraction if no API key
+      console.log('No GOOGLE_AI_API_KEY, using fallback extraction');
       const localExtraction = extractFromFilename(filename, citation_style);
       return new Response(
         JSON.stringify(localExtraction),
@@ -124,7 +125,7 @@ Common patterns:
 - "1706.03762.pdf" → arXiv paper
 - "author2023title.pdf" → Author (2023)
 
-IMPORTANT: If multiple authors can be inferred, use the ALPHABETICALLY FIRST surname for the in-text label.
+IMPORTANT: If multiple authors can be inferred, use the FIRST LISTED surname for the in-text label.
 
 Return JSON:
 {
@@ -136,22 +137,31 @@ Return JSON:
 
 Return ONLY valid JSON, no explanation. Use null for fields you cannot determine.`;
 
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+    console.log('Calling Google Gemini API for suggest-label...');
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          { role: 'user', content: prompt }
+        contents: [
+          {
+            parts: [
+              { text: prompt }
+            ]
+          }
         ],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 1024,
+        }
       }),
     });
 
     if (!response.ok) {
-      console.error('AI gateway error:', response.status);
+      const errorText = await response.text();
+      console.error('Gemini API error:', response.status, errorText);
       const localExtraction = extractFromFilename(filename, citation_style);
       return new Response(
         JSON.stringify(localExtraction),
@@ -160,9 +170,9 @@ Return ONLY valid JSON, no explanation. Use null for fields you cannot determine
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content?.trim() || '';
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
 
-    console.log('AI response:', content.slice(0, 200));
+    console.log('Gemini response:', content.slice(0, 200));
 
     let result;
     try {
