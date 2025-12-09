@@ -19,6 +19,50 @@ export interface CitationAnalysis {
   totalCitations: number;
 }
 
+// Patterns that look like citations but are actually paper IDs or other references
+const FALSE_POSITIVE_PATTERNS = [
+  /^ssrn/i,
+  /^arxiv/i,
+  /^nber/i,
+  /^bis\s+working/i,
+  /working\s+paper/i,
+  /paper\s+no/i,
+  /preprint/i,
+  /^\d+\.\d+/,  // arXiv IDs like 2302.06590
+  /^vol\./i,
+  /^pp?\.\s*\d/i,
+  /^doi:/i,
+  /^http/i,
+  /^www\./i,
+];
+
+// Valid citation must match this pattern: Author(s), Year format
+const VALID_CITATION_PATTERN = /^[A-Z][a-zA-Z''-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-zA-Z''-]+|and\s+[A-Z][a-zA-Z''-]+))?[,\s]+\d{4}/i;
+
+/**
+ * Check if a string looks like a valid academic citation
+ */
+function isValidCitation(text: string): boolean {
+  const trimmed = text.trim();
+  
+  // Filter out paper IDs and non-citations
+  for (const pattern of FALSE_POSITIVE_PATTERNS) {
+    if (pattern.test(trimmed)) return false;
+  }
+  
+  // Must be a reasonable length
+  if (trimmed.length < 8 || trimmed.length > 100) return false;
+  
+  // Must match valid citation pattern
+  if (!VALID_CITATION_PATTERN.test(trimmed)) return false;
+  
+  // Should not contain too much extra text (like sentences)
+  const wordCount = trimmed.split(/\s+/).length;
+  if (wordCount > 10) return false;
+  
+  return true;
+}
+
 /**
  * Extract individual citations from text, handling compound citations
  * Returns array of individual citation strings
@@ -26,16 +70,15 @@ export interface CitationAnalysis {
 function extractIndividualCitations(text: string): string[] {
   const citations: string[] = [];
   
-  // First, find all parenthetical content that looks like citations
-  const parenPattern = /\(([^)]+(?:\d{4})[^)]*)\)/g;
+  // Find all parenthetical content that looks like citations
+  const parenPattern = /\(([^)]+)\)/g;
   let match;
   
   while ((match = parenPattern.exec(text)) !== null) {
     const content = match[1];
     
-    // Check if it contains citation-like content (has year and author-like text)
+    // Must have a year
     if (!/\d{4}/.test(content)) continue;
-    if (!/[A-Z][a-z]/.test(content)) continue;
     
     // Split by semicolon for compound citations
     const parts = content.split(/\s*;\s*/);
@@ -44,8 +87,8 @@ function extractIndividualCitations(text: string): string[] {
       const trimmed = part.trim();
       if (!trimmed) continue;
       
-      // Validate this looks like a citation (Author, Year or Author (Year) or Author Year)
-      if (/[A-Z][a-zA-Z''-]+.*\d{4}/.test(trimmed)) {
+      // Validate this is a proper citation
+      if (isValidCitation(trimmed)) {
         citations.push(`(${trimmed})`);
       }
     }
@@ -55,11 +98,16 @@ function extractIndividualCitations(text: string): string[] {
   const narrativePattern = /([A-Z][a-zA-Z''-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-zA-Z''-]+))?)\s*\((\d{4}[a-z]?)\)/g;
   
   while ((match = narrativePattern.exec(text)) !== null) {
-    const fullMatch = match[0];
+    const author = match[1].trim();
+    const year = match[2];
+    
     // Check it's not already captured inside parentheses
     const prevChar = text[match.index - 1];
     if (prevChar !== '(' && prevChar !== ';') {
-      citations.push(fullMatch);
+      const citation = `${author} (${year})`;
+      if (isValidCitation(`${author}, ${year}`)) {
+        citations.push(citation);
+      }
     }
   }
   
@@ -96,8 +144,6 @@ function extractAuthorYear(normalized: string): { author: string; year: string }
 
 /**
  * Parse authors string and extract FIRST author surname (by publication order - APA standard)
- * APA format uses first listed author, reflecting contribution order
- * Format: "Nanda, M., Challapally, A., Pease, C." -> "Nanda"
  */
 function extractFirstAuthor(authorsStr: string): string {
   if (!authorsStr) return '';
@@ -105,13 +151,12 @@ function extractFirstAuthor(authorsStr: string): string {
   const trimmed = authorsStr.trim();
   
   // APA format: "Surname, Initial., Surname2, Initial.,"
-  // First surname is the first listed author
   const apaMatch = trimmed.match(/^([A-Z][a-zA-Z''-]+),\s*[A-Z]\.?/);
   if (apaMatch) {
     return apaMatch[1];
   }
   
-  // Fallback: "Firstname Lastname" format - take last word
+  // Fallback: "Firstname Lastname" format
   const firstPart = trimmed.split(/[,;&]/).map(s => s.trim()).filter(Boolean)[0] || '';
   const words = firstPart.split(/\s+/).filter(w => w.length > 1 && !/^[A-Z]\.?$/.test(w));
   return words[words.length - 1] || words[0] || '';
@@ -176,7 +221,7 @@ export function detectCitations(text: string): Map<string, { raw: string; count:
   for (const citation of extracted) {
     const normalized = normalizeCitation(citation);
     
-    // Skip very short or invalid matches
+    // Skip invalid matches
     if (normalized.length < 5) continue;
     if (!/[a-z].*\d{4}/i.test(normalized)) continue;
     
@@ -256,4 +301,23 @@ export function analyzeCitations(text: string, sources: Source[]): CitationAnaly
 
 export function getMissingSources(analysis: CitationAnalysis): DetectedCitation[] {
   return analysis.detectedCitations.filter(c => !c.matched);
+}
+
+/**
+ * Parse a citation string to extract author and year for creating a placeholder source
+ */
+export function parseCitationForPlaceholder(citation: string): { author: string; year: number | null; label: string } {
+  const normalized = normalizeCitation(citation);
+  const ay = extractAuthorYear(normalized);
+  
+  let label = citation.trim();
+  // Ensure it has parentheses
+  if (!label.startsWith('(')) label = `(${label}`;
+  if (!label.endsWith(')')) label = `${label})`;
+  
+  return {
+    author: ay?.author || '',
+    year: ay?.year ? parseInt(ay.year, 10) : null,
+    label,
+  };
 }

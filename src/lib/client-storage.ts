@@ -301,3 +301,60 @@ export async function openFileInNewTab(filePath: string): Promise<boolean> {
     return false;
   }
 }
+
+// Pending citations - citations detected in thesis but not in library
+const PENDING_CITATIONS_KEY = 'thesis-checker-pending-citations';
+
+export interface PendingCitation {
+  id: string;
+  label: string;        // The in-text label like "(Brynjolfsson et al., 2020)"
+  author: string;       // Extracted author
+  year: number | null;  // Extracted year
+  count: number;        // How many times it appears
+  created_at: string;
+}
+
+export function getPendingCitations(): PendingCitation[] {
+  return getStorageItem<PendingCitation[]>(PENDING_CITATIONS_KEY, []);
+}
+
+export function addPendingCitation(citation: Omit<PendingCitation, 'id' | 'created_at'>): PendingCitation {
+  const pending = getPendingCitations();
+  
+  // Check if already exists
+  const existing = pending.find(p => p.label.toLowerCase() === citation.label.toLowerCase());
+  if (existing) {
+    return existing;
+  }
+  
+  const newPending: PendingCitation = {
+    ...citation,
+    id: generateId(),
+    created_at: new Date().toISOString(),
+  };
+  pending.push(newPending);
+  setStorageItem(PENDING_CITATIONS_KEY, pending);
+  return newPending;
+}
+
+export function removePendingCitation(id: string): void {
+  const pending = getPendingCitations();
+  const filtered = pending.filter(p => p.id !== id);
+  setStorageItem(PENDING_CITATIONS_KEY, filtered);
+}
+
+export function clearPendingCitations(): void {
+  setStorageItem(PENDING_CITATIONS_KEY, []);
+}
+
+export function findMatchingPendingCitation(author: string, year: number | null): PendingCitation | null {
+  const pending = getPendingCitations();
+  const authorLower = author.toLowerCase();
+  
+  // Find a pending citation that matches the author and year
+  return pending.find(p => {
+    const pendingAuthorLower = p.author.toLowerCase();
+    const yearMatches = !p.year || !year || p.year === year;
+    return pendingAuthorLower === authorLower && yearMatches;
+  }) || null;
+}
