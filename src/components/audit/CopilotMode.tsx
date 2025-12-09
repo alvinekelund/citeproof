@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash } from "lucide-react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -78,6 +78,8 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
   // Citation analysis
   const [citationAnalysis, setCitationAnalysis] = useState<CitationAnalysis | null>(null);
   const [fullText, setFullText] = useState<string>('');
+  const [dismissedCitations, setDismissedCitations] = useState<Set<string>>(new Set());
+  const [missingSourcesCollapsed, setMissingSourcesCollapsed] = useState(false);
 
   // Helper to analyze and deduplicate citations
   const analyzeAndDeduplicateCitations = useCallback(async (text: string, currentSources: Source[]) => {
@@ -602,7 +604,14 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
     toast({ title: "Marked as no source needed" });
   };
 
-  const missingSources = citationAnalysis ? getMissingSources(citationAnalysis) : [];
+  const missingSources = citationAnalysis 
+    ? getMissingSources(citationAnalysis).filter(c => !dismissedCitations.has(c.normalized))
+    : [];
+
+  const dismissCitation = (normalized: string) => {
+    setDismissedCitations(prev => new Set([...prev, normalized]));
+    toast({ title: "Citation dismissed" });
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -711,9 +720,13 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
             <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
             <div className="flex-1">
               <div className="flex items-center justify-between flex-wrap gap-2">
-                <h4 className="font-semibold text-destructive">
+                <button 
+                  onClick={() => setMissingSourcesCollapsed(!missingSourcesCollapsed)}
+                  className="flex items-center gap-1 font-semibold text-destructive hover:underline"
+                >
+                  {missingSourcesCollapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
                   {missingSources.length} Missing Source{missingSources.length > 1 ? 's' : ''} in Library
-                </h4>
+                </button>
                 <div className="flex gap-2">
                   <Button 
                     variant="outline" 
@@ -737,6 +750,7 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
                           count: citation.count,
                         });
                       }
+                      setMissingSourcesCollapsed(true);
                       toast({ 
                         title: "Citations ready for matching", 
                         description: `${missingSources.length} citations added. Now upload PDFs to your library - they'll be auto-matched.` 
@@ -747,39 +761,54 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
                   </Button>
                 </div>
               </div>
-              <p className="text-sm text-muted-foreground mt-1">
-                Click a citation to add it to the pending list, then upload the PDF to auto-match:
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {missingSources.map((citation, i) => {
-                  const parsed = parseCitationForPlaceholder(citation.raw);
-                  return (
-                    <Badge 
-                      key={i} 
-                      variant="outline" 
-                      className="text-destructive border-destructive cursor-pointer hover:bg-destructive/10 transition-colors"
-                      onClick={() => {
-                        addPendingCitation({
-                          label: parsed.label,
-                          author: parsed.author,
-                          year: parsed.year,
-                          count: citation.count,
-                        });
-                        toast({ 
-                          title: "Citation queued", 
-                          description: `"${citation.raw}" is ready for matching. Upload the PDF to your library.` 
-                        });
-                      }}
-                    >
-                      {citation.raw}
-                      {citation.count > 1 && <span className="ml-1 opacity-60">×{citation.count}</span>}
-                    </Badge>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-muted-foreground mt-3">
-                Go to Sources tab to upload PDFs. They'll automatically be matched to queued citations.
-              </p>
+              
+              {!missingSourcesCollapsed && (
+                <>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Click a citation to add it to the pending list, then upload the PDF to auto-match:
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {missingSources.map((citation, i) => {
+                      const parsed = parseCitationForPlaceholder(citation.raw);
+                      return (
+                        <Badge 
+                          key={i} 
+                          variant="outline" 
+                          className="text-destructive border-destructive cursor-pointer hover:bg-destructive/10 transition-colors group pr-1"
+                          onClick={() => {
+                            addPendingCitation({
+                              label: parsed.label,
+                              author: parsed.author,
+                              year: parsed.year,
+                              count: citation.count,
+                            });
+                            toast({ 
+                              title: "Citation queued", 
+                              description: `"${citation.raw}" is ready for matching. Upload the PDF to your library.` 
+                            });
+                          }}
+                        >
+                          {citation.raw}
+                          {citation.count > 1 && <span className="ml-1 opacity-60">×{citation.count}</span>}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              dismissCitation(citation.normalized);
+                            }}
+                            className="ml-1 p-0.5 rounded hover:bg-destructive/20 opacity-50 group-hover:opacity-100 transition-opacity"
+                            title="Dismiss citation"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-3">
+                    Go to Sources tab to upload PDFs. They'll automatically be matched to queued citations.
+                  </p>
+                </>
+              )}
             </div>
           </div>
         </Card>
