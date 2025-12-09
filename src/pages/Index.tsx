@@ -34,6 +34,19 @@ const Index = () => {
     );
   }, []);
 
+  // Handle toggling source status manually
+  const handleToggleStatus = useCallback((sourceId: string, isUsed: boolean) => {
+    setUsedSourceIds(prev => {
+      const next = new Set(prev);
+      if (isUsed) {
+        next.add(sourceId);
+      } else {
+        next.delete(sourceId);
+      }
+      return next;
+    });
+  }, []);
+
   return (
     <AppLayout activeTab={activeTab} onTabChange={handleTabChange}>
       {activeTab === 'audit' && <AuditParagraph />}
@@ -51,6 +64,7 @@ const Index = () => {
           unmatchedCitations={unmatchedCitations}
           onSourcesUpdated={() => setSourceRefreshKey(k => k + 1)}
           onLinkCitation={handleLinkCitation}
+          onToggleSourceStatus={handleToggleStatus}
         />
       )}
       {activeTab === 'history' && <HistoryView />}
