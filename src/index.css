@@ -162,6 +162,10 @@
     @apply border-l-4 border-l-verdict-red;
   }
 
+  .claim-card-blue {
+    @apply border-l-4 border-l-verdict-blue;
+  }
+
   .dropzone {
     @apply border-2 border-dashed border-border rounded-xl p-8 transition-all duration-200;
     @apply hover:border-primary/50 hover:bg-primary/5;
