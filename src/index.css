@@ -2,95 +2,107 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
-All colors MUST be HSL.
-*/
+@import url('https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400&family=Inter:wght@300;400;500;600;700&display=swap');
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* Scholarly color palette - warm paper tones with deep navy accents */
+    --background: 42 33% 97%;
+    --foreground: 220 30% 15%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card: 42 25% 99%;
+    --card-foreground: 220 30% 15%;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover: 42 25% 99%;
+    --popover-foreground: 220 30% 15%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    /* Deep navy primary - scholarly and professional */
+    --primary: 220 50% 25%;
+    --primary-foreground: 42 25% 98%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    /* Warm paper secondary */
+    --secondary: 42 20% 92%;
+    --secondary-foreground: 220 30% 20%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 42 15% 90%;
+    --muted-foreground: 220 15% 45%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    /* Subtle gold accent */
+    --accent: 38 60% 50%;
+    --accent-foreground: 220 30% 15%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --border: 42 20% 85%;
+    --input: 42 20% 85%;
+    --ring: 220 50% 35%;
 
     --radius: 0.5rem;
 
-    --sidebar-background: 0 0% 98%;
+    /* Verdict colors - academic style */
+    --verdict-green: 152 60% 40%;
+    --verdict-green-bg: 152 60% 95%;
+    --verdict-yellow: 45 90% 48%;
+    --verdict-yellow-bg: 45 90% 95%;
+    --verdict-red: 0 72% 51%;
+    --verdict-red-bg: 0 72% 97%;
 
-    --sidebar-foreground: 240 5.3% 26.1%;
-
-    --sidebar-primary: 240 5.9% 10%;
-
-    --sidebar-primary-foreground: 0 0% 98%;
-
-    --sidebar-accent: 240 4.8% 95.9%;
-
-    --sidebar-accent-foreground: 240 5.9% 10%;
-
-    --sidebar-border: 220 13% 91%;
-
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    /* Sidebar */
+    --sidebar-background: 220 30% 15%;
+    --sidebar-foreground: 42 25% 95%;
+    --sidebar-primary: 38 60% 55%;
+    --sidebar-primary-foreground: 220 30% 15%;
+    --sidebar-accent: 220 35% 22%;
+    --sidebar-accent-foreground: 42 25% 95%;
+    --sidebar-border: 220 30% 25%;
+    --sidebar-ring: 38 60% 55%;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    --background: 220 30% 10%;
+    --foreground: 42 25% 95%;
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --card: 220 30% 12%;
+    --card-foreground: 42 25% 95%;
 
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 220 30% 12%;
+    --popover-foreground: 42 25% 95%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 38 60% 55%;
+    --primary-foreground: 220 30% 10%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 220 25% 18%;
+    --secondary-foreground: 42 25% 90%;
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 220 25% 20%;
+    --muted-foreground: 42 15% 60%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 38 60% 50%;
+    --accent-foreground: 220 30% 10%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --border: 220 25% 22%;
+    --input: 220 25% 22%;
+    --ring: 38 60% 55%;
+
+    --verdict-green: 152 55% 45%;
+    --verdict-green-bg: 152 40% 15%;
+    --verdict-yellow: 45 85% 55%;
+    --verdict-yellow-bg: 45 60% 15%;
+    --verdict-red: 0 65% 55%;
+    --verdict-red-bg: 0 50% 15%;
+
+    --sidebar-background: 220 35% 8%;
+    --sidebar-foreground: 42 25% 95%;
+    --sidebar-primary: 38 60% 55%;
+    --sidebar-primary-foreground: 220 30% 10%;
+    --sidebar-accent: 220 30% 15%;
+    --sidebar-accent-foreground: 42 25% 95%;
+    --sidebar-border: 220 30% 18%;
+    --sidebar-ring: 38 60% 55%;
   }
 }
 
@@ -100,6 +112,109 @@ All colors MUST be HSL.
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif;
+  }
+}
+
+@layer components {
+  .verdict-badge {
+    @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium;
+  }
+
+  .verdict-green {
+    @apply bg-verdict-green-bg text-verdict-green border border-verdict-green/20;
+  }
+
+  .verdict-yellow {
+    @apply bg-verdict-yellow-bg text-verdict-yellow border border-verdict-yellow/20;
+  }
+
+  .verdict-red {
+    @apply bg-verdict-red-bg text-verdict-red border border-verdict-red/20;
+  }
+
+  .claim-card {
+    @apply p-4 rounded-lg border bg-card transition-all duration-200;
+  }
+
+  .claim-card-green {
+    @apply border-l-4 border-l-verdict-green;
+  }
+
+  .claim-card-yellow {
+    @apply border-l-4 border-l-verdict-yellow;
+  }
+
+  .claim-card-red {
+    @apply border-l-4 border-l-verdict-red;
+  }
+
+  .dropzone {
+    @apply border-2 border-dashed border-border rounded-xl p-8 transition-all duration-200;
+    @apply hover:border-primary/50 hover:bg-primary/5;
+  }
+
+  .dropzone-active {
+    @apply border-primary bg-primary/10;
+  }
+
+  .scholarly-heading {
+    @apply font-serif text-foreground tracking-tight;
+  }
+
+  .source-row {
+    @apply transition-colors duration-150 hover:bg-secondary/50;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.3s ease-out;
+  }
+
+  .animate-pulse-subtle {
+    animation: pulseSub 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulseSub {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
   }
 }
