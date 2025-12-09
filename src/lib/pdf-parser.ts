@@ -105,37 +105,45 @@ export function splitIntoParagraphs(text: string): string[] {
     .replace(/\r/g, '\n')
     .replace(/\t/g, ' ');
   
-  // Strategy 1: Try splitting on double newlines (explicit paragraph breaks)
+  // Split on double newlines (explicit paragraph breaks from PDF extraction)
   let paragraphs = cleaned.split(/\n\s*\n+/);
   
-  // If we got too few paragraphs, try more aggressive splitting
-  if (paragraphs.length < 3) {
-    // Strategy 2: Split on sentences ending with period followed by newline
-    paragraphs = cleaned.split(/\.[\s]*\n(?=[A-Z])/);
-    paragraphs = paragraphs.map((p, i) => i < paragraphs.length - 1 ? p + '.' : p);
-  }
-  
-  // If still too few, try splitting on any newlines that start with capital letter
-  if (paragraphs.length < 3) {
-    paragraphs = cleaned.split(/\n(?=[A-Z])/);
-  }
-  
-  // Clean up paragraphs
+  // Clean up paragraphs - join internal line breaks within paragraphs
   paragraphs = paragraphs
     .map(p => p.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim())
     .filter(p => p.length > 0);
   
-  // Merge very short paragraphs with next one
+  // Merge very short segments (headers, page numbers, etc.) with next paragraph
   const merged: string[] = [];
+  let carryOver = '';
+  
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i];
+    const combined = carryOver ? carryOver + ' ' + p : p;
     
-    // If paragraph is very short and there's a next one, merge
-    if (p.length < 50 && i < paragraphs.length - 1 && !p.match(/^(chapter|section|\d+\.)/i)) {
-      paragraphs[i + 1] = p + ' ' + paragraphs[i + 1];
-    } else if (p.length >= 30 && hasRealWords(p)) {
-      merged.push(p);
+    // Check if this looks like a header or very short content
+    const isShortHeader = combined.length < 80 && !combined.includes('. ');
+    const isChapterOrSection = /^(chapter|section|part|\d+\.|\d+\s)/i.test(combined);
+    
+    if (isShortHeader && !isChapterOrSection && i < paragraphs.length - 1) {
+      // Carry over to next paragraph
+      carryOver = combined;
+    } else if (combined.length >= 50 && hasRealWords(combined)) {
+      merged.push(combined);
+      carryOver = '';
+    } else if (isChapterOrSection && combined.length >= 20) {
+      // Keep chapter/section headers
+      merged.push(combined);
+      carryOver = '';
+    } else {
+      // Too short, carry over
+      carryOver = combined;
     }
+  }
+  
+  // Don't forget any remaining carryOver
+  if (carryOver && carryOver.length >= 30) {
+    merged.push(carryOver);
   }
   
   return merged;
