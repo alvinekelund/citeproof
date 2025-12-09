@@ -96,19 +96,20 @@ ${extractedText}
 
 From the document content, extract:
 1. Title - look for the main title at the start of the document
-2. Authors - look for author names, usually after the title or in headers
+2. Authors - look for author names in the ORDER they appear (this reflects contribution order per APA)
 3. Year - look for publication year, copyright notices, or dates
 
-IMPORTANT: For the in-text citation label, use the author whose surname comes FIRST ALPHABETICALLY among all authors.
-For example, if authors are "Nanda, M., Challapally, A., Pease, C.", sort alphabetically: Challapally, Nanda, Pease.
-So the first author alphabetically is "Challapally", and with 3+ authors the label would be "(Challapally et al., 2025)".
+IMPORTANT for in-text citation (APA 7th edition):
+- Use the FIRST LISTED author's surname (the order reflects contribution, not alphabetical)
+- For 1-2 authors: list all names
+- For 3+ authors: use "First Author et al."
 
 Return JSON:
 {
-  "authors": "Surname, A., Surname2, B., etc." in original order from the paper,
+  "authors": "Surname, A., Surname2, B., etc." in the order listed in the paper,
   "year": 2024,
   "title": "The Full Title of the Paper",
-  "suggested_label": "(FirstAlphabeticalAuthor et al., Year)" - use ALPHABETICALLY first author
+  "suggested_label": "(FirstListedAuthor et al., Year)" - use FIRST LISTED author per APA
 }
 
 Return ONLY valid JSON, no explanation. Use null for fields you cannot determine.`
