@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2 } from "lucide-react";
+import { useState, useMemo } from "react";
+import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -40,6 +40,9 @@ import { extractTextFromFile } from "@/lib/pdf-parser";
 import { extractMetadataFromText } from "@/lib/metadata-extractor";
 import { PdfViewerDialog } from "./PdfViewerDialog";
 
+type SortField = 'in_text_label' | 'authors' | 'year' | 'created_at';
+type SortDirection = 'asc' | 'desc';
+
 interface SourceTableProps {
   sources: Source[];
   onUpdate: () => void;
@@ -51,6 +54,53 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [viewingSource, setViewingSource] = useState<Source | null>(null);
+  const [sortField, setSortField] = useState<SortField>('created_at');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+
+  const sortedSources = useMemo(() => {
+    return [...sources].sort((a, b) => {
+      let aVal: any, bVal: any;
+      
+      switch (sortField) {
+        case 'in_text_label':
+          aVal = a.in_text_label?.toLowerCase() || '';
+          bVal = b.in_text_label?.toLowerCase() || '';
+          break;
+        case 'authors':
+          aVal = a.authors?.toLowerCase() || '';
+          bVal = b.authors?.toLowerCase() || '';
+          break;
+        case 'year':
+          aVal = a.year || 0;
+          bVal = b.year || 0;
+          break;
+        case 'created_at':
+          aVal = new Date(a.created_at).getTime();
+          bVal = new Date(b.created_at).getTime();
+          break;
+        default:
+          return 0;
+      }
+      
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [sources, sortField, sortDirection]);
+
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const getSortIcon = (field: SortField) => {
+    if (sortField !== field) return <ArrowUpDown className="h-4 w-4 opacity-50" />;
+    return sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />;
+  };
 
   const startEdit = (source: Source) => {
     setEditingId(source.id);
@@ -199,16 +249,28 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
         <Table>
           <TableHeader>
             <TableRow className="bg-secondary/30">
-              <TableHead className="font-semibold">In-text Label</TableHead>
-              <TableHead className="font-semibold">Authors</TableHead>
-              <TableHead className="font-semibold w-20">Year</TableHead>
+              <TableHead className="font-semibold">
+                <Button variant="ghost" size="sm" className="h-auto p-0 font-semibold" onClick={() => toggleSort('in_text_label')}>
+                  In-text Label {getSortIcon('in_text_label')}
+                </Button>
+              </TableHead>
+              <TableHead className="font-semibold">
+                <Button variant="ghost" size="sm" className="h-auto p-0 font-semibold" onClick={() => toggleSort('authors')}>
+                  Authors {getSortIcon('authors')}
+                </Button>
+              </TableHead>
+              <TableHead className="font-semibold w-20">
+                <Button variant="ghost" size="sm" className="h-auto p-0 font-semibold" onClick={() => toggleSort('year')}>
+                  Year {getSortIcon('year')}
+                </Button>
+              </TableHead>
               <TableHead className="font-semibold">Style</TableHead>
               <TableHead className="font-semibold">File</TableHead>
               <TableHead className="font-semibold w-32">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sources.map((source) => (
+            {sortedSources.map((source) => (
               <TableRow key={source.id} className="source-row">
                 <TableCell>
                   {editingId === source.id ? (

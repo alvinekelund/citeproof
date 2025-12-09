@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { AuditParagraph } from "@/components/audit/AuditParagraph";
 import { CopilotMode } from "@/components/audit/CopilotMode";
@@ -7,11 +7,21 @@ import { HistoryView } from "@/components/history/HistoryView";
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState<'audit' | 'copilot' | 'library' | 'history'>('copilot');
+  const [sourceRefreshKey, setSourceRefreshKey] = useState(0);
+
+  // Callback to trigger source refresh when switching tabs
+  const handleTabChange = useCallback((tab: 'audit' | 'copilot' | 'library' | 'history') => {
+    setActiveTab(tab);
+    // Increment key to trigger refresh in copilot when coming back to it
+    if (tab === 'copilot') {
+      setSourceRefreshKey(k => k + 1);
+    }
+  }, []);
 
   return (
-    <AppLayout activeTab={activeTab} onTabChange={setActiveTab}>
+    <AppLayout activeTab={activeTab} onTabChange={handleTabChange}>
       {activeTab === 'audit' && <AuditParagraph />}
-      {activeTab === 'copilot' && <CopilotMode />}
+      {activeTab === 'copilot' && <CopilotMode key={sourceRefreshKey} onSourcesChange={() => setSourceRefreshKey(k => k + 1)} />}
       {activeTab === 'library' && <SourceLibrary />}
       {activeTab === 'history' && <HistoryView />}
     </AppLayout>
