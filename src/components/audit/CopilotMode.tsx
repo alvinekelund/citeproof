@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2, RotateCcw, Check, AlertTriangle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -66,7 +66,12 @@ interface CopilotModeProps {
   onUnmatchedCitationsChange?: (citations: UnmatchedCitation[]) => void;
 }
 
-export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedCitationsChange }: CopilotModeProps) {
+export interface CopilotModeHandle {
+  refreshSources: () => void;
+}
+
+export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
+  function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedCitationsChange }, ref) {
   const [file, setFile] = useState<File | null>(null);
   const [paragraphs, setParagraphs] = useState<ParagraphData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -97,6 +102,13 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
     const dedupedAnalysis = await deduplicateCitations(analysis);
     return dedupedAnalysis;
   }, []);
+
+  // Expose refresh method to parent via ref
+  useImperativeHandle(ref, () => ({
+    refreshSources: () => {
+      refreshSourcesAndCitations();
+    },
+  }), []);
 
   // Refresh sources and re-analyze citations
   const refreshSourcesAndCitations = useCallback(async () => {
@@ -1483,4 +1495,4 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
       )}
     </div>
   );
-}
+});

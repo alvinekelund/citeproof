@@ -1,21 +1,21 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { CopilotMode, UnmatchedCitation } from "@/components/audit/CopilotMode";
+import { CopilotMode, UnmatchedCitation, CopilotModeHandle } from "@/components/audit/CopilotMode";
 import { SourceLibrary } from "@/components/sources/SourceLibrary";
 import { HistoryView } from "@/components/history/HistoryView";
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState<'copilot' | 'library' | 'history'>('copilot');
-  const [sourceRefreshKey, setSourceRefreshKey] = useState(0);
   const [usedSourceIds, setUsedSourceIds] = useState<Set<string>>(new Set());
   const [unmatchedCitations, setUnmatchedCitations] = useState<UnmatchedCitation[]>([]);
+  const copilotRef = useRef<CopilotModeHandle>(null);
 
   // Callback to trigger source refresh when switching tabs
   const handleTabChange = useCallback((tab: 'copilot' | 'library' | 'history') => {
     setActiveTab(tab);
-    // Increment key to trigger refresh in copilot when coming back to it
+    // Trigger a sources refresh in copilot when coming back to it
     if (tab === 'copilot') {
-      setSourceRefreshKey(k => k + 1);
+      copilotRef.current?.refreshSources();
     }
   }, []);
 
@@ -46,21 +46,27 @@ const Index = () => {
     });
   }, []);
 
+  // Handle sources updated in library
+  const handleSourcesUpdated = useCallback(() => {
+    copilotRef.current?.refreshSources();
+  }, []);
+
   return (
     <AppLayout activeTab={activeTab} onTabChange={handleTabChange}>
-      {activeTab === 'copilot' && (
+      {/* Keep CopilotMode always mounted but hidden to preserve state */}
+      <div className={activeTab === 'copilot' ? '' : 'hidden'}>
         <CopilotMode 
-          key={sourceRefreshKey} 
-          onSourcesChange={() => setSourceRefreshKey(k => k + 1)}
+          ref={copilotRef}
+          onSourcesChange={handleSourcesUpdated}
           onUsedSourcesChange={setUsedSourceIds}
           onUnmatchedCitationsChange={setUnmatchedCitations}
         />
-      )}
+      </div>
       {activeTab === 'library' && (
         <SourceLibrary 
           usedSourceIds={usedSourceIds} 
           unmatchedCitations={unmatchedCitations}
-          onSourcesUpdated={() => setSourceRefreshKey(k => k + 1)}
+          onSourcesUpdated={handleSourcesUpdated}
           onLinkCitation={handleLinkCitation}
           onToggleSourceStatus={handleToggleStatus}
         />

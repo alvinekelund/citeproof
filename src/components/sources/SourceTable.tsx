@@ -589,22 +589,35 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
                     )}
                   </TableCell>
                   <TableCell>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => openFile(source)}
-                          className="text-primary hover:text-primary/80"
-                        >
-                          <Eye className="h-4 w-4 mr-1" />
-                          View
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p className="text-xs">{source.original_filename}</p>
-                      </TooltipContent>
-                    </Tooltip>
+                    <div className="flex items-center gap-2">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openFile(source)}
+                            className="text-primary hover:text-primary/80"
+                          >
+                            <Eye className="h-4 w-4 mr-1" />
+                            View
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p className="text-xs">{source.original_filename}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                      {/* Indicator for missing text */}
+                      {!textStatus.get(source.id) && (
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <AlertCircle className="h-4 w-4 text-amber-500" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="text-xs">No extracted text - click extract to enable verification</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell>
                     {editingId === source.id ? (
@@ -627,7 +640,7 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
                               disabled={extractingId === source.id}
                               className={cn(
                                 "h-8 w-8",
-                                !source.extracted_text && "text-amber-600 hover:text-amber-700"
+                                !textStatus.get(source.id) && "text-amber-600 hover:text-amber-700"
                               )}
                             >
                               {extractingId === source.id ? (
@@ -638,8 +651,8 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>
-                            {source.extracted_text 
-                              ? `Re-extract (${Math.round(source.extracted_text.length / 1000)}k chars indexed)`
+                            {textStatus.get(source.id) 
+                              ? "Re-extract text & metadata"
                               : "⚠️ Extract text - needed for full PDF verification"
                             }
                           </TooltipContent>

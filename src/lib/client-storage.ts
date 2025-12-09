@@ -2,10 +2,11 @@
 import type { Source, ThesisDocument, ThesisParagraph, ParagraphCheck, CheckResult, CitationStyle } from "./types";
 
 const DB_NAME = 'thesis-checker-db';
-const DB_VERSION = 3; // Bumped version for new session text store
+const DB_VERSION = 4; // Bumped version for checks store
 const FILES_STORE = 'files';
 const TEXT_STORE = 'extracted-text';
-const SESSION_TEXT_STORE = 'session-text'; // New store for session full text
+const SESSION_TEXT_STORE = 'session-text';
+const CHECKS_STORE = 'paragraph-checks'; // New store for paragraph checks
 
 // IndexedDB for file storage
 function openDB(): Promise<IDBDatabase> {
@@ -24,9 +25,13 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(TEXT_STORE)) {
         db.createObjectStore(TEXT_STORE, { keyPath: 'id' });
       }
-      // New store for session full text (uses session ID as key)
+      // Store for session full text (uses session ID as key)
       if (!db.objectStoreNames.contains(SESSION_TEXT_STORE)) {
         db.createObjectStore(SESSION_TEXT_STORE, { keyPath: 'sessionId' });
+      }
+      // Store for paragraph checks (uses id as key)
+      if (!db.objectStoreNames.contains(CHECKS_STORE)) {
+        db.createObjectStore(CHECKS_STORE, { keyPath: 'id' });
       }
     };
   });
@@ -418,41 +423,125 @@ export function createThesisParagraphs(paragraphs: Omit<ThesisParagraph, 'id' | 
   setStorageItem(PARAGRAPHS_KEY, [...all, ...newParagraphs]);
 }
 
-// ============= PARAGRAPH CHECKS (HISTORY) =============
-const CHECKS_KEY = 'thesis-checker-checks';
+// ============= PARAGRAPH CHECKS (HISTORY - IndexedDB) =============
+const CHECKS_KEY = 'thesis-checker-checks'; // Legacy key for migration
 
-export function getParagraphChecks(): ParagraphCheck[] {
-  const checks = getStorageItem<ParagraphCheck[]>(CHECKS_KEY, []);
-  // Add thesis_paragraph_index for display
-  return checks.map(check => {
-    if (check.thesis_paragraph_id) {
-      const allParagraphs = getStorageItem<ThesisParagraph[]>(PARAGRAPHS_KEY, []);
-      const paragraph = allParagraphs.find(p => p.id === check.thesis_paragraph_id);
-      return { ...check, thesis_paragraph_index: paragraph?.index };
+// Migrate old localStorage checks to IndexedDB (run once)
+async function migrateChecksToIndexedDB(): Promise<void> {
+  try {
+    const oldChecks = getStorageItem<ParagraphCheck[]>(CHECKS_KEY, []);
+    if (oldChecks.length > 0) {
+      const db = await openDB();
+      const tx = db.transaction(CHECKS_STORE, 'readwrite');
+      const store = tx.objectStore(CHECKS_STORE);
+      
+      for (const check of oldChecks) {
+        store.put(check);
+      }
+      
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      
+      // Clear localStorage after migration
+      localStorage.removeItem(CHECKS_KEY);
+      console.log(`Migrated ${oldChecks.length} checks to IndexedDB`);
     }
-    return check;
+  } catch (error) {
+    console.error('Failed to migrate checks:', error);
+  }
+}
+
+// Run migration on module load
+migrateChecksToIndexedDB();
+
+export async function getParagraphChecksAsync(): Promise<ParagraphCheck[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHECKS_STORE, 'readonly');
+    const store = tx.objectStore(CHECKS_STORE);
+    const request = store.getAll();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const checks = request.result as ParagraphCheck[];
+      // Sort by created_at descending (newest first)
+      checks.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      resolve(checks);
+    };
+  });
+}
+
+// Sync version for backwards compatibility - returns empty array, use async version
+export function getParagraphChecks(): ParagraphCheck[] {
+  // Return empty - callers should use async version
+  console.warn('getParagraphChecks is deprecated, use getParagraphChecksAsync');
+  return [];
+}
+
+export async function getParagraphCheckAsync(id: string): Promise<ParagraphCheck | null> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHECKS_STORE, 'readonly');
+    const store = tx.objectStore(CHECKS_STORE);
+    const request = store.get(id);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result || null);
   });
 }
 
 export function getParagraphCheck(id: string): ParagraphCheck | null {
-  const checks = getParagraphChecks();
-  return checks.find(c => c.id === id) || null;
+  console.warn('getParagraphCheck is deprecated, use getParagraphCheckAsync');
+  return null;
 }
 
+export async function createParagraphCheckAsync(check: {
+  thesis_paragraph_id?: string;
+  raw_paragraph_text: string;
+  result_json: CheckResult;
+  overall_color: 'green' | 'yellow' | 'red' | 'blue';
+}): Promise<ParagraphCheck> {
+  const db = await openDB();
+  const newCheck: ParagraphCheck = {
+    ...check,
+    id: generateId(),
+    created_at: new Date().toISOString(),
+  };
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHECKS_STORE, 'readwrite');
+    const store = tx.objectStore(CHECKS_STORE);
+    const request = store.put(newCheck);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(newCheck);
+  });
+}
+
+// Sync version - still works but uses async internally
 export function createParagraphCheck(check: {
   thesis_paragraph_id?: string;
   raw_paragraph_text: string;
   result_json: CheckResult;
   overall_color: 'green' | 'yellow' | 'red' | 'blue';
 }): ParagraphCheck {
-  const checks = getStorageItem<ParagraphCheck[]>(CHECKS_KEY, []);
   const newCheck: ParagraphCheck = {
     ...check,
     id: generateId(),
     created_at: new Date().toISOString(),
   };
-  checks.unshift(newCheck);
-  setStorageItem(CHECKS_KEY, checks);
+  
+  // Fire and forget - store async
+  (async () => {
+    try {
+      const db = await openDB();
+      const tx = db.transaction(CHECKS_STORE, 'readwrite');
+      const store = tx.objectStore(CHECKS_STORE);
+      store.put(newCheck);
+    } catch (error) {
+      console.error('Failed to store check in IndexedDB:', error);
+    }
+  })();
+  
   return newCheck;
 }
 
