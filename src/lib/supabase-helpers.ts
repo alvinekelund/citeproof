@@ -1,5 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
-import type { Source, ThesisDocument, ThesisParagraph, ParagraphCheck, CheckResult } from "./types";
+import type { Source, ThesisDocument, ThesisParagraph, ParagraphCheck, CheckResult, CitationStyle } from "./types";
 
 // Sources
 export async function getSources(): Promise<Source[]> {
@@ -9,7 +9,10 @@ export async function getSources(): Promise<Source[]> {
     .order('created_at', { ascending: false });
   
   if (error) throw error;
-  return data || [];
+  return (data || []).map(s => ({
+    ...s,
+    citation_style: (s.citation_style || 'apa7') as CitationStyle,
+  }));
 }
 
 export async function createSource(source: Omit<Source, 'id' | 'created_at' | 'updated_at'>): Promise<Source> {
@@ -20,7 +23,10 @@ export async function createSource(source: Omit<Source, 'id' | 'created_at' | 'u
     .single();
   
   if (error) throw error;
-  return data;
+  return {
+    ...data,
+    citation_style: (data.citation_style || 'apa7') as CitationStyle,
+  };
 }
 
 export async function updateSource(id: string, updates: Partial<Source>): Promise<Source> {
@@ -32,7 +38,10 @@ export async function updateSource(id: string, updates: Partial<Source>): Promis
     .single();
   
   if (error) throw error;
-  return data;
+  return {
+    ...data,
+    citation_style: (data.citation_style || 'apa7') as CitationStyle,
+  };
 }
 
 export async function deleteSource(id: string): Promise<void> {

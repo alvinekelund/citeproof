@@ -20,7 +20,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Source } from "@/lib/types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Source, CitationStyle, CITATION_STYLES } from "@/lib/types";
 import { updateSource, deleteSource, getFileUrl } from "@/lib/supabase-helpers";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -43,6 +50,7 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
       authors: source.authors || '',
       year: source.year,
       notes: source.notes || '',
+      citation_style: source.citation_style || 'apa7',
     });
   };
 
@@ -84,6 +92,10 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
     window.open(url, '_blank');
   };
 
+  const getStyleLabel = (style: CitationStyle) => {
+    return CITATION_STYLES.find(s => s.value === style)?.label || style;
+  };
+
   if (sources.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground">
@@ -99,9 +111,9 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
           <TableHeader>
             <TableRow className="bg-secondary/30">
               <TableHead className="font-semibold">In-text Label</TableHead>
-              <TableHead className="font-semibold">Title</TableHead>
               <TableHead className="font-semibold">Authors</TableHead>
               <TableHead className="font-semibold w-20">Year</TableHead>
+              <TableHead className="font-semibold">Style</TableHead>
               <TableHead className="font-semibold">File</TableHead>
               <TableHead className="font-semibold w-24">Actions</TableHead>
             </TableRow>
@@ -129,29 +141,22 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
                 <TableCell>
                   {editingId === source.id ? (
                     <Input
-                      value={editData.title || ''}
-                      onChange={(e) => setEditData({ ...editData, title: e.target.value })}
-                      placeholder="Title"
-                      className="h-8"
-                    />
-                  ) : (
-                    <span className={cn(!source.title && "text-muted-foreground italic")}>
-                      {source.title || source.original_filename}
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editingId === source.id ? (
-                    <Input
                       value={editData.authors || ''}
                       onChange={(e) => setEditData({ ...editData, authors: e.target.value })}
                       placeholder="Authors"
                       className="h-8"
                     />
                   ) : (
-                    <span className={cn(!source.authors && "text-muted-foreground")}>
-                      {source.authors || '—'}
-                    </span>
+                    <div>
+                      <span className={cn(!source.authors && "text-muted-foreground")}>
+                        {source.authors || '—'}
+                      </span>
+                      {source.title && (
+                        <p className="text-xs text-muted-foreground truncate max-w-[200px]" title={source.title}>
+                          {source.title}
+                        </p>
+                      )}
+                    </div>
                   )}
                 </TableCell>
                 <TableCell>
@@ -166,6 +171,29 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
                   ) : (
                     <span className={cn(!source.year && "text-muted-foreground")}>
                       {source.year || '—'}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {editingId === source.id ? (
+                    <Select
+                      value={editData.citation_style || 'apa7'}
+                      onValueChange={(v) => setEditData({ ...editData, citation_style: v as CitationStyle })}
+                    >
+                      <SelectTrigger className="h-8 w-28">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CITATION_STYLES.map(style => (
+                          <SelectItem key={style.value} value={style.value}>
+                            {style.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <span className="text-xs bg-secondary px-2 py-1 rounded">
+                      {getStyleLabel(source.citation_style)}
                     </span>
                   )}
                 </TableCell>

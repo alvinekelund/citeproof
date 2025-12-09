@@ -52,6 +52,7 @@ export type Database = {
       sources: {
         Row: {
           authors: string | null
+          citation_style: string | null
           created_at: string
           file_path: string
           filename: string
@@ -67,6 +68,7 @@ export type Database = {
         }
         Insert: {
           authors?: string | null
+          citation_style?: string | null
           created_at?: string
           file_path: string
           filename: string
@@ -82,6 +84,7 @@ export type Database = {
         }
         Update: {
           authors?: string | null
+          citation_style?: string | null
           created_at?: string
           file_path?: string
           filename?: string
