@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2 } from "lucide-react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2, RotateCcw, Check, AlertTriangle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -7,11 +7,11 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, ThesisSection } from "@/lib/pdf-parser";
+import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, ThesisSection, hasCitations } from "@/lib/pdf-parser";
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
-import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingData, getSessionMissingData, deleteSessionMissingData } from "@/lib/client-storage";
+import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingDataAsync, getSessionMissingDataAsync, deleteSessionMissingDataAsync } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
 import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder, deduplicateCitations } from "@/lib/citation-detector";
 import {
@@ -41,6 +41,7 @@ interface ParagraphData {
   sectionType?: 'chapter' | 'section' | 'subsection' | 'paragraph';
   sectionTitle?: string;
   shouldCheck?: boolean; // false for sections that don't need AI verification
+  skipReason?: string; // Reason for skipping
 }
 
 interface CopilotSession {
@@ -180,8 +181,8 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
     setFile({ name: session.thesis_name } as File);
     setSelectedIndex(null);
     
-    // Restore fullText and re-analyze citations against current library
-    const sessionData = getSessionMissingData(session.id);
+    // Restore fullText from IndexedDB and re-analyze citations against current library
+    const sessionData = await getSessionMissingDataAsync(session.id);
     console.log('[CopilotMode] Session data:', sessionData ? `${sessionData.fullText?.length} chars` : 'none');
     
     if (sessionData?.fullText) {
@@ -270,9 +271,9 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
         setCurrentSessionId(data.id);
       }
       
-      // Save full text for citation re-analysis when session is loaded
+      // Save full text to IndexedDB for citation re-analysis when session is loaded
       if (sessionId && textContent) {
-        saveSessionMissingData({ sessionId, fullText: textContent });
+        await saveSessionMissingDataAsync({ sessionId, fullText: textContent });
       }
       
       // Refresh sessions list
@@ -306,8 +307,8 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
         setFullText('');
       }
       
-      // Also delete session missing data
-      deleteSessionMissingData(sessionId);
+      // Also delete session text from IndexedDB
+      await deleteSessionMissingDataAsync(sessionId);
       
       loadSessions();
       toast({ title: "Session deleted" });
@@ -409,10 +410,9 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
             sectionType: section.type,
             sectionTitle: section.title,
             shouldCheck: false,
+            skipReason: section.skipReason,
             result: {
-              summary: section.type === 'paragraph' 
-                ? 'This paragraph is in a section that does not require citation verification (e.g., references, acknowledgements, abstract).'
-                : 'Section headers do not require verification.',
+              summary: section.skipReason || 'This section does not require citation verification.',
               overall_color: 'blue' as const,
               claims: [],
               missing_or_ambiguous_citations: [],
@@ -636,6 +636,35 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
     abortRef.current = true;
   };
 
+  // Rerun all checks - clear results and run batch check
+  const rerunAllChecks = async () => {
+    // Clear all check results for paragraphs that should be checked
+    const resetParagraphs = paragraphs.map(p => {
+      if (p.shouldCheck === false) {
+        return p; // Keep blue/skipped paragraphs as-is
+      }
+      return {
+        ...p,
+        checked: false,
+        result: undefined,
+      };
+    });
+    
+    setParagraphs(resetParagraphs);
+    
+    // Save session with reset paragraphs
+    if (file) {
+      await saveSession(file.name, resetParagraphs);
+    }
+    
+    toast({ title: "Results cleared", description: "Starting batch check..." });
+    
+    // Start batch check after a short delay
+    setTimeout(() => {
+      startBatchCheck();
+    }, 500);
+  };
+
   const selectedParagraph = selectedIndex !== null ? paragraphs[selectedIndex] : null;
 
   const navigateParagraph = (direction: 'prev' | 'next') => {
@@ -682,27 +711,46 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
     setFullText('');
   };
 
-  const markAsBlue = async (index: number) => {
+  // Manual validation functions
+  const markWithColor = async (index: number, color: 'blue' | 'green' | 'yellow' | 'red', summary: string) => {
     const paragraph = paragraphs[index];
     if (!paragraph) return;
     
-    const blueResult = {
-      summary: 'Manually marked as not requiring citation verification.',
-      overall_color: 'blue' as const,
+    const result = {
+      summary,
+      overall_color: color,
       claims: [],
       missing_or_ambiguous_citations: [],
     };
     
     const newParagraphs = paragraphs.map((p, i) => 
-      i === index ? { ...p, checked: true, shouldCheck: false, result: blueResult } : p
+      i === index ? { ...p, checked: true, shouldCheck: color !== 'blue', result } : p
     );
     setParagraphs(newParagraphs);
     
     if (file) {
       await saveSession(file.name, newParagraphs);
     }
-    
+  };
+
+  const markAsBlue = async (index: number) => {
+    await markWithColor(index, 'blue', 'Manually marked as not requiring citation verification.');
     toast({ title: "Marked as no source needed" });
+  };
+
+  const markAsGreen = async (index: number) => {
+    await markWithColor(index, 'green', 'Manually verified as correctly cited.');
+    toast({ title: "Marked as valid" });
+  };
+
+  const markAsYellow = async (index: number) => {
+    await markWithColor(index, 'yellow', 'Manually marked as needs review.');
+    toast({ title: "Marked as needs review" });
+  };
+
+  const markAsRed = async (index: number) => {
+    await markWithColor(index, 'red', 'Manually marked as unsupported or problematic.');
+    toast({ title: "Marked as unsupported" });
   };
 
   const missingSources = citationAnalysis 
@@ -1129,15 +1177,42 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
               </div>
               <div className="flex gap-2">
                 {!isBatchChecking ? (
-                  <Button 
-                    variant="default" 
-                    size="sm" 
-                    onClick={startBatchCheck}
-                    disabled={paragraphs.filter(p => !p.checked && p.shouldCheck !== false).length === 0 || sources.length === 0}
-                  >
-                    <Play className="h-4 w-4 mr-1" />
-                    Check All ({paragraphs.filter(p => !p.checked && p.shouldCheck !== false).length})
-                  </Button>
+                  <>
+                    <Button 
+                      variant="default" 
+                      size="sm" 
+                      onClick={startBatchCheck}
+                      disabled={paragraphs.filter(p => !p.checked && p.shouldCheck !== false).length === 0 || sources.length === 0}
+                    >
+                      <Play className="h-4 w-4 mr-1" />
+                      Check All ({paragraphs.filter(p => !p.checked && p.shouldCheck !== false).length})
+                    </Button>
+                    {checkedCount > blueCount && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="outline" size="sm">
+                            <RotateCcw className="h-4 w-4 mr-1" />
+                            Rerun All
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Rerun all checks?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This will clear all existing check results and re-analyze all paragraphs. 
+                              Paragraphs marked as "no source needed" will be preserved.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction onClick={rerunAllChecks}>
+                              Rerun All
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                  </>
                 ) : (
                   <Button 
                     variant="destructive" 
@@ -1295,27 +1370,103 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
 
                 {/* Result or prompt to check */}
                 {selectedParagraph.checked && selectedParagraph.result ? (
-                  <CheckResult 
-                    result={selectedParagraph.result} 
-                    paragraphText={selectedParagraph.text}
-                    sources={sources}
-                  />
+                  <>
+                    <CheckResult 
+                      result={selectedParagraph.result} 
+                      paragraphText={selectedParagraph.text}
+                      sources={sources}
+                    />
+                    {/* Manual validation buttons after result */}
+                    <Card className="p-4">
+                      <p className="text-sm text-muted-foreground mb-3">Override with manual validation:</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => selectedIndex !== null && markAsGreen(selectedIndex)}
+                          className="text-verdict-green hover:bg-verdict-green-bg"
+                        >
+                          <Check className="h-4 w-4 mr-1" />
+                          Mark Valid
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => selectedIndex !== null && markAsYellow(selectedIndex)}
+                          className="text-verdict-yellow hover:bg-verdict-yellow-bg"
+                        >
+                          <AlertTriangle className="h-4 w-4 mr-1" />
+                          Mark Uncertain
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => selectedIndex !== null && markAsRed(selectedIndex)}
+                          className="text-verdict-red hover:bg-verdict-red-bg"
+                        >
+                          <XCircle className="h-4 w-4 mr-1" />
+                          Mark Unsupported
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => selectedIndex !== null && markAsBlue(selectedIndex)}
+                          className="text-verdict-blue hover:bg-verdict-blue-bg"
+                        >
+                          <CircleSlash className="h-4 w-4 mr-1" />
+                          No Source Needed
+                        </Button>
+                      </div>
+                    </Card>
+                  </>
                 ) : selectedParagraph.shouldCheck !== false ? (
                   <Card className="p-8 text-center space-y-4">
                     <Sparkles className="h-8 w-8 mx-auto text-primary" />
                     <p className="text-muted-foreground">Click "Check" to analyze this paragraph</p>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={() => selectedIndex !== null && markAsBlue(selectedIndex)}
-                    >
-                      <CircleSlash className="h-4 w-4 mr-1" />
-                      Mark as No Source Needed
-                    </Button>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => selectedIndex !== null && markAsGreen(selectedIndex)}
+                        className="text-verdict-green hover:bg-verdict-green-bg"
+                      >
+                        <Check className="h-4 w-4 mr-1" />
+                        Mark Valid
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => selectedIndex !== null && markAsYellow(selectedIndex)}
+                        className="text-verdict-yellow hover:bg-verdict-yellow-bg"
+                      >
+                        <AlertTriangle className="h-4 w-4 mr-1" />
+                        Mark Uncertain
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => selectedIndex !== null && markAsRed(selectedIndex)}
+                        className="text-verdict-red hover:bg-verdict-red-bg"
+                      >
+                        <XCircle className="h-4 w-4 mr-1" />
+                        Mark Unsupported
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => selectedIndex !== null && markAsBlue(selectedIndex)}
+                        className="text-verdict-blue hover:bg-verdict-blue-bg"
+                      >
+                        <CircleSlash className="h-4 w-4 mr-1" />
+                        No Source Needed
+                      </Button>
+                    </div>
                   </Card>
                 ) : (
                   <Card className="p-8 text-center">
-                    <p className="text-muted-foreground">This section does not require verification</p>
+                    <p className="text-muted-foreground">
+                      {selectedParagraph.skipReason || 'This section does not require verification'}
+                    </p>
                   </Card>
                 )}
               </>

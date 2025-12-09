@@ -12,6 +12,14 @@ interface TextItem {
   height: number;
 }
 
+// Common abbreviations that shouldn't break sentences
+const ABBREVIATIONS = new Set([
+  'dr', 'mr', 'mrs', 'ms', 'prof', 'sr', 'jr', 'vs', 'etc', 'al', 'eg', 'ie',
+  'inc', 'ltd', 'co', 'corp', 'fig', 'vol', 'no', 'pp', 'ed', 'eds', 'rev',
+  'st', 'ave', 'blvd', 'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep',
+  'oct', 'nov', 'dec', 'approx', 'est', 'dept', 'univ', 'assoc', 'natl', 'intl'
+]);
+
 export async function extractTextFromPdf(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -61,7 +69,7 @@ export async function extractTextFromPdf(file: File): Promise<string> {
     for (const line of lines) {
       // Detect paragraph break: gap > 1.5x average line height
       const gap = lastLineY !== null ? line.y - lastLineY : 0;
-      const isParagraphBreak = gap > avgLineHeight * 1.8;
+      const isParagraphBreak = gap > avgLineHeight * 1.5; // Reduced from 1.8 for better sensitivity
       
       // Also detect paragraph break if line starts with indent or special patterns
       const startsWithIndent = /^\s{4,}/.test(line.text);
@@ -70,7 +78,7 @@ export async function extractTextFromPdf(file: File): Promise<string> {
       
       if (isParagraphBreak || startsWithIndent || startsWithNumber || startsWithBullet) {
         if (currentParagraph.length > 0) {
-          allParagraphs.push(currentParagraph.join(' '));
+          allParagraphs.push(joinParagraphLines(currentParagraph));
           currentParagraph = [];
         }
       }
@@ -81,7 +89,7 @@ export async function extractTextFromPdf(file: File): Promise<string> {
     
     // Push remaining paragraph
     if (currentParagraph.length > 0) {
-      allParagraphs.push(currentParagraph.join(' '));
+      allParagraphs.push(joinParagraphLines(currentParagraph));
     }
     
     // Add page break marker
@@ -89,6 +97,24 @@ export async function extractTextFromPdf(file: File): Promise<string> {
   }
   
   return allParagraphs.join('\n\n');
+}
+
+// Handle hyphenation at line breaks
+function joinParagraphLines(lines: string[]): string {
+  let result = '';
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const nextLine = lines[i + 1];
+    
+    // Check for hyphenation (word split across lines)
+    if (line.endsWith('-') && nextLine && /^[a-z]/.test(nextLine)) {
+      // Remove hyphen and join with next line
+      result += line.slice(0, -1);
+    } else {
+      result += (result ? ' ' : '') + line;
+    }
+  }
+  return result;
 }
 
 export async function extractTextFromDocx(file: File): Promise<string> {
@@ -144,18 +170,61 @@ export interface ThesisSection {
   content: string;
   index: number;
   shouldCheck: boolean; // Whether this section needs AI verification
+  skipReason?: string; // Reason for skipping (if shouldCheck is false)
 }
 
 // Maximum chunk size in characters (roughly 300-400 words)
 const MAX_CHUNK_SIZE = 2000;
 // Minimum chunk size to be considered a valid paragraph
-const MIN_CHUNK_SIZE = 100;
+const MIN_CHUNK_SIZE = 150; // Increased from 100
+
+// Check if word is an abbreviation
+function isAbbreviation(word: string): boolean {
+  return ABBREVIATIONS.has(word.toLowerCase().replace(/\.$/, ''));
+}
 
 function splitBySentences(text: string): string[] {
-  // Split by sentence-ending punctuation followed by space or end of string
-  // This regex keeps the punctuation with the sentence
-  const sentencePattern = /(?<=[.!?])\s+(?=[A-Z])/g;
-  return text.split(sentencePattern).filter(s => s.trim().length > 0);
+  const sentences: string[] = [];
+  let current = '';
+  let i = 0;
+  
+  while (i < text.length) {
+    current += text[i];
+    
+    // Check for sentence-ending punctuation
+    if (['.', '!', '?'].includes(text[i])) {
+      // Look ahead for space and capital letter
+      const nextChar = text[i + 1];
+      const afterNext = text[i + 2];
+      
+      if (nextChar === ' ' && afterNext && /[A-Z]/.test(afterNext)) {
+        // Check if this is an abbreviation
+        const words = current.trim().split(/\s+/);
+        const lastWord = words[words.length - 1].replace(/[.!?]$/, '');
+        
+        // Don't split if it's an abbreviation
+        if (!isAbbreviation(lastWord)) {
+          // Don't split inside citations like (Author et al., 2023)
+          const openParens = (current.match(/\(/g) || []).length;
+          const closeParens = (current.match(/\)/g) || []).length;
+          
+          if (openParens === closeParens) {
+            sentences.push(current.trim());
+            current = '';
+            i++; // Skip the space
+          }
+        }
+      }
+    }
+    
+    i++;
+  }
+  
+  if (current.trim()) {
+    sentences.push(current.trim());
+  }
+  
+  return sentences.filter(s => s.length > 0);
 }
 
 function chunkSentencesIntoPargrahs(sentences: string[], maxSize: number): string[] {
@@ -188,6 +257,14 @@ function chunkSentencesIntoPargrahs(sentences: string[], maxSize: number): strin
   }
   
   return chunks;
+}
+
+// Check if text ends with incomplete sentence (no terminal punctuation)
+function endsIncomplete(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  const lastChar = trimmed[trimmed.length - 1];
+  return !['.', '!', '?', '"', "'", ')', ']'].includes(lastChar);
 }
 
 export function splitIntoParagraphs(text: string): string[] {
@@ -236,6 +313,16 @@ export function splitIntoParagraphs(text: string): string[] {
     if (combined.length < MIN_CHUNK_SIZE) {
       carryOver = combined;
       continue;
+    }
+    
+    // Check if paragraph ends incomplete and next paragraph continues
+    if (endsIncomplete(combined) && i + 1 < rawParagraphs.length) {
+      const nextP = rawParagraphs[i + 1];
+      // If next paragraph starts with lowercase, likely a continuation
+      if (nextP && /^[a-z]/.test(nextP)) {
+        carryOver = combined;
+        continue;
+      }
     }
     
     carryOver = '';
@@ -297,6 +384,7 @@ const NON_CHECKABLE_SECTIONS = [
   'dedication',
   'preface',
   'contents',
+  'foreword',
 ];
 
 // Check if text looks like a reference/bibliography entry
@@ -362,6 +450,24 @@ function isPurelyCitationList(text: string): boolean {
   return citationLikeLines / lines.length > 0.6;
 }
 
+// Citation patterns to detect
+const CITATION_PATTERNS = [
+  /\([A-Z][a-z]+(?:\s+(?:et\s+al\.?|and|&)\s*[A-Z][a-z]+)*,?\s*\d{4}[a-z]?\)/g,  // (Author, 2023) or (Author et al., 2023)
+  /\[[0-9,\s\-–]+\]/g,  // [1] or [1, 2] or [1-5]
+  /[A-Z][a-z]+\s+(?:et\s+al\.?\s+)?\(\d{4}[a-z]?\)/g,  // Author (2023) or Author et al. (2023)
+];
+
+// Check if text contains any citations
+export function hasCitations(text: string): boolean {
+  for (const pattern of CITATION_PATTERNS) {
+    pattern.lastIndex = 0; // Reset regex state
+    if (pattern.test(text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Check if text is within a non-checkable section
 function isNonCheckableContent(text: string): boolean {
   const lowerText = text.toLowerCase().trim();
@@ -387,22 +493,25 @@ function isNonCheckableContent(text: string): boolean {
 export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
   const sections: ThesisSection[] = [];
   let currentNonCheckableSection = false;
+  let currentNonCheckableSectionName = '';
   
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i];
     const lowerP = p.toLowerCase().trim();
     
     // Check if entering a non-checkable section
-    const isNonCheckableHeader = NON_CHECKABLE_SECTIONS.some(s => lowerP.startsWith(s) && p.length < 100);
+    const matchedNonCheckable = NON_CHECKABLE_SECTIONS.find(s => lowerP.startsWith(s) && p.length < 100);
     
     // Check if entering a checkable section (resets non-checkable mode)
     const checkableSections = ['introduction', 'literature review', 'methodology', 'methods', 'results', 'discussion', 'conclusion', 'findings', 'analysis'];
     const isCheckableHeader = checkableSections.some(s => lowerP.startsWith(s) && p.length < 100);
     
-    if (isNonCheckableHeader) {
+    if (matchedNonCheckable) {
       currentNonCheckableSection = true;
+      currentNonCheckableSectionName = matchedNonCheckable.charAt(0).toUpperCase() + matchedNonCheckable.slice(1);
     } else if (isCheckableHeader || /^(chapter\s*\d+)/i.test(p)) {
       currentNonCheckableSection = false;
+      currentNonCheckableSectionName = '';
     }
     
     // Detect chapter
@@ -414,6 +523,7 @@ export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
         content: p,
         index: i,
         shouldCheck: false, // Headers don't need checking
+        skipReason: 'Section header',
       });
       continue;
     }
@@ -427,6 +537,7 @@ export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
         content: p,
         index: i,
         shouldCheck: false, // Headers don't need checking
+        skipReason: 'Section header',
       });
       continue;
     }
@@ -442,18 +553,33 @@ export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
         content: p,
         index: i,
         shouldCheck: false, // Headers don't need checking
+        skipReason: 'Section header',
       });
       continue;
     }
     
-    // Regular paragraph - check if it should be verified
-    const shouldCheck = !currentNonCheckableSection && !isNonCheckableContent(p);
+    // Check if paragraph should be verified
+    let shouldCheck = true;
+    let skipReason: string | undefined;
+    
+    if (currentNonCheckableSection) {
+      shouldCheck = false;
+      skipReason = `Part of ${currentNonCheckableSectionName} section`;
+    } else if (isNonCheckableContent(p)) {
+      shouldCheck = false;
+      skipReason = 'Non-checkable content (reference entry or citation list)';
+    } else if (!hasCitations(p)) {
+      // No citations detected - mark as blue
+      shouldCheck = false;
+      skipReason = 'No citations detected';
+    }
     
     sections.push({
       type: 'paragraph',
       content: p,
       index: i,
       shouldCheck,
+      skipReason,
     });
   }
   
