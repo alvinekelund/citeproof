@@ -299,6 +299,69 @@ const NON_CHECKABLE_SECTIONS = [
   'contents',
 ];
 
+// Check if text looks like a reference/bibliography entry
+function isReferenceEntry(text: string): boolean {
+  const lowerText = text.toLowerCase();
+  
+  // DOI patterns
+  if (/doi[:\.]?\s*10\.\d+/i.test(text) || /doi\.org\/10\.\d+/i.test(text)) {
+    return true;
+  }
+  
+  // URL patterns (http/https links are common in references)
+  if (/https?:\/\/[^\s]+/.test(text) && text.length < 500) {
+    return true;
+  }
+  
+  // Standard reference patterns: [1] Author, "Title", etc.
+  if (/^\[?\d+\]?\s*[A-Z][a-z]+,?\s+[A-Z]\.?/.test(text)) {
+    return true;
+  }
+  
+  // Author-year patterns: Smith, J. (2023). Title...
+  if (/^[A-Z][a-z]+,\s*[A-Z]\.?\s*(?:&|,|and)\s*[A-Z][a-z]+|^[A-Z][a-z]+,\s*[A-Z]\.?\s*\(\d{4}\)/.test(text)) {
+    return true;
+  }
+  
+  // Journal citation indicators
+  const journalPatterns = [
+    'journal of', 'proceedings of', 'vol.', 'volume', 'issue', 'pp.', 'pages',
+    'isbn', 'issn', 'retrieved from', 'accessed', 'available at'
+  ];
+  const matchCount = journalPatterns.filter(p => lowerText.includes(p)).length;
+  if (matchCount >= 2) {
+    return true;
+  }
+  
+  // Numbered reference format: 102982. or [102982]
+  if (/^\[?\d{3,}\]?\.?\s/.test(text.trim())) {
+    return true;
+  }
+  
+  return false;
+}
+
+// Check if paragraph is predominantly citations (>60% citation-like content)
+function isPurelyCitationList(text: string): boolean {
+  const lines = text.split(/[\n;]/).filter(l => l.trim().length > 10);
+  if (lines.length === 0) return false;
+  
+  let citationLikeLines = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Check for various citation patterns
+    if (
+      isReferenceEntry(trimmed) ||
+      /^\(\s*[A-Z][a-z]+.*\d{4}\s*\)/.test(trimmed) || // (Author, 2023)
+      /^\[[^\]]+\]$/.test(trimmed) // Just a [citation]
+    ) {
+      citationLikeLines++;
+    }
+  }
+  
+  return citationLikeLines / lines.length > 0.6;
+}
+
 // Check if text is within a non-checkable section
 function isNonCheckableContent(text: string): boolean {
   const lowerText = text.toLowerCase().trim();
@@ -308,14 +371,13 @@ function isNonCheckableContent(text: string): boolean {
     return true;
   }
   
-  // References/bibliography entries (typically start with author names or numbers)
-  if (/^\[?\d+\]?\s*[A-Z]/.test(text) && text.includes('.') && (
-    text.toLowerCase().includes('doi') ||
-    text.toLowerCase().includes('http') ||
-    text.toLowerCase().includes('journal') ||
-    text.toLowerCase().includes('vol.') ||
-    text.toLowerCase().includes('pp.')
-  )) {
+  // Check if it's a reference entry
+  if (isReferenceEntry(text)) {
+    return true;
+  }
+  
+  // Check if it's a pure citation list
+  if (isPurelyCitationList(text)) {
     return true;
   }
   

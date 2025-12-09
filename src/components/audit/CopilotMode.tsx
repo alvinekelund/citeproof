@@ -556,6 +556,24 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
       return;
     }
 
+    // Warn if sources are missing text content
+    const sourcesWithText = sources.filter(s => s.extracted_text && s.extracted_text.length > 100);
+    if (sourcesWithText.length === 0) {
+      toast({ 
+        title: "No source text available", 
+        description: "Please re-extract text from your sources in the library for accurate verification.", 
+        variant: "destructive" 
+      });
+      return;
+    }
+    
+    if (sourcesWithText.length < sources.length) {
+      toast({ 
+        title: "Warning: Some sources missing text", 
+        description: `${sources.length - sourcesWithText.length} sources have no extracted text. Results may be less accurate.`,
+      });
+    }
+
     // Only check paragraphs that need checking (shouldCheck = true and not already checked)
     const uncheckedParagraphs = paragraphs.filter(p => !p.checked && p.shouldCheck !== false);
     if (uncheckedParagraphs.length === 0) {
