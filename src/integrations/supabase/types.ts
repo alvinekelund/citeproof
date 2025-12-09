@@ -14,6 +14,36 @@ export type Database = {
   }
   public: {
     Tables: {
+      copilot_sessions: {
+        Row: {
+          checked_paragraphs: number
+          created_at: string
+          id: string
+          paragraphs_data: Json
+          thesis_name: string
+          total_paragraphs: number
+          updated_at: string
+        }
+        Insert: {
+          checked_paragraphs?: number
+          created_at?: string
+          id?: string
+          paragraphs_data?: Json
+          thesis_name: string
+          total_paragraphs?: number
+          updated_at?: string
+        }
+        Update: {
+          checked_paragraphs?: number
+          created_at?: string
+          id?: string
+          paragraphs_data?: Json
+          thesis_name?: string
+          total_paragraphs?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       paragraph_checks: {
         Row: {
           created_at: string

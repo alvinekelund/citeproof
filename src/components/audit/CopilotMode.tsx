@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List } from "lucide-react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -13,6 +13,24 @@ import { CheckResult } from "./CheckResult";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { getSources, createParagraphCheck } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 interface ParagraphData {
   index: number;
@@ -21,6 +39,16 @@ interface ParagraphData {
   result?: CheckResultType;
   sectionType?: 'chapter' | 'section' | 'subsection' | 'paragraph';
   sectionTitle?: string;
+}
+
+interface CopilotSession {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  thesis_name: string;
+  total_paragraphs: number;
+  checked_paragraphs: number;
+  paragraphs_data: ParagraphData[];
 }
 
 export function CopilotMode() {
@@ -34,10 +62,114 @@ export function CopilotMode() {
   const [sources, setSources] = useState<Source[]>([]);
   const [showStructure, setShowStructure] = useState(true);
   const abortRef = useRef(false);
+  
+  // Session management
+  const [sessions, setSessions] = useState<CopilotSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(true);
 
+  // Load sources and sessions on mount
   useEffect(() => {
     setSources(getSources());
+    loadSessions();
   }, []);
+
+  const loadSessions = async () => {
+    setLoadingSessions(true);
+    try {
+      const { data, error } = await supabase
+        .from('copilot_sessions')
+        .select('*')
+        .order('updated_at', { ascending: false });
+      
+      if (error) throw error;
+      
+      // Parse paragraphs_data from JSON
+      const parsedSessions = (data || []).map(s => ({
+        ...s,
+        paragraphs_data: Array.isArray(s.paragraphs_data) 
+          ? (s.paragraphs_data as unknown as ParagraphData[]) 
+          : []
+      }));
+      
+      setSessions(parsedSessions as CopilotSession[]);
+    } catch (error) {
+      console.error('Failed to load sessions:', error);
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  const saveSession = async (thesisName: string, paragraphsData: ParagraphData[]) => {
+    const checkedCount = paragraphsData.filter(p => p.checked).length;
+    
+    try {
+      if (currentSessionId) {
+        // Update existing session
+        const { error } = await supabase
+          .from('copilot_sessions')
+          .update({
+            paragraphs_data: paragraphsData as any,
+            checked_paragraphs: checkedCount,
+          })
+          .eq('id', currentSessionId);
+        
+        if (error) throw error;
+      } else {
+        // Create new session
+        const { data, error } = await supabase
+          .from('copilot_sessions')
+          .insert({
+            thesis_name: thesisName,
+            total_paragraphs: paragraphsData.length,
+            checked_paragraphs: checkedCount,
+            paragraphs_data: paragraphsData as any,
+          })
+          .select()
+          .single();
+        
+        if (error) throw error;
+        setCurrentSessionId(data.id);
+      }
+      
+      // Refresh sessions list
+      loadSessions();
+    } catch (error) {
+      console.error('Failed to save session:', error);
+    }
+  };
+
+  const loadSession = (session: CopilotSession) => {
+    setCurrentSessionId(session.id);
+    setParagraphs(session.paragraphs_data);
+    setFile({ name: session.thesis_name } as File);
+    setSelectedIndex(null);
+    toast({ title: "Session loaded", description: `Loaded "${session.thesis_name}"` });
+  };
+
+  const deleteSession = async (sessionId: string) => {
+    try {
+      const { error } = await supabase
+        .from('copilot_sessions')
+        .delete()
+        .eq('id', sessionId);
+      
+      if (error) throw error;
+      
+      if (currentSessionId === sessionId) {
+        setCurrentSessionId(null);
+        setFile(null);
+        setParagraphs([]);
+        setSelectedIndex(null);
+      }
+      
+      loadSessions();
+      toast({ title: "Session deleted" });
+    } catch (error) {
+      console.error('Failed to delete session:', error);
+      toast({ title: "Failed to delete session", variant: "destructive" });
+    }
+  };
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFile = e.target.files?.[0];
@@ -55,6 +187,7 @@ export function CopilotMode() {
     setFile(uploadedFile);
     setParagraphs([]);
     setSelectedIndex(null);
+    setCurrentSessionId(null);
 
     try {
       const text = await extractTextFromFile(uploadedFile);
@@ -72,13 +205,18 @@ export function CopilotMode() {
         return;
       }
 
-      setParagraphs(sections.map((section) => ({
+      const newParagraphs = sections.map((section) => ({
         index: section.index,
         text: section.content,
         checked: false,
         sectionType: section.type,
         sectionTitle: section.title,
-      })));
+      }));
+
+      setParagraphs(newParagraphs);
+      
+      // Save new session
+      await saveSession(uploadedFile.name, newParagraphs);
 
       toast({ title: "File loaded", description: `Found ${paragraphTexts.length} paragraphs` });
     } catch (error) {
@@ -127,9 +265,15 @@ export function CopilotMode() {
       const result: CheckResultType = data.result;
 
       // Update paragraph with result
-      setParagraphs(prev => prev.map((p, i) => 
+      const newParagraphs = paragraphs.map((p, i) => 
         i === index ? { ...p, checked: true, result } : p
-      ));
+      );
+      setParagraphs(newParagraphs);
+      
+      // Save session with updated paragraphs
+      if (file) {
+        await saveSession(file.name, newParagraphs);
+      }
 
       // Save to history
       createParagraphCheck({
@@ -229,6 +373,13 @@ export function CopilotMode() {
   const yellowCount = paragraphs.filter(p => p.result?.overall_color === 'yellow').length;
   const redCount = paragraphs.filter(p => p.result?.overall_color === 'red').length;
 
+  const startNewSession = () => {
+    setFile(null);
+    setParagraphs([]);
+    setSelectedIndex(null);
+    setCurrentSessionId(null);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header with thesis info */}
@@ -264,6 +415,70 @@ export function CopilotMode() {
           </div>
         )}
       </div>
+
+      {/* Session Selector - always visible */}
+      {sessions.length > 0 && (
+        <Card className="p-4">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <History className="h-5 w-5 text-muted-foreground" />
+              <span className="font-medium">Previous Sessions</span>
+            </div>
+            <Select
+              value={currentSessionId || ""}
+              onValueChange={(value) => {
+                const session = sessions.find(s => s.id === value);
+                if (session) loadSession(session);
+              }}
+            >
+              <SelectTrigger className="w-[300px]">
+                <SelectValue placeholder="Select a previous session..." />
+              </SelectTrigger>
+              <SelectContent>
+                {sessions.map(session => (
+                  <SelectItem key={session.id} value={session.id}>
+                    <div className="flex items-center justify-between gap-2 w-full">
+                      <span className="truncate">{session.thesis_name}</span>
+                      <Badge variant="secondary" className="ml-2">
+                        {session.checked_paragraphs}/{session.total_paragraphs}
+                      </Badge>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            
+            {currentSessionId && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Trash2 className="h-4 w-4 mr-1" />
+                    Delete
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete session?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will permanently delete this session and all its data.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => deleteSession(currentSessionId)}>
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+            
+            <Button variant="outline" size="sm" onClick={startNewSession}>
+              New Session
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* File Upload */}
       {!file && (
@@ -326,7 +541,7 @@ export function CopilotMode() {
                 <Button 
                   variant="outline" 
                   size="sm" 
-                  onClick={() => { setFile(null); setParagraphs([]); setSelectedIndex(null); }}
+                  onClick={startNewSession}
                 >
                   Change File
                 </Button>
@@ -457,48 +672,29 @@ export function CopilotMode() {
 
                 {/* Result or prompt to check */}
                 {selectedParagraph.checked && selectedParagraph.result ? (
-                  <CheckResult
-                    result={selectedParagraph.result}
+                  <CheckResult 
+                    result={selectedParagraph.result} 
                     paragraphText={selectedParagraph.text}
                     sources={sources}
                   />
                 ) : selectedParagraph.sectionType === 'paragraph' ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-muted-foreground border-2 border-dashed rounded-lg">
-                    <Sparkles className="h-12 w-12 mb-4 opacity-50" />
-                    <p>Click "Check" to analyze this paragraph</p>
-                    <Button 
-                      className="mt-4" 
-                      onClick={() => checkParagraph(selectedIndex!)}
-                      disabled={isChecking || isBatchChecking || sources.length === 0}
-                    >
-                      {isChecking ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : (
-                        <Sparkles className="h-4 w-4 mr-2" />
-                      )}
-                      Check This Paragraph
-                    </Button>
-                    {sources.length === 0 && (
-                      <p className="text-xs text-destructive mt-2">Add sources to your library first</p>
-                    )}
-                  </div>
+                  <Card className="p-8 text-center">
+                    <Sparkles className="h-8 w-8 mx-auto text-primary mb-2" />
+                    <p className="text-muted-foreground">Click "Check" to analyze this paragraph</p>
+                  </Card>
                 ) : (
-                  <div className="flex flex-col items-center justify-center py-12 text-muted-foreground border-2 border-dashed rounded-lg">
-                    <FolderOpen className="h-12 w-12 mb-4 opacity-50" />
-                    <p className="text-center">
-                      This is a section header.<br />
-                      Select a paragraph to check citations.
-                    </p>
-                  </div>
+                  <Card className="p-8 text-center">
+                    <p className="text-muted-foreground">Section headers are not checked</p>
+                  </Card>
                 )}
               </>
             )}
 
             {!selectedParagraph && (
-              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground border-2 border-dashed rounded-lg">
-                <BookOpen className="h-12 w-12 mb-4 opacity-50" />
-                <p>Select a paragraph to view details</p>
-              </div>
+              <Card className="p-12 text-center">
+                <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-muted-foreground">Select a paragraph to view details</p>
+              </Card>
             )}
           </div>
         </div>
