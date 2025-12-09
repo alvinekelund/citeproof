@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { extractTextFromFile, splitIntoParagraphs } from "@/lib/pdf-parser";
@@ -26,7 +27,10 @@ export function CopilotMode() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [isChecking, setIsChecking] = useState(false);
+  const [isBatchChecking, setIsBatchChecking] = useState(false);
+  const [batchProgress, setBatchProgress] = useState(0);
   const [sources, setSources] = useState<Source[]>([]);
+  const abortRef = useRef(false);
 
   useEffect(() => {
     setSources(getSources());
@@ -73,20 +77,20 @@ export function CopilotMode() {
       toast({ title: "File loaded", description: `Found ${paragraphTexts.length} paragraphs` });
     } catch (error) {
       console.error('Parse error:', error);
-      toast({ title: "Failed to parse file", variant: "destructive" });
+      toast({ title: "Failed to parse file", description: String(error), variant: "destructive" });
     } finally {
       setIsLoading(false);
       e.target.value = '';
     }
   }, []);
 
-  const checkParagraph = async (index: number) => {
+  const checkParagraph = async (index: number): Promise<boolean> => {
     const paragraph = paragraphs[index];
-    if (!paragraph) return;
+    if (!paragraph) return false;
 
     if (sources.length === 0) {
       toast({ title: "No sources available", description: "Add sources to your library first.", variant: "destructive" });
-      return;
+      return false;
     }
 
     setIsChecking(true);
@@ -111,7 +115,7 @@ export function CopilotMode() {
 
       if (data.error) {
         toast({ title: "AI Check Failed", description: data.error, variant: "destructive" });
-        return;
+        return false;
       }
 
       const result: CheckResultType = data.result;
@@ -128,13 +132,59 @@ export function CopilotMode() {
         overall_color: result.overall_color,
       });
 
-      toast({ title: "Analysis complete" });
+      return true;
     } catch (error: any) {
       console.error('Check error:', error);
       toast({ title: "Failed to run check", description: error.message, variant: "destructive" });
+      return false;
     } finally {
       setIsChecking(false);
     }
+  };
+
+  const startBatchCheck = async () => {
+    if (sources.length === 0) {
+      toast({ title: "No sources available", description: "Add sources to your library first.", variant: "destructive" });
+      return;
+    }
+
+    const uncheckedParagraphs = paragraphs.filter(p => !p.checked);
+    if (uncheckedParagraphs.length === 0) {
+      toast({ title: "All paragraphs already checked" });
+      return;
+    }
+
+    setIsBatchChecking(true);
+    abortRef.current = false;
+    setBatchProgress(0);
+
+    const totalToCheck = uncheckedParagraphs.length;
+    let completed = 0;
+
+    for (const paragraph of paragraphs) {
+      if (abortRef.current) {
+        toast({ title: "Batch check stopped" });
+        break;
+      }
+
+      if (!paragraph.checked) {
+        await checkParagraph(paragraph.index);
+        completed++;
+        setBatchProgress((completed / totalToCheck) * 100);
+        
+        // Small delay between requests to avoid rate limiting
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+
+    setIsBatchChecking(false);
+    if (!abortRef.current) {
+      toast({ title: "Batch check complete", description: `Checked ${completed} paragraphs` });
+    }
+  };
+
+  const stopBatchCheck = () => {
+    abortRef.current = true;
   };
 
   const selectedParagraph = selectedIndex !== null ? paragraphs[selectedIndex] : null;
@@ -156,6 +206,11 @@ export function CopilotMode() {
       default: return '';
     }
   };
+
+  const checkedCount = paragraphs.filter(p => p.checked).length;
+  const greenCount = paragraphs.filter(p => p.result?.overall_color === 'green').length;
+  const yellowCount = paragraphs.filter(p => p.result?.overall_color === 'yellow').length;
+  const redCount = paragraphs.filter(p => p.result?.overall_color === 'red').length;
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -201,22 +256,61 @@ export function CopilotMode() {
         <div className="grid gap-6 lg:grid-cols-2">
           {/* Left: Paragraph List */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <FileText className="h-4 w-4" />
-                <span className="font-medium">{file.name}</span>
-                <Badge variant="secondary">{paragraphs.length} paragraphs</Badge>
+                <span className="font-medium truncate max-w-[150px]">{file.name}</span>
+                <Badge variant="secondary">{paragraphs.length} ¶</Badge>
               </div>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={() => { setFile(null); setParagraphs([]); setSelectedIndex(null); }}
-              >
-                Change File
-              </Button>
+              <div className="flex gap-2">
+                {!isBatchChecking ? (
+                  <Button 
+                    variant="default" 
+                    size="sm" 
+                    onClick={startBatchCheck}
+                    disabled={checkedCount === paragraphs.length || sources.length === 0}
+                  >
+                    <Play className="h-4 w-4 mr-1" />
+                    Check All ({paragraphs.length - checkedCount})
+                  </Button>
+                ) : (
+                  <Button 
+                    variant="destructive" 
+                    size="sm" 
+                    onClick={stopBatchCheck}
+                  >
+                    <Square className="h-4 w-4 mr-1" />
+                    Stop
+                  </Button>
+                )}
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => { setFile(null); setParagraphs([]); setSelectedIndex(null); }}
+                >
+                  Change File
+                </Button>
+              </div>
             </div>
 
-            <ScrollArea className="h-[600px] border rounded-lg">
+            {/* Progress and Stats */}
+            {checkedCount > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span>{checkedCount}/{paragraphs.length} checked</span>
+                  <div className="flex gap-3">
+                    {greenCount > 0 && <span className="text-verdict-green">{greenCount} ✓</span>}
+                    {yellowCount > 0 && <span className="text-verdict-yellow">{yellowCount} ⚠</span>}
+                    {redCount > 0 && <span className="text-verdict-red">{redCount} ✗</span>}
+                  </div>
+                </div>
+                {isBatchChecking && (
+                  <Progress value={batchProgress} className="h-2" />
+                )}
+              </div>
+            )}
+
+            <ScrollArea className="h-[550px] border rounded-lg">
               <div className="p-2 space-y-2">
                 {paragraphs.map((p, i) => (
                   <Card
@@ -236,22 +330,21 @@ export function CopilotMode() {
                             <VerdictBadge color={p.result.overall_color} size="sm" />
                           )}
                         </div>
-                        <p className="text-sm line-clamp-3">{p.text}</p>
+                        <p className="text-sm line-clamp-2">{p.text}</p>
                       </div>
                       <Button
                         variant={p.checked ? "outline" : "default"}
                         size="sm"
                         onClick={(e) => { e.stopPropagation(); checkParagraph(i); }}
-                        disabled={isChecking && selectedIndex === i}
+                        disabled={(isChecking && selectedIndex === i) || isBatchChecking}
                         className="shrink-0"
                       >
                         {isChecking && selectedIndex === i ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : p.checked ? (
+                          <CheckCircle2 className="h-4 w-4" />
                         ) : (
-                          <>
-                            <Sparkles className="h-4 w-4 mr-1" />
-                            {p.checked ? 'Recheck' : 'Check'}
-                          </>
+                          <Sparkles className="h-4 w-4" />
                         )}
                       </Button>
                     </div>
@@ -290,7 +383,7 @@ export function CopilotMode() {
                 </div>
 
                 {/* Full paragraph text */}
-                <Card className="p-4 bg-secondary/30">
+                <Card className="p-4 bg-secondary/30 max-h-[200px] overflow-y-auto">
                   <p className="text-sm whitespace-pre-wrap">{selectedParagraph.text}</p>
                 </Card>
 
@@ -308,7 +401,7 @@ export function CopilotMode() {
                     <Button 
                       className="mt-4" 
                       onClick={() => checkParagraph(selectedIndex!)}
-                      disabled={isChecking || sources.length === 0}
+                      disabled={isChecking || isBatchChecking || sources.length === 0}
                     >
                       {isChecking ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
