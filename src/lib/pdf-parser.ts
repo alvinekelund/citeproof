@@ -143,6 +143,7 @@ export interface ThesisSection {
   title?: string;
   content: string;
   index: number;
+  shouldCheck: boolean; // Whether this section needs AI verification
 }
 
 // Maximum chunk size in characters (roughly 300-400 words)
@@ -277,11 +278,70 @@ export function splitIntoParagraphs(text: string): string[] {
   return result;
 }
 
+// Sections that typically don't need citation verification
+const NON_CHECKABLE_SECTIONS = [
+  'abstract',
+  'acknowledgements',
+  'acknowledgments', 
+  'table of contents',
+  'list of figures',
+  'list of tables',
+  'list of abbreviations',
+  'abbreviations',
+  'glossary',
+  'references',
+  'bibliography',
+  'appendix',
+  'appendices',
+  'declaration',
+  'dedication',
+  'preface',
+  'contents',
+];
+
+// Check if text is within a non-checkable section
+function isNonCheckableContent(text: string): boolean {
+  const lowerText = text.toLowerCase().trim();
+  
+  // Section headers themselves
+  if (NON_CHECKABLE_SECTIONS.some(s => lowerText.startsWith(s) && text.length < 100)) {
+    return true;
+  }
+  
+  // References/bibliography entries (typically start with author names or numbers)
+  if (/^\[?\d+\]?\s*[A-Z]/.test(text) && text.includes('.') && (
+    text.toLowerCase().includes('doi') ||
+    text.toLowerCase().includes('http') ||
+    text.toLowerCase().includes('journal') ||
+    text.toLowerCase().includes('vol.') ||
+    text.toLowerCase().includes('pp.')
+  )) {
+    return true;
+  }
+  
+  return false;
+}
+
 export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
   const sections: ThesisSection[] = [];
+  let currentNonCheckableSection = false;
   
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i];
+    const lowerP = p.toLowerCase().trim();
+    
+    // Check if entering a non-checkable section
+    const isNonCheckableHeader = NON_CHECKABLE_SECTIONS.some(s => lowerP.startsWith(s) && p.length < 100);
+    
+    // Check if entering a checkable section (resets non-checkable mode)
+    const checkableSections = ['introduction', 'literature review', 'methodology', 'methods', 'results', 'discussion', 'conclusion', 'findings', 'analysis'];
+    const isCheckableHeader = checkableSections.some(s => lowerP.startsWith(s) && p.length < 100);
+    
+    if (isNonCheckableHeader) {
+      currentNonCheckableSection = true;
+    } else if (isCheckableHeader || /^(chapter\s*\d+)/i.test(p)) {
+      currentNonCheckableSection = false;
+    }
     
     // Detect chapter
     const chapterMatch = p.match(/^(chapter\s*\d+[:\.\s]*)/i);
@@ -291,6 +351,7 @@ export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
         title: p.substring(0, 100),
         content: p,
         index: i,
+        shouldCheck: false, // Headers don't need checking
       });
       continue;
     }
@@ -303,13 +364,13 @@ export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
         title: p,
         content: p,
         index: i,
+        shouldCheck: false, // Headers don't need checking
       });
       continue;
     }
     
     // Detect common thesis sections
     const commonSections = ['abstract', 'introduction', 'literature review', 'methodology', 'methods', 'results', 'discussion', 'conclusion', 'references', 'bibliography', 'acknowledgements', 'appendix'];
-    const lowerP = p.toLowerCase();
     const isCommonSection = commonSections.some(s => lowerP.startsWith(s) && p.length < 100);
     
     if (isCommonSection) {
@@ -318,15 +379,19 @@ export function identifyThesisSections(paragraphs: string[]): ThesisSection[] {
         title: p,
         content: p,
         index: i,
+        shouldCheck: false, // Headers don't need checking
       });
       continue;
     }
     
-    // Regular paragraph
+    // Regular paragraph - check if it should be verified
+    const shouldCheck = !currentNonCheckableSection && !isNonCheckableContent(p);
+    
     sections.push({
       type: 'paragraph',
       content: p,
       index: i,
+      shouldCheck,
     });
   }
   

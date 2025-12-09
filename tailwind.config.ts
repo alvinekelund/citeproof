@@ -68,6 +68,8 @@ export default {
           "yellow-bg": "hsl(var(--verdict-yellow-bg))",
           red: "hsl(var(--verdict-red))",
           "red-bg": "hsl(var(--verdict-red-bg))",
+          blue: "hsl(var(--verdict-blue))",
+          "blue-bg": "hsl(var(--verdict-blue-bg))",
         },
       },
       borderRadius: {

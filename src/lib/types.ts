@@ -68,7 +68,7 @@ export interface MissingCitation {
 
 export interface CheckResult {
   summary: string;
-  overall_color: 'green' | 'yellow' | 'red';
+  overall_color: 'green' | 'yellow' | 'red' | 'blue';
   claims: Claim[];
   missing_or_ambiguous_citations: MissingCitation[];
 }
@@ -78,7 +78,7 @@ export interface ParagraphCheck {
   thesis_paragraph_id?: string;
   raw_paragraph_text: string;
   result_json: CheckResult;
-  overall_color: 'green' | 'yellow' | 'red';
+  overall_color: 'green' | 'yellow' | 'red' | 'blue';
   created_at: string;
   thesis_paragraph_index?: number;
 }
