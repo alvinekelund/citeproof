@@ -1,4 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import pdf from 'https://esm.sh/pdf-parse@1.1.1/lib/pdf-parse.js';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,7 +13,7 @@ serve(async (req) => {
   }
 
   try {
-    const { filename, shorthand_id, citation_style = 'apa7' } = await req.json();
+    const { filename, file_path, shorthand_id, citation_style = 'apa7' } = await req.json();
 
     if (!filename) {
       return new Response(
@@ -20,22 +22,57 @@ serve(async (req) => {
       );
     }
 
-    console.log('Processing filename:', filename, 'style:', citation_style);
+    console.log('Processing file:', filename, 'path:', file_path, 'style:', citation_style);
 
-    // First try local extraction for common patterns
-    const localExtraction = extractFromFilename(filename, citation_style);
-    console.log('Local extraction result:', localExtraction);
+    // Initialize Supabase client
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    let extractedText = '';
+    
+    // Download and extract text from the PDF if file_path is provided
+    if (file_path) {
+      try {
+        console.log('Downloading file from storage...');
+        const { data: fileData, error: downloadError } = await supabase.storage
+          .from('thesis-files')
+          .download(file_path);
+
+        if (!downloadError && fileData) {
+          const lowerPath = file_path.toLowerCase();
+          
+          if (lowerPath.endsWith('.pdf')) {
+            const arrayBuffer = await fileData.arrayBuffer();
+            const pdfData = await pdf(arrayBuffer);
+            // Get first ~8000 chars for analysis (title pages, abstract, references usually at start/end)
+            const fullText = pdfData.text || '';
+            const firstPart = fullText.slice(0, 4000);
+            const lastPart = fullText.slice(-4000);
+            extractedText = firstPart + '\n...\n' + lastPart;
+            console.log('Extracted', fullText.length, 'chars from PDF');
+          } else if (lowerPath.endsWith('.txt')) {
+            extractedText = (await fileData.text()).slice(0, 8000);
+          }
+        } else {
+          console.error('Download error:', downloadError);
+        }
+      } catch (err) {
+        console.error('File extraction error:', err);
+      }
+    }
 
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     if (!LOVABLE_API_KEY) {
-      // Return local extraction if no API key
+      // Return basic extraction if no API key
+      const localExtraction = extractFromFilename(filename, citation_style);
       return new Response(
         JSON.stringify(localExtraction),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Use AI for better extraction
+    // Use AI for better extraction with actual document content
     const styleExamples: Record<string, string> = {
       'apa7': '(Smith et al., 2023) or (Smith & Jones, 2023) or (Smith, 2023)',
       'mla9': '(Smith et al. 45) - author and page number, no year in parentheses',
@@ -45,32 +82,52 @@ serve(async (req) => {
       'vancouver': '(1) - numeric citations in parentheses',
     };
 
-    const prompt = `Analyze this academic PDF filename and extract bibliographic metadata.
+    const prompt = extractedText 
+      ? `Analyze this academic document and extract bibliographic metadata.
 
 Filename: "${filename}"
-
 Citation Style: ${citation_style.toUpperCase()}
 Example format: ${styleExamples[citation_style] || styleExamples['apa7']}
 
-Common filename patterns to recognize:
-- Conference papers: "NIPS-2017-attention-is-all-you-need-Paper.pdf" → Vaswani et al., 2017, "Attention Is All You Need"
-- ArXiv papers: "1706.03762v7.pdf" → Look for arXiv ID pattern
-- Publisher IDs: "978-3-031-72781-8.pdf" → ISBN, may need generic title
-- HBS/working papers: "24-013_xxx.pdf" → Working paper format
+DOCUMENT CONTENT (beginning and end):
+---
+${extractedText}
+---
 
-Extract:
-1. Authors - convert "attention-is-all-you-need" to known paper authorship if recognizable
-2. Year - from filename or context (NIPS-2017 means 2017)
-3. Title - expand abbreviations and format properly
+From the document content, extract:
+1. Title - look for the main title at the start of the document
+2. Authors - look for author names, usually after the title or in headers
+3. Year - look for publication year, copyright notices, or dates
+4. For known papers (like "Attention Is All You Need"), use correct attribution
 
-For well-known papers like "Attention Is All You Need", use the actual author names (Vaswani et al.).
+Generate an in-text citation label according to the ${citation_style.toUpperCase()} style.
 
 Return JSON:
 {
-  "authors": "Surname, A." or "Surname, A., et al.",
-  "year": 2017,
+  "authors": "Surname, A., et al." or just "Surname, A." for single author,
+  "year": 2024,
+  "title": "The Full Title of the Paper",
+  "suggested_label": "(Author et al., 2024)"
+}
+
+Return ONLY valid JSON, no explanation. Use null for fields you cannot determine.`
+      : `Analyze this academic PDF filename and try to extract bibliographic metadata.
+
+Filename: "${filename}"
+Citation Style: ${citation_style.toUpperCase()}
+Example format: ${styleExamples[citation_style] || styleExamples['apa7']}
+
+Common patterns:
+- "NIPS-2017-attention-is-all-you-need-Paper.pdf" → Vaswani et al., 2017
+- "1706.03762.pdf" → arXiv paper
+- "author2023title.pdf" → Author (2023)
+
+Return JSON:
+{
+  "authors": "Surname, A., et al.",
+  "year": 2024,
   "title": "The Full Title",
-  "suggested_label": "(Vaswani et al., 2017)"
+  "suggested_label": "(Author et al., 2024)"
 }
 
 Return ONLY valid JSON, no explanation. Use null for fields you cannot determine.`;
@@ -91,6 +148,7 @@ Return ONLY valid JSON, no explanation. Use null for fields you cannot determine
 
     if (!response.ok) {
       console.error('AI gateway error:', response.status);
+      const localExtraction = extractFromFilename(filename, citation_style);
       return new Response(
         JSON.stringify(localExtraction),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -100,7 +158,7 @@ Return ONLY valid JSON, no explanation. Use null for fields you cannot determine
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content?.trim() || '';
 
-    console.log('AI response:', content);
+    console.log('AI response:', content.slice(0, 200));
 
     let result;
     try {
@@ -114,7 +172,7 @@ Return ONLY valid JSON, no explanation. Use null for fields you cannot determine
       if (result.suggested_label === null) delete result.suggested_label;
     } catch (parseError) {
       console.error('Failed to parse AI response:', content);
-      result = localExtraction;
+      result = extractFromFilename(filename, citation_style);
     }
 
     console.log('Final result:', result);
@@ -133,116 +191,37 @@ Return ONLY valid JSON, no explanation. Use null for fields you cannot determine
   }
 });
 
-// Enhanced fallback extraction from filename
+// Fallback extraction from filename
 function extractFromFilename(filename: string, citationStyle: string): {
   authors?: string;
   year?: number;
   title?: string;
   suggested_label?: string;
 } {
-  const cleanName = filename.replace(/\.pdf$/i, '');
+  const cleanName = filename.replace(/\.(pdf|docx|txt)$/i, '');
   
-  // Known paper patterns
-  const knownPapers: Record<string, { authors: string; year: number; title: string }> = {
-    'attention-is-all-you-need': { authors: 'Vaswani, A., et al.', year: 2017, title: 'Attention Is All You Need' },
-    '1706.03762': { authors: 'Vaswani, A., et al.', year: 2017, title: 'Attention Is All You Need' },
-  };
-
-  // Check for known papers
-  const lowerName = cleanName.toLowerCase();
-  for (const [pattern, data] of Object.entries(knownPapers)) {
-    if (lowerName.includes(pattern)) {
-      const label = formatLabel(data.authors.split(',')[0].trim(), data.year, citationStyle, true);
-      return { ...data, suggested_label: label };
-    }
-  }
-
-  // Extract year from various patterns
+  // Extract year
   let year: number | undefined;
-  const yearPatterns = [
-    /\b(19|20)\d{2}\b/,  // Plain year
-    /-(\d{4})-/,         // Year between dashes
-    /_(\d{4})_/,         // Year between underscores
-  ];
-  
-  for (const pattern of yearPatterns) {
-    const match = cleanName.match(pattern);
-    if (match) {
-      const potentialYear = parseInt(match[1] || match[0]);
-      if (potentialYear >= 1900 && potentialYear <= 2030) {
-        year = potentialYear;
-        break;
-      }
-    }
+  const yearMatch = cleanName.match(/\b(19|20)\d{2}\b/);
+  if (yearMatch) {
+    year = parseInt(yearMatch[0]);
   }
 
-  // Extract title from hyphenated or underscored names
+  // Extract title from filename
   let title: string | undefined;
   const titlePart = cleanName
-    .replace(/^[A-Z]+-\d{4}-/i, '')  // Remove "NIPS-2017-" prefix
-    .replace(/-Paper$/i, '')         // Remove "-Paper" suffix
-    .replace(/\b\d{4}\b/g, '')       // Remove years
-    .replace(/[-_]+/g, ' ')          // Replace separators with spaces
-    .replace(/\s+/g, ' ')            // Normalize spaces
+    .replace(/^[A-Z]+-\d{4}-/i, '')
+    .replace(/-Paper$/i, '')
+    .replace(/\b\d{4}\b/g, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
   
   if (titlePart.length > 5) {
-    // Title case the extracted title
     title = titlePart.split(' ')
       .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join(' ');
   }
-
-  // Try to extract author from beginning of filename
-  let authors: string | undefined;
-  let authorSurname: string | undefined;
   
-  const authorPatterns = [
-    /^([A-Z][a-z]+)(?:EtAl|_et_al|And)/i,
-    /^([A-Z][a-z]+)(?:\d{4})/i,
-    /^([A-Z][a-z]+)[-_]/,
-  ];
-  
-  for (const pattern of authorPatterns) {
-    const match = cleanName.match(pattern);
-    if (match && match[1].length > 2) {
-      authorSurname = match[1];
-      authors = authorSurname;
-      break;
-    }
-  }
-
-  const hasEtAl = /etal|et\s*al/i.test(cleanName);
-
-  // Generate label
-  let suggested_label: string | undefined;
-  if (authorSurname && year) {
-    suggested_label = formatLabel(authorSurname, year, citationStyle, hasEtAl);
-  }
-  
-  return {
-    authors,
-    year,
-    title,
-    suggested_label,
-  };
-}
-
-function formatLabel(author: string, year: number, style: string, hasEtAl: boolean): string {
-  const etAl = hasEtAl ? ' et al.' : '';
-  
-  switch (style) {
-    case 'apa7':
-    case 'harvard':
-      return `(${author}${etAl}, ${year})`;
-    case 'mla9':
-      return `(${author}${etAl})`;
-    case 'chicago':
-      return `(${author}${etAl} ${year})`;
-    case 'ieee':
-    case 'vancouver':
-      return ''; // Numeric styles
-    default:
-      return `(${author}${etAl}, ${year})`;
-  }
+  return { year, title };
 }
