@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import pdf from 'https://esm.sh/pdf-parse@1.1.1/lib/pdf-parse.js';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -28,7 +29,7 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Download the PDF file
+    // Download the file
     const { data: fileData, error: downloadError } = await supabase.storage
       .from('thesis-files')
       .download(file_path);
@@ -41,18 +42,28 @@ serve(async (req) => {
       );
     }
 
-    // Convert to array buffer
-    const arrayBuffer = await fileData.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
+    // Determine file type and extract text
+    const lowerPath = file_path.toLowerCase();
+    let text = '';
 
-    // Simple text extraction - lightweight approach to avoid compute limits
-    const text = extractPdfTextSimple(bytes);
+    if (lowerPath.endsWith('.pdf')) {
+      text = await extractPdfText(fileData);
+    } else if (lowerPath.endsWith('.docx')) {
+      text = await extractDocxText(fileData);
+    } else if (lowerPath.endsWith('.txt')) {
+      text = await extractTxtText(fileData);
+    } else {
+      return new Response(
+        JSON.stringify({ error: 'Unsupported file type. Please upload PDF, DOCX, or TXT.' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     if (!text || text.length < 100) {
       return new Response(
         JSON.stringify({ 
-          error: 'Could not extract text from PDF',
-          message: 'This PDF may be image-based or use advanced encoding. Please manually enter paragraph text.',
+          error: 'Could not extract text from file',
+          message: 'The file may be image-based or corrupted. Please try a different file or manually enter paragraph text.',
         }),
         { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -61,7 +72,7 @@ serve(async (req) => {
     // Split into paragraphs
     const paragraphs = splitIntoParagraphs(text);
 
-    console.log(`Extracted ${paragraphs.length} paragraphs`);
+    console.log(`Extracted ${paragraphs.length} paragraphs from ${text.length} characters`);
 
     return new Response(
       JSON.stringify({ 
@@ -80,106 +91,88 @@ serve(async (req) => {
   }
 });
 
-// Lightweight PDF text extraction - no decompression to avoid compute limits
-function extractPdfTextSimple(bytes: Uint8Array): string {
-  const decoder = new TextDecoder('latin1');
-  const pdfContent = decoder.decode(bytes);
-  
-  const extractedTexts: string[] = [];
-  
-  // Method 1: Extract from BT...ET text blocks (uncompressed PDFs)
-  const textObjectRegex = /BT\s*([\s\S]*?)\s*ET/g;
-  let match;
-  
-  while ((match = textObjectRegex.exec(pdfContent)) !== null) {
-    const block = match[1];
+async function extractPdfText(fileData: Blob): Promise<string> {
+  try {
+    const arrayBuffer = await fileData.arrayBuffer();
     
-    // Extract from Tj operator
-    const tjRegex = /\(([^)]+)\)\s*Tj/g;
-    let tjMatch;
-    while ((tjMatch = tjRegex.exec(block)) !== null) {
-      const decoded = decodePdfString(tjMatch[1]);
-      if (decoded.length > 1) {
-        extractedTexts.push(decoded);
-      }
-    }
-    
-    // Extract from TJ operator (arrays)
-    const tjArrayRegex = /\[((?:[^[\]]*|\[[^\]]*\])*)\]\s*TJ/gi;
-    let tjArrayMatch;
-    while ((tjArrayMatch = tjArrayRegex.exec(block)) !== null) {
-      const arrayContent = tjArrayMatch[1];
-      const stringParts = arrayContent.match(/\(([^)]*)\)/g);
-      if (stringParts) {
-        const combined = stringParts
-          .map(p => decodePdfString(p.slice(1, -1)))
-          .join('');
-        if (combined.length > 1) {
-          extractedTexts.push(combined);
-        }
-      }
-    }
+    const pdfData = await pdf(arrayBuffer);
+    return pdfData.text || '';
+  } catch (error) {
+    console.error('PDF parse error:', error);
+    throw new Error('Failed to parse PDF');
   }
-  
-  // Method 2: Look for readable text sequences in the PDF
-  if (extractedTexts.length < 10) {
-    // Match longer sequences of readable ASCII
-    const asciiRegex = /[\x20-\x7E]{40,}/g;
-    let asciiMatch;
-    while ((asciiMatch = asciiRegex.exec(pdfContent)) !== null) {
-      const text = asciiMatch[0];
-      // Filter out PDF commands and binary-looking content
-      if (!isPdfCommand(text) && hasRealWords(text) && !extractedTexts.includes(text)) {
-        extractedTexts.push(text);
-      }
-    }
-  }
-  
-  // Join and clean up
-  let result = extractedTexts.join(' ');
-  
-  result = result
-    .replace(/\s+/g, ' ')
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/\. ([A-Z])/g, '.\n\n$1')
-    .trim();
-  
-  return result;
 }
 
-function decodePdfString(str: string): string {
-  return str
-    .replace(/\\n/g, '\n')
-    .replace(/\\r/g, '\r')
-    .replace(/\\t/g, '\t')
-    .replace(/\\\\/g, '\\')
-    .replace(/\\([()])/g, '$1')
-    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+async function extractDocxText(fileData: Blob): Promise<string> {
+  try {
+    const arrayBuffer = await fileData.arrayBuffer();
+    const buffer = new Uint8Array(arrayBuffer);
+    
+    // DOCX is a ZIP file containing XML
+    // We'll use a simple approach to extract text from the main document
+    const { decompress } = await import('https://deno.land/x/zip@v1.2.5/decompress.ts');
+    
+    // Convert to temp file for decompression
+    const tempDir = await Deno.makeTempDir();
+    const tempFile = `${tempDir}/doc.docx`;
+    await Deno.writeFile(tempFile, buffer);
+    
+    // Decompress
+    await decompress(tempFile, tempDir);
+    
+    // Read the main document XML
+    const documentPath = `${tempDir}/word/document.xml`;
+    const xmlContent = await Deno.readTextFile(documentPath);
+    
+    // Extract text from XML (simple regex approach)
+    const textContent = xmlContent
+      .replace(/<w:t[^>]*>([^<]*)<\/w:t>/g, '$1 ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'");
+    
+    // Cleanup
+    try {
+      await Deno.remove(tempDir, { recursive: true });
+    } catch { /* ignore cleanup errors */ }
+    
+    return textContent;
+  } catch (error) {
+    console.error('DOCX parse error:', error);
+    throw new Error('Failed to parse DOCX');
+  }
 }
 
-function isPdfCommand(text: string): boolean {
-  const commandPatterns = [
-    /^\/[A-Z]/i,
-    /^\d+\s+\d+\s+obj/,
-    /^stream$/,
-    /^endstream$/,
-    /^endobj$/,
-    /<<.*>>/,
-    /^xref$/,
-    /^trailer$/,
-    /^startxref$/,
-    /^%%EOF/,
-    /\/Type\//,
-    /\/Font\//,
-    /\/BaseFont\//,
-    /\/Encoding\//,
-  ];
+async function extractTxtText(fileData: Blob): Promise<string> {
+  try {
+    return await fileData.text();
+  } catch (error) {
+    console.error('TXT read error:', error);
+    throw new Error('Failed to read text file');
+  }
+}
+
+function splitIntoParagraphs(text: string): string[] {
+  // Clean up the text
+  const cleaned = text
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\t/g, ' ')
+    .replace(/ +/g, ' ');
   
-  return commandPatterns.some(p => p.test(text));
+  // Split by double newlines or single newlines followed by indent/capital
+  const rawParagraphs = cleaned.split(/\n\s*\n/);
+  
+  return rawParagraphs
+    .map(p => p.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(p => p.length > 50 && hasRealWords(p));
 }
 
 function hasRealWords(text: string): boolean {
-  const commonWords = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'this', 'that', 'with', 'from', 'they', 'will', 'what', 'when', 'there', 'their', 'which', 'about'];
+  const commonWords = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'this', 'that', 'with', 'from', 'they', 'will', 'what', 'when', 'there', 'their', 'which', 'about'];
   const lowerText = text.toLowerCase();
   
   let wordCount = 0;
@@ -189,12 +182,5 @@ function hasRealWords(text: string): boolean {
     }
   }
   
-  return wordCount >= 3;
-}
-
-function splitIntoParagraphs(text: string): string[] {
-  return text
-    .split(/\n\n+/)
-    .map(p => p.replace(/\s+/g, ' ').trim())
-    .filter(p => p.length > 50 && hasRealWords(p));
+  return wordCount >= 2;
 }
