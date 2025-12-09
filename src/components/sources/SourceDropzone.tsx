@@ -67,13 +67,17 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
         // Try to extract metadata from the file
         let extractedAuthor = '';
         let extractedYear: number | null = null;
+        let extractedText = '';
         
         try {
-          setUploadProgress(prev => [...prev, `Extracting metadata from ${file.name}...`]);
+          setUploadProgress(prev => [...prev, `Extracting text from ${file.name}...`]);
           
           const text = await extractTextFromFile(file);
+          extractedText = text || '';
           
           if (text && text.length > 50) {
+            setUploadProgress(prev => [...prev, `Extracting metadata from ${file.name}...`]);
+            
             const metadata = await extractMetadataFromText(
               text,
               file.name,
@@ -81,7 +85,7 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
             );
             
             if (metadata && Object.keys(metadata).length > 0) {
-              const updates: any = {};
+              const updates: any = { extracted_text: extractedText };
               if (metadata.suggested_label) updates.in_text_label = metadata.suggested_label;
               if (metadata.authors) {
                 updates.authors = metadata.authors;
@@ -95,19 +99,21 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
               }
               if (metadata.title) updates.title = metadata.title;
               
-              if (Object.keys(updates).length > 0) {
-                updateSource(source.id, updates);
-                setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded with metadata`]);
-              } else {
-                setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded`]);
-              }
+              updateSource(source.id, updates);
+              setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded with metadata (${Math.round(extractedText.length / 1000)}k chars)`]);
             } else {
-              setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded`]);
+              updateSource(source.id, { extracted_text: extractedText });
+              setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded (${Math.round(extractedText.length / 1000)}k chars)`]);
             }
           } else {
+            updateSource(source.id, { extracted_text: extractedText });
             setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded`]);
           }
         } catch {
+          // Still save what we have
+          if (extractedText) {
+            updateSource(source.id, { extracted_text: extractedText });
+          }
           setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded`]);
         }
 

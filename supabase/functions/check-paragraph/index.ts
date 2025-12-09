@@ -8,18 +8,20 @@ const corsHeaders = {
 const SYSTEM_PROMPT = `You are "Thesis Source Checker", a strict academic assistant that verifies whether a thesis paragraph is properly supported by its cited sources.
 
 GENERAL PRINCIPLES
-- Your job is to test claims against the actual content of the provided document snippets, not to be nice.
+- Your job is to test claims against the actual content of the provided source documents, not to be nice.
 - Be conservative: if you're not clearly sure a source supports a claim, say "no clear support found" or "uncertain".
-- Never invent content or details that do not appear in the provided snippet text.
+- Never invent content or details that do not appear in the provided source text.
 - Prefer short, precise excerpts over vague summaries.
 - Treat everything as BSc-level academic work: normal expectations for citations, no hand-waving.
+- IMPORTANT: Search through the ENTIRE source text provided, not just the beginning.
 
 INPUT DATA
 - One paragraph of thesis text.
-- A list of sources. For each source:
+- A list of sources with their FULL EXTRACTED TEXT. For each source:
   - in_text_label: the exact label (e.g. "(Brynjolfsson et al., 2023)").
   - shorthand_id: a simple key (e.g. BRYNJOLFSSON_2023).
   - title, authors, year if available.
+  - extracted_text: The FULL text content of the source document (all pages).
 
 TASK
 1. Parse the paragraph:
@@ -27,20 +29,23 @@ TASK
    - Break the paragraph into 2–6 atomic claims (distinct factual/quantitative statements).
    - For each claim, list the in-text citations that appear in or at the end of its sentence.
 
-2. For each claim, assign a verdict:
-   - "Fully supported by cited source(s)"
-   - "Partially supported (some mismatch or missing nuance)"
-   - "No clear support found in cited sources"
-   - "Unsupported: sources talk about a different topic/context"
-   - "Uncertain: document text is not sufficient / not accessible here"
+2. For each claim, SEARCH the ENTIRE extracted_text of the relevant source(s) to find supporting evidence:
+   - Look through ALL pages of the source, not just the first page
+   - Search for keywords, concepts, and related terminology
+   - Assign a verdict:
+     - "Fully supported by cited source(s)" - if you find clear evidence in the source text
+     - "Partially supported (some mismatch or missing nuance)"
+     - "No clear support found in cited sources"
+     - "Unsupported: sources talk about a different topic/context"
+     - "Uncertain: document text is not sufficient / not accessible here"
 
 3. It is acceptable to note that a statement is common knowledge (e.g. "LLMs are a type of AI model") and does not strictly require a citation; treat such statements as effectively supported for the purposes of paragraph-level color, but mark them as common knowledge.
 
 4. Provide evidence:
    - For each supported or partially supported claim, list one or more evidence entries with:
      - label: in-text label
-     - excerpt: short quote (1–3 sentences or up to ~25 words) that supports the claim
-     - page_number: use 0 if you don't know the exact page (do NOT guess page 1)
+     - excerpt: short quote (1–3 sentences or up to ~50 words) from the source's extracted_text that supports the claim
+     - page_number: estimate based on position in text if possible, or use 0 if unknown
      - section: section name if you can infer it from the excerpt context (e.g. "Abstract", "Introduction", "Results")
 
 5. For claims with no support, clearly state: "No clear supporting passage found in [LABEL]."
@@ -70,7 +75,7 @@ Return ONLY valid JSON of this exact form (no markdown, no explanation):
       "evidence": [
         {
           "label": "(Brynjolfsson et al., 2023)",
-          "excerpt": "<short excerpt>",
+          "excerpt": "<short excerpt from the source's extracted_text>",
           "page_number": 12,
           "section": "Results"
         }
@@ -87,7 +92,8 @@ Return ONLY valid JSON of this exact form (no markdown, no explanation):
 }
 
 ROBUSTNESS
-- If no relevant snippet is found for a citation, say so explicitly.
+- Search through ALL of the extracted_text, not just the beginning.
+- If no relevant content is found anywhere in the source, say so explicitly.
 - Do not rewrite the thesis paragraph; only analyse and diagnose.
 - When in doubt, choose the more cautious verdict.`;
 
@@ -120,27 +126,45 @@ serve(async (req) => {
       );
     }
 
-    const GOOGLE_AI_API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
-    if (!GOOGLE_AI_API_KEY) {
-      console.error('GOOGLE_AI_API_KEY not configured');
+    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
+    if (!LOVABLE_API_KEY) {
+      console.error('LOVABLE_API_KEY not configured');
       return new Response(
-        JSON.stringify({ error: 'AI features are unavailable. Please configure the Google API key.' }),
+        JSON.stringify({ error: 'AI features are unavailable. Please configure the API key.' }),
         { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Build the user message with sources context
-    const sourcesContext = sources && sources.length > 0
-      ? `\n\nAVAILABLE SOURCES:\n${sources.map((s: any) => 
-          `- ${s.in_text_label || s.shorthand_id}: ${s.title || 'Untitled'} by ${s.authors || 'Unknown'} (${s.year || 'n.d.'})`
-        ).join('\n')}`
-      : '\n\nNo sources available for verification.';
+    // Build the user message with sources context including their full text
+    let sourcesContext = '\n\nAVAILABLE SOURCES:\n';
+    
+    if (sources && sources.length > 0) {
+      for (const s of sources) {
+        sourcesContext += `\n--- SOURCE: ${s.in_text_label || s.shorthand_id} ---\n`;
+        sourcesContext += `Title: ${s.title || 'Untitled'}\n`;
+        sourcesContext += `Authors: ${s.authors || 'Unknown'}\n`;
+        sourcesContext += `Year: ${s.year || 'n.d.'}\n`;
+        
+        if (s.extracted_text) {
+          // Include the full extracted text (already truncated on client side if needed)
+          sourcesContext += `\nFULL EXTRACTED TEXT (search all of this for evidence):\n`;
+          sourcesContext += `${s.extracted_text}\n`;
+          sourcesContext += `--- END OF SOURCE ---\n`;
+        } else {
+          sourcesContext += `\n[No text content available for this source]\n--- END OF SOURCE ---\n`;
+        }
+      }
+    } else {
+      sourcesContext = '\n\nNo sources available for verification.';
+    }
 
-    const userMessage = `PARAGRAPH TO ANALYZE:\n"${paragraph}"${sourcesContext}\n\nAnalyze this paragraph and return the JSON result.`;
+    const userMessage = `PARAGRAPH TO ANALYZE:\n"${paragraph}"${sourcesContext}\n\nAnalyze this paragraph by searching through ALL the source texts provided above. Return the JSON result.`;
+
+    console.log(`Checking paragraph with ${sources.length} sources (total chars: ${userMessage.length})`);
 
     // Retry logic with exponential backoff for rate limits
     const MAX_RETRIES = 3;
-    const INITIAL_DELAY = 1000; // 1 second
+    const INITIAL_DELAY = 1000;
     
     let lastError: Error | null = null;
     let response: Response | null = null;
@@ -152,26 +176,22 @@ serve(async (req) => {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
       
-      console.log(`Calling Google Gemini API (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+      console.log(`Calling Lovable AI Gateway (attempt ${attempt + 1}/${MAX_RETRIES})...`);
 
       try {
-        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`, {
+        response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
           method: 'POST',
           headers: {
+            'Authorization': `Bearer ${LOVABLE_API_KEY}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  { text: SYSTEM_PROMPT + "\n\n" + userMessage }
-                ]
-              }
+            model: 'google/gemini-2.5-flash',
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: userMessage }
             ],
-            generationConfig: {
-              temperature: 0.2,
-              maxOutputTokens: 4096,
-            }
+            temperature: 0.2,
           }),
         });
 
@@ -183,7 +203,6 @@ serve(async (req) => {
           const errorText = await response.text();
           console.log('Rate limit hit:', errorText);
           lastError = new Error('Rate limit exceeded');
-          // Continue to next retry attempt
           continue;
         }
 
@@ -218,13 +237,13 @@ serve(async (req) => {
     }
 
     const data = await response.json();
-    console.log('Gemini response received');
+    console.log('AI response received');
     
-    // Extract content from Gemini response format
-    const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    // Extract content from response
+    const content = data.choices?.[0]?.message?.content;
 
     if (!content) {
-      console.error('No content in Gemini response:', JSON.stringify(data));
+      console.error('No content in response:', JSON.stringify(data));
       return new Response(
         JSON.stringify({ error: 'No response from AI' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

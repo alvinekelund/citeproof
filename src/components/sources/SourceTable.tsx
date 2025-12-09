@@ -249,6 +249,11 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
         return;
       }
       
+      // Always save the extracted text for source verification
+      const updates: Partial<Source> = {
+        extracted_text: text,
+      };
+      
       // Use AI to extract metadata from text
       const metadata = await extractMetadataFromText(
         text,
@@ -257,20 +262,18 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
       );
       
       if (metadata && Object.keys(metadata).length > 0) {
-        const updates: Partial<Source> = {};
         if (metadata.suggested_label) updates.in_text_label = metadata.suggested_label;
         if (metadata.authors) updates.authors = metadata.authors;
         if (metadata.year) updates.year = metadata.year;
         if (metadata.title) updates.title = metadata.title;
-        
-        if (Object.keys(updates).length > 0) {
-          updateSource(source.id, updates);
-          toast({ title: "Metadata extracted", description: "Source updated with AI-extracted metadata." });
-          onUpdate();
-        } else {
-          toast({ title: "No metadata found", description: "Could not extract metadata from file.", variant: "destructive" });
-        }
       }
+      
+      updateSource(source.id, updates);
+      toast({ 
+        title: "Source updated", 
+        description: `Extracted ${Math.round(text.length / 1000)}k chars of text${metadata ? ' + metadata' : ''}.` 
+      });
+      onUpdate();
     } catch (error) {
       console.error('Extraction error:', error);
       toast({ title: "Extraction failed", description: String(error), variant: "destructive" });
@@ -545,7 +548,10 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
                               size="icon" 
                               onClick={() => extractMetadata(source)} 
                               disabled={extractingId === source.id}
-                              className="h-8 w-8"
+                              className={cn(
+                                "h-8 w-8",
+                                !source.extracted_text && "text-amber-600 hover:text-amber-700"
+                              )}
                             >
                               {extractingId === source.id ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -554,7 +560,12 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
                               )}
                             </Button>
                           </TooltipTrigger>
-                          <TooltipContent>Re-extract metadata</TooltipContent>
+                          <TooltipContent>
+                            {source.extracted_text 
+                              ? `Re-extract (${Math.round(source.extracted_text.length / 1000)}k chars indexed)`
+                              : "⚠️ Extract text - needed for full PDF verification"
+                            }
+                          </TooltipContent>
                         </Tooltip>
                         <Button variant="ghost" size="icon" onClick={() => startEdit(source)} className="h-8 w-8">
                           <Pencil className="h-4 w-4" />

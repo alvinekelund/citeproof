@@ -11,6 +11,7 @@ export interface Source {
   year?: number;
   notes?: string;
   citation_style: CitationStyle;
+  extracted_text?: string; // Full text extracted from the PDF
   created_at: string;
   updated_at: string;
 }

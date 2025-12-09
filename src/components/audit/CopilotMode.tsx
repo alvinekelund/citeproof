@@ -460,6 +460,8 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
             title: s.title,
             authors: s.authors,
             year: s.year,
+            // Send extracted text (truncate if too long to avoid payload limits)
+            extracted_text: s.extracted_text ? s.extracted_text.substring(0, 50000) : undefined,
           })),
         },
       });
