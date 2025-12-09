@@ -20,6 +20,20 @@ const Index = () => {
     }
   }, []);
 
+  // Handle linking a citation to a source - update state immediately
+  const handleLinkCitation = useCallback((sourceId: string, citationLabel: string) => {
+    // Add source to used set
+    setUsedSourceIds(prev => {
+      const next = new Set(prev);
+      next.add(sourceId);
+      return next;
+    });
+    // Remove citation from unmatched list
+    setUnmatchedCitations(prev => 
+      prev.filter(c => c.label !== citationLabel)
+    );
+  }, []);
+
   return (
     <AppLayout activeTab={activeTab} onTabChange={handleTabChange}>
       {activeTab === 'audit' && <AuditParagraph />}
@@ -36,6 +50,7 @@ const Index = () => {
           usedSourceIds={usedSourceIds} 
           unmatchedCitations={unmatchedCitations}
           onSourcesUpdated={() => setSourceRefreshKey(k => k + 1)}
+          onLinkCitation={handleLinkCitation}
         />
       )}
       {activeTab === 'history' && <HistoryView />}
