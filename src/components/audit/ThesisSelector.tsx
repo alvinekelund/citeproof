@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { Upload, FileText, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { Upload, FileText, ChevronLeft, ChevronRight, Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -8,6 +8,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { ThesisDocument, ThesisParagraph } from "@/lib/types";
 import { uploadFile, createThesisDocument, createThesisParagraphs, getThesisParagraph } from "@/lib/supabase-helpers";
 import { supabase } from "@/integrations/supabase/client";
@@ -32,6 +37,8 @@ export function ThesisSelector({
 }: ThesisSelectorProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [parseError, setParseError] = useState<string | null>(null);
 
   const selectedDoc = documents.find(d => d.id === selectedDocId);
 
@@ -43,11 +50,15 @@ export function ThesisSelector({
     }
 
     setIsUploading(true);
+    setParseError(null);
+    setUploadStatus('Uploading file...');
+    
     try {
       // Upload file
       const filePath = await uploadFile(file, 'thesis');
+      setUploadStatus('File uploaded, parsing PDF...');
       
-      // Create document record
+      // Create document record first
       const doc = await createThesisDocument({
         filename: filePath.split('/').pop() || file.name,
         file_path: filePath,
@@ -55,37 +66,62 @@ export function ThesisSelector({
         total_paragraphs: 0,
       });
 
-      // Extract text from PDF (simplified - in production you'd use a proper PDF parser)
-      const text = await extractTextFromPdf(file);
-      const paragraphs = splitIntoParagraphs(text);
-      
-      // Create paragraph records
-      await createThesisParagraphs(
-        paragraphs.map((text, index) => ({
-          thesis_document_id: doc.id,
-          index,
-          text,
-        }))
-      );
-
-      // Update the document with paragraph count
-      await supabase
-        .from('thesis_documents')
-        .update({ total_paragraphs: paragraphs.length })
-        .eq('id', doc.id);
-
-      toast({
-        title: "Thesis uploaded",
-        description: `Found ${paragraphs.length} paragraphs.`,
+      // Call edge function to parse the PDF
+      const { data, error } = await supabase.functions.invoke('parse-thesis', {
+        body: { file_path: filePath }
       });
 
+      if (error) {
+        console.error('Parse error:', error);
+        setParseError('Failed to parse PDF. The file may be image-based or encrypted.');
+        // Still keep the document but with 0 paragraphs
+        toast({
+          title: "PDF parsing failed",
+          description: "You can still manually enter paragraph text to check.",
+          variant: "destructive",
+        });
+      } else if (data.error) {
+        setParseError(data.message || data.error);
+        toast({
+          title: "Could not extract text",
+          description: data.message || "Try a different file or manually enter text.",
+          variant: "destructive",
+        });
+      } else if (data.paragraphs && data.paragraphs.length > 0) {
+        setUploadStatus(`Found ${data.paragraphs.length} paragraphs, saving...`);
+        
+        // Create paragraph records
+        await createThesisParagraphs(
+          data.paragraphs.map((text: string, index: number) => ({
+            thesis_document_id: doc.id,
+            index,
+            text,
+          }))
+        );
+
+        // Update the document with paragraph count
+        await supabase
+          .from('thesis_documents')
+          .update({ total_paragraphs: data.paragraphs.length })
+          .eq('id', doc.id);
+
+        toast({
+          title: "Thesis uploaded",
+          description: `Found ${data.paragraphs.length} paragraphs.`,
+        });
+        
+        onDocumentSelect(doc.id);
+      } else {
+        setParseError('No text paragraphs found in the PDF.');
+      }
+
       onDocumentsUpdate();
-      onDocumentSelect(doc.id);
     } catch (error) {
       console.error('Upload error:', error);
       toast({ title: "Failed to upload thesis", description: "Please try again.", variant: "destructive" });
     } finally {
       setIsUploading(false);
+      setUploadStatus('');
       // Reset the input
       e.target.value = '';
     }
@@ -117,6 +153,7 @@ export function ThesisSelector({
   const handleDocSelect = async (docId: string) => {
     onDocumentSelect(docId);
     setIsNavigating(true);
+    setParseError(null);
     try {
       const paragraph = await getThesisParagraph(docId, 0);
       onParagraphChange(paragraph);
@@ -157,6 +194,22 @@ export function ThesisSelector({
           </label>
         </div>
       </div>
+
+      {uploadStatus && (
+        <p className="text-sm text-muted-foreground animate-pulse">{uploadStatus}</p>
+      )}
+
+      {parseError && (
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>PDF Parsing Issue</AlertTitle>
+          <AlertDescription className="text-sm">
+            {parseError}
+            <br />
+            <span className="text-xs">You can still paste paragraph text manually in the text area below.</span>
+          </AlertDescription>
+        </Alert>
+      )}
 
       {documents.length > 0 && (
         <div className="space-y-3">
@@ -204,65 +257,4 @@ export function ThesisSelector({
       )}
     </div>
   );
-}
-
-// Sanitize text by removing null characters and other problematic characters
-function sanitizeText(text: string): string {
-  return text
-    // Remove null characters
-    .replace(/\u0000/g, '')
-    // Remove other control characters except newlines and tabs
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    // Normalize whitespace
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .trim();
-}
-
-// Simple PDF text extraction (placeholder - in production use pdf.js or backend)
-async function extractTextFromPdf(file: File): Promise<string> {
-  // Try to read raw text from the file
-  const arrayBuffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  
-  // Try to extract text content from PDF structure
-  let text = '';
-  try {
-    // Decode as text, replacing invalid chars
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    const rawText = decoder.decode(bytes);
-    
-    // Extract text between BT and ET markers (basic PDF text extraction)
-    const textMatches = rawText.match(/\(([^)]+)\)/g);
-    if (textMatches && textMatches.length > 10) {
-      text = textMatches
-        .map(m => m.slice(1, -1))
-        .filter(t => t.length > 2 && !/^[\d\s.]+$/.test(t))
-        .join(' ');
-    }
-  } catch {
-    // Ignore extraction errors
-  }
-  
-  // If we couldn't extract meaningful text, use sample text
-  if (!text || text.length < 100) {
-    text = `This is a sample paragraph from the uploaded thesis. In a production environment, this would contain the actual extracted text from the PDF document using a proper PDF parsing library like pdf.js.
-
-The second paragraph would discuss the methodology used in the research. Various approaches were considered before selecting the final method. The methodology section is crucial for reproducibility.
-
-Results showed significant improvements compared to baseline measurements. Statistical analysis confirmed the validity of these findings (p < 0.05). The results section presents data in tables and figures.
-
-Discussion of the implications follows. These results suggest important applications for the field. Comparisons with existing literature are made here.
-
-In conclusion, this thesis demonstrates the effectiveness of the proposed approach and opens avenues for future research. Limitations and future work are also discussed.`;
-  }
-  
-  return sanitizeText(text);
-}
-
-function splitIntoParagraphs(text: string): string[] {
-  return text
-    .split(/\n\n+/)
-    .map(p => sanitizeText(p))
-    .filter(p => p.length > 30); // Filter out very short paragraphs
 }
