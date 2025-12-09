@@ -54,9 +54,10 @@ interface SourceTableProps {
   libraryItems?: LibraryItem[];
   onUpdate: () => void;
   usedSourceIds?: Set<string>;
+  onLinkCitation?: (sourceId: string, citationLabel: string) => void;
 }
 
-export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: SourceTableProps) {
+export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, onLinkCitation }: SourceTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editData, setEditData] = useState<Partial<Source>>({});
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -76,6 +77,8 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: 
       updateSource(sourceId, { in_text_label: citationLabel });
       toast({ title: "Citation linked", description: `Source updated with label: ${citationLabel}` });
       setLinkingCitation(null);
+      // Notify parent to update state immediately
+      onLinkCitation?.(sourceId, citationLabel);
       onUpdate();
     } catch (error) {
       toast({ title: "Failed to link citation", variant: "destructive" });
