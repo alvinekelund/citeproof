@@ -20,7 +20,34 @@ export interface CitationAnalysis {
   totalCitations: number;
 }
 
-// Patterns that look like citations but are actually paper IDs or other references
+// ============= UNIFIED CHARACTER NORMALIZATION =============
+
+/**
+ * Normalize diacritics and special characters to ASCII equivalents
+ */
+function normalizeChars(str: string): string {
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove diacritics
+    .replace(/[''`]/g, "'")
+    .replace(/[""]/g, '"')
+    .replace(/ø/gi, 'o')
+    .replace(/æ/gi, 'ae')
+    .replace(/ß/g, 'ss')
+    .replace(/ł/gi, 'l');
+}
+
+/**
+ * Create a matching key from an author name - strips ALL special chars
+ */
+function normalizeAuthorForKey(author: string): string {
+  return normalizeChars(author)
+    .toLowerCase()
+    .replace(/[^a-z]/g, ''); // Only keep letters
+}
+
+// ============= FALSE POSITIVE FILTERING =============
+
 const FALSE_POSITIVE_PATTERNS = [
   /^ssrn/i,
   /^arxiv/i,
@@ -37,37 +64,26 @@ const FALSE_POSITIVE_PATTERNS = [
   /^www\./i,
 ];
 
-// Valid citation must match this pattern: Author(s), Year format
-const VALID_CITATION_PATTERN = /^[A-Z][a-zA-Z''-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-zA-Z''-]+|and\s+[A-Z][a-zA-Z''-]+))?[,\s]+\d{4}/i;
+const VALID_CITATION_PATTERN = /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+|and\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+))?[,\s]+\d{4}/i;
 
-/**
- * Check if a string looks like a valid academic citation
- */
 function isValidCitation(text: string): boolean {
   const trimmed = text.trim();
   
-  // Filter out paper IDs and non-citations
   for (const pattern of FALSE_POSITIVE_PATTERNS) {
     if (pattern.test(trimmed)) return false;
   }
   
-  // Must be a reasonable length
   if (trimmed.length < 8 || trimmed.length > 100) return false;
-  
-  // Must match valid citation pattern
   if (!VALID_CITATION_PATTERN.test(trimmed)) return false;
   
-  // Should not contain too much extra text (like sentences)
   const wordCount = trimmed.split(/\s+/).length;
   if (wordCount > 10) return false;
   
   return true;
 }
 
-/**
- * Extract individual citations from text, handling compound citations
- * Returns array of individual citation strings
- */
+// ============= CITATION EXTRACTION =============
+
 function extractIndividualCitations(text: string): string[] {
   const citations: string[] = [];
   
@@ -78,7 +94,6 @@ function extractIndividualCitations(text: string): string[] {
   while ((match = parenPattern.exec(text)) !== null) {
     const content = match[1];
     
-    // Must have a year
     if (!/\d{4}/.test(content)) continue;
     
     // Split by semicolon for compound citations
@@ -88,25 +103,21 @@ function extractIndividualCitations(text: string): string[] {
       const trimmed = part.trim();
       if (!trimmed) continue;
       
-      // Validate this is a proper citation
       if (isValidCitation(trimmed)) {
         citations.push(`(${trimmed})`);
       }
     }
   }
   
-  // Also find narrative citations: Author (Year) or Author et al. (Year)
-  // But exclude cases where it's part of a parenthetical citation like "(Blümelhuber & Novak, 2025)"
-  const narrativePattern = /([A-Z][a-zA-Z''-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-zA-Z''-]+))?)\s*\((\d{4}[a-z]?)\)/g;
+  // Narrative citations: Author (Year) or Author et al. (Year)
+  const narrativePattern = /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+))?)\s*\((\d{4}[a-z]?)\)/g;
   
   while ((match = narrativePattern.exec(text)) !== null) {
     const author = match[1].trim();
     const year = match[2];
-    const fullMatch = match[0];
     const startIdx = match.index;
     
-    // Check if this match is inside a parenthetical citation
-    // Look backward from the match to see if we're inside parentheses
+    // Check if inside parentheses
     let depth = 0;
     let isInsideParens = false;
     for (let i = startIdx - 1; i >= Math.max(0, startIdx - 100); i--) {
@@ -114,7 +125,6 @@ function extractIndividualCitations(text: string): string[] {
       if (text[i] === '(') {
         depth--;
         if (depth < 0) {
-          // We found an opening paren before a closing one - we're inside parentheses
           isInsideParens = true;
           break;
         }
@@ -123,11 +133,10 @@ function extractIndividualCitations(text: string): string[] {
     
     if (isInsideParens) continue;
     
-    // Also check the character before - if it's & or "and", it's part of a compound author
+    // Check for compound author
     const textBefore = text.slice(Math.max(0, startIdx - 10), startIdx);
     if (/[&]\s*$/.test(textBefore) || /\band\s+$/i.test(textBefore)) continue;
     
-    // Check it's not already captured inside parentheses
     const prevChar = text[startIdx - 1];
     if (prevChar !== '(' && prevChar !== ';') {
       const citation = `${author} (${year})`;
@@ -140,71 +149,121 @@ function extractIndividualCitations(text: string): string[] {
   return citations;
 }
 
-/**
- * Normalize a citation string for comparison
- */
 function normalizeCitation(citation: string): string {
-  return citation
+  return normalizeChars(citation)
     .toLowerCase()
     .replace(/\s+/g, ' ')
-    .replace(/['']/g, "'")
     .replace(/et\s+al\.?/gi, 'et al.')
     .replace(/\s*,\s*/g, ', ')
     .replace(/\s*&\s*/g, ' & ')
     .replace(/\s+and\s+/gi, ' & ')
-    .replace(/^\(|\)$/g, '') // Remove outer parentheses
+    .replace(/^\(|\)$/g, '')
     .trim();
 }
 
+// ============= UNIFIED AUTHOR/YEAR EXTRACTION =============
+
+interface AuthorYearInfo {
+  primaryAuthor: string;      // Raw first author surname
+  primaryAuthorKey: string;   // Normalized key for matching
+  secondAuthor?: string;      // Second author if present
+  secondAuthorKey?: string;   // Normalized key for matching
+  year: string;
+  authorCount: number;        // 1, 2, or 3+ (for et al.)
+}
+
 /**
- * Extract author surname and year from a citation (normalized or raw)
- * Handles both "(Author et al., 2025)" and "Author et al. (2025)" formats
+ * Unified extraction of author(s) and year from a citation string
+ * Used for BOTH thesis citations and source labels
  */
-function extractAuthorYear(citation: string): { author: string; year: string } | null {
-  // Strip all parentheses and extra punctuation first
-  const cleaned = citation
+function extractAuthorYearInfo(text: string): AuthorYearInfo | null {
+  const cleaned = normalizeChars(text)
     .replace(/[()]/g, '')
-    .replace(/['']/g, "'")
-    .toLowerCase()
     .trim();
   
-  // Pattern 1: "author et al., 2025" or "author, 2025"
-  let match = cleaned.match(/^([a-z][a-zäöüéèêëàâôîûç''-]+)(?:\s+(?:et\s+al\.?|&\s+[a-z][a-zäöüéèêëàâôîûç''-]+))?[,\s]+(\d{4})/i);
-  if (match) {
-    return { author: match[1].replace(/['-]/g, ''), year: match[2] };
+  // Extract year first
+  const yearMatch = cleaned.match(/\b((?:19|20)\d{2})[a-z]?\b/);
+  if (!yearMatch) return null;
+  const year = yearMatch[1];
+  
+  // Remove year for author parsing
+  const withoutYear = cleaned.replace(/[,\s]*\b(?:19|20)\d{2}[a-z]?\b.*$/, '').trim();
+  
+  // Check for "et al."
+  const hasEtAl = /et\s+al\.?/i.test(withoutYear);
+  const withoutEtAl = withoutYear.replace(/\s*et\s+al\.?/gi, '').trim();
+  
+  // Check for two authors: "Author & Author" or "Author and Author"
+  const twoAuthorMatch = withoutEtAl.match(/^([A-Za-z][A-Za-z'''-]+)\s*(?:&|and)\s*([A-Za-z][A-Za-z'''-]+)/i);
+  
+  if (twoAuthorMatch) {
+    return {
+      primaryAuthor: twoAuthorMatch[1],
+      primaryAuthorKey: normalizeAuthorForKey(twoAuthorMatch[1]),
+      secondAuthor: twoAuthorMatch[2],
+      secondAuthorKey: normalizeAuthorForKey(twoAuthorMatch[2]),
+      year,
+      authorCount: 2,
+    };
   }
   
-  // Pattern 2: "author & coauthor, 2025"
-  match = cleaned.match(/^([a-z][a-zäöüéèêëàâôîûç''-]+)\s*&/i);
-  const yearMatch = cleaned.match(/(\d{4})/);
-  if (match && yearMatch) {
-    return { author: match[1].replace(/['-]/g, ''), year: yearMatch[1] };
-  }
-  
-  // Pattern 3: Just extract first word and year
-  match = cleaned.match(/([a-z][a-zäöüéèêëàâôîûç]+).*?(\d{4})/i);
-  if (match) {
-    return { author: match[1].replace(/['-]/g, ''), year: match[2] };
+  // Single author (with or without et al.)
+  const singleMatch = withoutEtAl.match(/^([A-Za-z][A-Za-z'''-]+)/i);
+  if (singleMatch) {
+    return {
+      primaryAuthor: singleMatch[1],
+      primaryAuthorKey: normalizeAuthorForKey(singleMatch[1]),
+      year,
+      authorCount: hasEtAl ? 3 : 1,
+    };
   }
   
   return null;
 }
 
 /**
- * Create a deduplication key from citation (author+year)
+ * Legacy function for backward compatibility
  */
-function getDedupeKey(citation: string): string {
-  const extracted = extractAuthorYear(citation);
-  if (extracted) {
-    return `${extracted.author}_${extracted.year}`;
-  }
-  // Fallback: aggressive normalization
-  return citation.toLowerCase().replace(/[^a-z0-9]/g, '');
+function extractAuthorYear(citation: string): { author: string; year: string } | null {
+  const info = extractAuthorYearInfo(citation);
+  if (!info) return null;
+  return { author: info.primaryAuthorKey, year: info.year };
 }
 
 /**
- * Client-side deduplication based on author+year
+ * Create a deduplication key: "authorkey_year"
  */
+function getDedupeKey(citation: string): string {
+  const info = extractAuthorYearInfo(citation);
+  if (info) {
+    return `${info.primaryAuthorKey}_${info.year}`;
+  }
+  // Fallback
+  return normalizeChars(citation).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Create a matching key that accounts for both authors in 2-author citations
+ */
+function getMatchingKey(citation: string): string[] {
+  const info = extractAuthorYearInfo(citation);
+  if (!info) return [];
+  
+  const keys: string[] = [];
+  
+  // Primary key: first author + year
+  keys.push(`${info.primaryAuthorKey}|${info.year}`);
+  
+  // For 2-author citations, also add combined key
+  if (info.authorCount === 2 && info.secondAuthorKey) {
+    keys.push(`${info.primaryAuthorKey}+${info.secondAuthorKey}|${info.year}`);
+  }
+  
+  return keys;
+}
+
+// ============= CLIENT-SIDE DEDUPLICATION =============
+
 export function clientSideDedup(citations: DetectedCitation[]): DetectedCitation[] {
   const groups = new Map<string, DetectedCitation[]>();
   
@@ -223,22 +282,24 @@ export function clientSideDedup(citations: DetectedCitation[]): DetectedCitation
     } else {
       // Pick best canonical form and sum counts
       const sorted = [...group].sort((a, b) => {
-        // Prefer matched citations
         if (a.matched !== b.matched) return a.matched ? -1 : 1;
-        // Prefer parenthetical format "(Author...)"
         const aParens = a.raw.startsWith('(');
         const bParens = b.raw.startsWith('(');
         if (aParens !== bParens) return aParens ? -1 : 1;
-        // Prefer longer (more complete)
         return b.raw.length - a.raw.length;
       });
       
       const canonical = sorted[0];
       const totalCount = group.reduce((sum, c) => sum + c.count, 0);
       
+      // Preserve matchedSourceId if any in group matched
+      const matchedOne = group.find(c => c.matched);
+      
       result.push({
         ...canonical,
-        count: totalCount
+        count: totalCount,
+        matched: !!matchedOne,
+        matchedSourceId: matchedOne?.matchedSourceId || canonical.matchedSourceId,
       });
     }
   }
@@ -246,40 +307,73 @@ export function clientSideDedup(citations: DetectedCitation[]): DetectedCitation
   return result;
 }
 
-/**
- * Parse authors string and extract FIRST author surname (by publication order - APA standard)
- */
-function extractFirstAuthor(authorsStr: string): string {
-  if (!authorsStr) return '';
-  
-  const trimmed = authorsStr.trim();
-  
-  // APA format: "Surname, Initial., Surname2, Initial.,"
-  const apaMatch = trimmed.match(/^([A-Z][a-zA-Z''-]+),\s*[A-Z]\.?/);
-  if (apaMatch) {
-    return apaMatch[1];
-  }
-  
-  // Fallback: "Firstname Lastname" format
-  const firstPart = trimmed.split(/[,;&]/).map(s => s.trim()).filter(Boolean)[0] || '';
-  const words = firstPart.split(/\s+/).filter(w => w.length > 1 && !/^[A-Z]\.?$/.test(w));
-  return words[words.length - 1] || words[0] || '';
-}
+// ============= SOURCE LABEL GENERATION =============
 
 /**
- * Count authors in a string
+ * Parse authors string to extract structured author info
+ * Handles: "Surname, I., Surname2, I." (APA) and "Firstname Lastname, Firstname2 Lastname2"
  */
-function countAuthors(authorsStr: string): number {
-  if (!authorsStr) return 0;
+function parseAuthorsString(authorsStr: string): { surnames: string[]; count: number } {
+  if (!authorsStr) return { surnames: [], count: 0 };
   
-  // APA format: count surname-initial pairs
-  const matches = authorsStr.match(/[A-Z][a-zA-Z''-]+,\s*[A-Z]\.?/g);
-  if (matches && matches.length > 0) {
-    return matches.length;
+  const trimmed = authorsStr.trim();
+  const surnames: string[] = [];
+  
+  // Try APA format: "Surname, I., Surname2, I.,"
+  const apaMatches = trimmed.match(/([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+),\s*[A-Za-zÀ-ÿ]\.?/g);
+  if (apaMatches && apaMatches.length > 0) {
+    for (const match of apaMatches) {
+      const surname = match.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+),/);
+      if (surname) {
+        surnames.push(surname[1]);
+      }
+    }
+    if (surnames.length > 0) {
+      return { surnames, count: surnames.length };
+    }
   }
   
-  // Fallback: split by & or "and"
-  return authorsStr.split(/\s*(?:&|\s+and\s+)\s*/).length;
+  // Try splitting by & or "and"
+  const parts = trimmed.split(/\s*(?:&|\band\b)\s*/i).filter(Boolean);
+  if (parts.length >= 2) {
+    for (const part of parts) {
+      // Get last word as surname
+      const words = part.trim().split(/\s+/).filter(w => w.length > 1 && !/^[A-Z]\.?$/.test(w));
+      if (words.length > 0) {
+        surnames.push(words[words.length - 1]);
+      }
+    }
+    if (surnames.length > 0) {
+      return { surnames, count: surnames.length };
+    }
+  }
+  
+  // Fallback: try comma-separated
+  const commaParts = trimmed.split(/\s*,\s*/).filter(p => p.length > 2 && !/^\s*[A-Z]\.?\s*$/.test(p));
+  if (commaParts.length > 0) {
+    // First comma part is likely "Surname, Initial" so take first word
+    const firstSurname = commaParts[0].split(/\s+/)[0];
+    if (firstSurname && firstSurname.length > 1) {
+      surnames.push(firstSurname);
+    }
+    // For subsequent, take last word
+    for (let i = 1; i < commaParts.length; i += 2) {
+      const words = commaParts[i].trim().split(/\s+/).filter(w => w.length > 1);
+      if (words.length > 0) {
+        surnames.push(words[0]); // In APA, each new author starts with surname
+      }
+    }
+    const count = Math.max(1, Math.ceil(commaParts.length / 2));
+    return { surnames: surnames.slice(0, count), count };
+  }
+  
+  // Last resort: first word
+  const firstWord = trimmed.split(/[\s,]/)[0];
+  if (firstWord && firstWord.length > 1) {
+    return { surnames: [firstWord], count: 1 };
+  }
+  
+  return { surnames: [], count: 0 };
 }
 
 /**
@@ -296,26 +390,137 @@ function normalizeSourceLabel(source: Source): string[] {
   
   // Generate from authors and year
   if (source.authors && source.year) {
-    const firstAuthor = extractFirstAuthor(source.authors);
-    const authorCount = countAuthors(source.authors);
+    const { surnames, count } = parseAuthorsString(source.authors);
     const year = source.year.toString();
     
-    if (firstAuthor) {
-      if (authorCount === 1) {
-        variants.push(normalizeCitation(`${firstAuthor}, ${year}`));
-        variants.push(normalizeCitation(`${firstAuthor} ${year}`));
-      } else if (authorCount === 2) {
-        variants.push(normalizeCitation(`${firstAuthor} et al., ${year}`));
-        variants.push(normalizeCitation(`${firstAuthor}, ${year}`));
+    if (surnames.length > 0) {
+      const first = surnames[0];
+      
+      if (count === 1) {
+        // Single author: "Author, 2025"
+        variants.push(normalizeCitation(`${first}, ${year}`));
+        variants.push(normalizeCitation(`${first} ${year}`));
+      } else if (count === 2 && surnames.length >= 2) {
+        // Two authors: "Author & Author2, 2025" (APA7 uses both names)
+        const second = surnames[1];
+        variants.push(normalizeCitation(`${first} & ${second}, ${year}`));
+        variants.push(normalizeCitation(`${first} and ${second}, ${year}`));
+        // Also add single-author variant as fallback
+        variants.push(normalizeCitation(`${first}, ${year}`));
       } else {
-        variants.push(normalizeCitation(`${firstAuthor} et al., ${year}`));
-        variants.push(normalizeCitation(`${firstAuthor} et al. ${year}`));
+        // Three+ authors: "Author et al., 2025"
+        variants.push(normalizeCitation(`${first} et al., ${year}`));
+        variants.push(normalizeCitation(`${first} et al. ${year}`));
+        // Also add single-author variant as fallback
+        variants.push(normalizeCitation(`${first}, ${year}`));
       }
     }
   }
   
   return [...new Set(variants)];
 }
+
+/**
+ * Generate matching keys for a source (used for fast lookup)
+ */
+function getSourceMatchingKeys(source: Source): string[] {
+  const keys: string[] = [];
+  
+  // From in_text_label
+  if (source.in_text_label) {
+    keys.push(...getMatchingKey(source.in_text_label));
+  }
+  
+  // From authors + year
+  if (source.authors && source.year) {
+    const { surnames, count } = parseAuthorsString(source.authors);
+    const year = source.year.toString();
+    
+    if (surnames.length > 0) {
+      const firstKey = normalizeAuthorForKey(surnames[0]);
+      keys.push(`${firstKey}|${year}`);
+      
+      if (count === 2 && surnames.length >= 2) {
+        const secondKey = normalizeAuthorForKey(surnames[1]);
+        keys.push(`${firstKey}+${secondKey}|${year}`);
+      }
+    }
+  }
+  
+  return [...new Set(keys)];
+}
+
+// ============= FUZZY MATCHING =============
+
+/**
+ * Simple Levenshtein distance for fuzzy matching
+ */
+function levenshteinDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  
+  const matrix: number[][] = [];
+  
+  for (let i = 0; i <= b.length; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= a.length; j++) {
+    matrix[0][j] = j;
+  }
+  
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b[i - 1] === a[j - 1]) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  
+  return matrix[b.length][a.length];
+}
+
+/**
+ * Try fuzzy matching on author name with sources
+ */
+function fuzzyMatchAuthor(
+  citationKey: string,
+  sourceKeys: Map<string, string>,
+  threshold: number = 2
+): string | undefined {
+  // Parse the citation key: "authorkey|year"
+  const [citAuthor, citYear] = citationKey.split('|');
+  if (!citAuthor || !citYear) return undefined;
+  
+  for (const [sourceKey, sourceId] of sourceKeys) {
+    const [srcAuthor, srcYear] = sourceKey.split('|');
+    if (!srcAuthor || !srcYear) continue;
+    
+    // Year must match exactly
+    if (citYear !== srcYear) continue;
+    
+    // Check prefix match (first 4 chars)
+    if (citAuthor.length >= 4 && srcAuthor.length >= 4) {
+      if (citAuthor.slice(0, 4) === srcAuthor.slice(0, 4)) {
+        return sourceId;
+      }
+    }
+    
+    // Check Levenshtein distance
+    if (levenshteinDistance(citAuthor, srcAuthor) <= threshold) {
+      return sourceId;
+    }
+  }
+  
+  return undefined;
+}
+
+// ============= CORE ANALYSIS =============
 
 export function detectCitations(text: string): Map<string, { raw: string; count: number }> {
   const citations = new Map<string, { raw: string; count: number }>();
@@ -325,7 +530,6 @@ export function detectCitations(text: string): Map<string, { raw: string; count:
   for (const citation of extracted) {
     const normalized = normalizeCitation(citation);
     
-    // Skip invalid matches
     if (normalized.length < 5) continue;
     if (!/[a-z].*\d{4}/i.test(normalized)) continue;
     
@@ -344,22 +548,23 @@ export function analyzeCitations(text: string, sources: Source[]): CitationAnaly
   const detectedCitations: DetectedCitation[] = [];
   let matchedCount = 0;
   
-  // Build source lookup with all variants
-  const sourceVariants = new Map<string, string>(); // normalized -> source id
-  const sourceAuthorYears = new Map<string, string>(); // "author|year" -> source id
+  // Build source lookups
+  const sourceVariants = new Map<string, string>(); // normalized label -> source id
+  const sourceKeys = new Map<string, string>(); // "authorkey|year" -> source id
   
   for (const source of sources) {
+    // Add all normalized variants
     const variants = normalizeSourceLabel(source);
     for (const variant of variants) {
       if (variant) {
         sourceVariants.set(variant, source.id);
-        
-        // Also extract author+year for fuzzy matching
-        const ay = extractAuthorYear(variant);
-        if (ay) {
-          sourceAuthorYears.set(`${ay.author}|${ay.year}`, source.id);
-        }
       }
+    }
+    
+    // Add all matching keys
+    const keys = getSourceMatchingKeys(source);
+    for (const key of keys) {
+      sourceKeys.set(key, source.id);
     }
   }
   
@@ -368,18 +573,32 @@ export function analyzeCitations(text: string, sources: Source[]): CitationAnaly
     let matched = false;
     let matchedSourceId: string | undefined;
     
-    // Try exact match first
+    // 1. Try exact normalized match
     if (sourceVariants.has(normalized)) {
       matched = true;
       matchedSourceId = sourceVariants.get(normalized);
-    } else {
-      // Try author+year match
-      const citationAY = extractAuthorYear(normalized);
-      if (citationAY) {
-        const key = `${citationAY.author}|${citationAY.year}`;
-        if (sourceAuthorYears.has(key)) {
+    }
+    
+    // 2. Try key-based match
+    if (!matched) {
+      const citationKeys = getMatchingKey(raw);
+      for (const key of citationKeys) {
+        if (sourceKeys.has(key)) {
           matched = true;
-          matchedSourceId = sourceAuthorYears.get(key);
+          matchedSourceId = sourceKeys.get(key);
+          break;
+        }
+      }
+    }
+    
+    // 3. Try fuzzy match on primary key
+    if (!matched) {
+      const citationKeys = getMatchingKey(raw);
+      if (citationKeys.length > 0) {
+        const fuzzyMatch = fuzzyMatchAuthor(citationKeys[0], sourceKeys);
+        if (fuzzyMatch) {
+          matched = true;
+          matchedSourceId = fuzzyMatch;
         }
       }
     }
@@ -408,20 +627,31 @@ export function getMissingSources(analysis: CitationAnalysis): DetectedCitation[
 }
 
 /**
+ * Get source IDs that are in the library but not cited in the thesis
+ */
+export function getUnusedSources(analysis: CitationAnalysis, sources: Source[]): Source[] {
+  const matchedIds = new Set(
+    analysis.detectedCitations
+      .filter(c => c.matched && c.matchedSourceId)
+      .map(c => c.matchedSourceId!)
+  );
+  
+  return sources.filter(s => !matchedIds.has(s.id));
+}
+
+/**
  * Parse a citation string to extract author and year for creating a placeholder source
  */
 export function parseCitationForPlaceholder(citation: string): { author: string; year: number | null; label: string } {
-  const normalized = normalizeCitation(citation);
-  const ay = extractAuthorYear(normalized);
+  const info = extractAuthorYearInfo(citation);
   
   let label = citation.trim();
-  // Ensure it has parentheses
   if (!label.startsWith('(')) label = `(${label}`;
   if (!label.endsWith(')')) label = `${label})`;
   
   return {
-    author: ay?.author || '',
-    year: ay?.year ? parseInt(ay.year, 10) : null,
+    author: info?.primaryAuthor || '',
+    year: info?.year ? parseInt(info.year, 10) : null,
     label,
   };
 }
