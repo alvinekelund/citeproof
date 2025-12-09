@@ -10,6 +10,7 @@ import { UnmatchedCitation } from "@/components/audit/CopilotMode";
 interface SourceLibraryProps {
   usedSourceIds?: Set<string>;
   unmatchedCitations?: UnmatchedCitation[];
+  onSourcesUpdated?: () => void;
 }
 
 // Combined type for display - either a real source or an unmatched citation placeholder
@@ -17,7 +18,7 @@ export type LibraryItem =
   | { type: 'source'; data: Source; status: 'used' | 'unused' }
   | { type: 'unmatched'; data: UnmatchedCitation };
 
-export function SourceLibrary({ usedSourceIds, unmatchedCitations = [] }: SourceLibraryProps) {
+export function SourceLibrary({ usedSourceIds, unmatchedCitations = [], onSourcesUpdated }: SourceLibraryProps) {
   const [sources, setSources] = useState<Source[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -31,6 +32,13 @@ export function SourceLibrary({ usedSourceIds, unmatchedCitations = [] }: Source
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Called when sources are modified (linked, edited, etc.)
+  const handleSourcesUpdate = () => {
+    loadSources();
+    // Notify parent to re-analyze citations
+    onSourcesUpdated?.();
   };
 
   useEffect(() => {
@@ -104,13 +112,13 @@ export function SourceLibrary({ usedSourceIds, unmatchedCitations = [] }: Source
 
       <div className="grid gap-6 lg:grid-cols-[300px,1fr]">
         <div>
-          <SourceDropzone onUploadComplete={loadSources} />
+          <SourceDropzone onUploadComplete={handleSourcesUpdate} />
         </div>
         <div>
           <SourceTable 
             sources={sources} 
             libraryItems={libraryItems}
-            onUpdate={loadSources} 
+            onUpdate={handleSourcesUpdate} 
             usedSourceIds={usedSourceIds} 
           />
         </div>
