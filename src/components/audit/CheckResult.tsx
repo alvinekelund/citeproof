@@ -68,8 +68,10 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
           <ul className="space-y-3">
             {result.missing_or_ambiguous_citations.map((item, i) => (
               <li key={i} className="text-sm">
-                <p className="font-medium">"{item.text}"</p>
-                <p className="text-muted-foreground mt-1">{item.note}</p>
+                <p className="font-medium">"{typeof item.text === 'string' ? item.text : JSON.stringify(item.text)}"</p>
+                <p className="text-muted-foreground mt-1">
+                  {typeof item.note === 'string' ? item.note : (item.note && typeof item.note === 'object' && 'note' in item.note) ? (item.note as any).note : JSON.stringify(item.note)}
+                </p>
               </li>
             ))}
           </ul>

@@ -103,13 +103,6 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     return dedupedAnalysis;
   }, []);
 
-  // Expose refresh method to parent via ref
-  useImperativeHandle(ref, () => ({
-    refreshSources: () => {
-      refreshSourcesAndCitations();
-    },
-  }), []);
-
   // Refresh sources and re-analyze citations
   const refreshSourcesAndCitations = useCallback(async () => {
     const currentSources = getSources();
@@ -146,6 +139,13 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       }
     }
   }, [fullText, onUsedSourcesChange, onUnmatchedCitationsChange, analyzeAndDeduplicateCitations]);
+
+  // Expose refresh method to parent via ref
+  useImperativeHandle(ref, () => ({
+    refreshSources: () => {
+      refreshSourcesAndCitations();
+    },
+  }), [refreshSourcesAndCitations]);
 
   // Load sources and sessions on mount - auto-load most recent session
   useEffect(() => {
