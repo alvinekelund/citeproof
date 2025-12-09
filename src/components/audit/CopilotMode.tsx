@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle } from "lucide-react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -53,7 +53,11 @@ interface CopilotSession {
   paragraphs_data: ParagraphData[];
 }
 
-export function CopilotMode() {
+interface CopilotModeProps {
+  onSourcesChange?: () => void;
+}
+
+export function CopilotMode({ onSourcesChange }: CopilotModeProps) {
   const [file, setFile] = useState<File | null>(null);
   const [paragraphs, setParagraphs] = useState<ParagraphData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -74,9 +78,21 @@ export function CopilotMode() {
   const [citationAnalysis, setCitationAnalysis] = useState<CitationAnalysis | null>(null);
   const [fullText, setFullText] = useState<string>('');
 
+  // Refresh sources and re-analyze citations
+  const refreshSourcesAndCitations = useCallback(() => {
+    const currentSources = getSources();
+    setSources(currentSources);
+    
+    // Re-analyze citations if we have full text
+    if (fullText) {
+      const analysis = analyzeCitations(fullText, currentSources);
+      setCitationAnalysis(analysis);
+    }
+  }, [fullText]);
+
   // Load sources and sessions on mount
   useEffect(() => {
-    setSources(getSources());
+    refreshSourcesAndCitations();
     loadSessions();
   }, []);
 
@@ -508,6 +524,29 @@ export function CopilotMode() {
     setFullText('');
   };
 
+  const markAsBlue = async (index: number) => {
+    const paragraph = paragraphs[index];
+    if (!paragraph) return;
+    
+    const blueResult = {
+      summary: 'Manually marked as not requiring citation verification.',
+      overall_color: 'blue' as const,
+      claims: [],
+      missing_or_ambiguous_citations: [],
+    };
+    
+    const newParagraphs = paragraphs.map((p, i) => 
+      i === index ? { ...p, checked: true, shouldCheck: false, result: blueResult } : p
+    );
+    setParagraphs(newParagraphs);
+    
+    if (file) {
+      await saveSession(file.name, newParagraphs);
+    }
+    
+    toast({ title: "Marked as no source needed" });
+  };
+
   const missingSources = citationAnalysis ? getMissingSources(citationAnalysis) : [];
 
   return (
@@ -610,39 +649,48 @@ export function CopilotMode() {
         </Card>
       )}
 
-      {/* Missing Sources Alert */}
+      {/* Missing Sources Alert with Re-analyze button */}
       {citationAnalysis && missingSources.length > 0 && (
         <Card className="p-4 border-destructive bg-destructive/5">
           <div className="flex items-start gap-3">
             <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
             <div className="flex-1">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <h4 className="font-semibold text-destructive">
                   {missingSources.length} Missing Source{missingSources.length > 1 ? 's' : ''} in Library
                 </h4>
-                <Button 
-                  variant="outline" 
-                  size="sm"
-                  onClick={() => {
-                    // Add all missing citations as pending for matching
-                    clearPendingCitations();
-                    for (const citation of missingSources) {
-                      const parsed = parseCitationForPlaceholder(citation.raw);
-                      addPendingCitation({
-                        label: parsed.label,
-                        author: parsed.author,
-                        year: parsed.year,
-                        count: citation.count,
+                <div className="flex gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={refreshSourcesAndCitations}
+                  >
+                    <RefreshCw className="h-4 w-4 mr-1" />
+                    Re-analyze
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      clearPendingCitations();
+                      for (const citation of missingSources) {
+                        const parsed = parseCitationForPlaceholder(citation.raw);
+                        addPendingCitation({
+                          label: parsed.label,
+                          author: parsed.author,
+                          year: parsed.year,
+                          count: citation.count,
+                        });
+                      }
+                      toast({ 
+                        title: "Citations ready for matching", 
+                        description: `${missingSources.length} citations added. Now upload PDFs to your library - they'll be auto-matched.` 
                       });
-                    }
-                    toast({ 
-                      title: "Citations ready for matching", 
-                      description: `${missingSources.length} citations added. Now upload PDFs to your library - they'll be auto-matched.` 
-                    });
-                  }}
-                >
-                  Queue All for Matching
-                </Button>
+                    }}
+                  >
+                    Queue All for Matching
+                  </Button>
+                </div>
               </div>
               <p className="text-sm text-muted-foreground mt-1">
                 Click a citation to add it to the pending list, then upload the PDF to auto-match:
@@ -682,19 +730,38 @@ export function CopilotMode() {
         </Card>
       )}
 
-      {/* Citation Summary */}
+      {/* Citation Summary with Re-analyze button */}
       {citationAnalysis && citationAnalysis.totalCitations > 0 && missingSources.length === 0 && (
         <Card className="p-4 border-verdict-green bg-verdict-green-bg/30">
-          <div className="flex items-center gap-3">
-            <CheckCircle2 className="h-5 w-5 text-verdict-green" />
-            <div>
-              <span className="font-medium text-verdict-green">
-                All {citationAnalysis.totalCitations} citations matched!
-              </span>
-              <span className="text-sm text-muted-foreground ml-2">
-                Your source library covers all detected citations.
-              </span>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="h-5 w-5 text-verdict-green" />
+              <div>
+                <span className="font-medium text-verdict-green">
+                  All {citationAnalysis.totalCitations} citations matched!
+                </span>
+                <span className="text-sm text-muted-foreground ml-2">
+                  Your source library covers all detected citations.
+                </span>
+              </div>
             </div>
+            <Button variant="outline" size="sm" onClick={refreshSourcesAndCitations}>
+              <RefreshCw className="h-4 w-4 mr-1" />
+              Re-analyze
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Re-analyze button when no citations detected */}
+      {fullText && (!citationAnalysis || citationAnalysis.totalCitations === 0) && (
+        <Card className="p-4 bg-secondary/30">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-muted-foreground">No citations detected or analysis not run</span>
+            <Button variant="outline" size="sm" onClick={refreshSourcesAndCitations}>
+              <RefreshCw className="h-4 w-4 mr-1" />
+              Analyze Citations
+            </Button>
           </div>
         </Card>
       )}
@@ -897,9 +964,17 @@ export function CopilotMode() {
                     sources={sources}
                   />
                 ) : selectedParagraph.shouldCheck !== false ? (
-                  <Card className="p-8 text-center">
-                    <Sparkles className="h-8 w-8 mx-auto text-primary mb-2" />
+                  <Card className="p-8 text-center space-y-4">
+                    <Sparkles className="h-8 w-8 mx-auto text-primary" />
                     <p className="text-muted-foreground">Click "Check" to analyze this paragraph</p>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => selectedIndex !== null && markAsBlue(selectedIndex)}
+                    >
+                      <CircleSlash className="h-4 w-4 mr-1" />
+                      Mark as No Source Needed
+                    </Button>
                   </Card>
                 ) : (
                   <Card className="p-8 text-center">
