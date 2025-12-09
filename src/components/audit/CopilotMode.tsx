@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2 } from "lucide-react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -13,6 +13,7 @@ import { CheckResult } from "./CheckResult";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { getSources, createParagraphCheck } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
+import { analyzeCitations, CitationAnalysis, getMissingSources } from "@/lib/citation-detector";
 import {
   Select,
   SelectContent,
@@ -67,6 +68,10 @@ export function CopilotMode() {
   const [sessions, setSessions] = useState<CopilotSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(true);
+  
+  // Citation analysis
+  const [citationAnalysis, setCitationAnalysis] = useState<CitationAnalysis | null>(null);
+  const [fullText, setFullText] = useState<string>('');
 
   // Load sources and sessions on mount
   useEffect(() => {
@@ -195,6 +200,27 @@ export function CopilotMode() {
       if (!text || text.length < 100) {
         toast({ title: "Could not extract text", description: "The file may be image-based or encrypted.", variant: "destructive" });
         return;
+      }
+
+      // Store full text for citation analysis
+      setFullText(text);
+      
+      // Analyze citations against sources
+      const currentSources = getSources();
+      const analysis = analyzeCitations(text, currentSources);
+      setCitationAnalysis(analysis);
+      
+      if (analysis.missingCount > 0) {
+        toast({ 
+          title: `${analysis.missingCount} missing sources detected`, 
+          description: `Found ${analysis.totalCitations} citations, ${analysis.matchedCount} matched your library.`,
+          variant: "destructive" 
+        });
+      } else if (analysis.totalCitations > 0) {
+        toast({ 
+          title: `All ${analysis.totalCitations} citations matched!`, 
+          description: "Your source library covers all detected citations." 
+        });
       }
 
       const paragraphTexts = splitIntoParagraphs(text);
@@ -378,7 +404,11 @@ export function CopilotMode() {
     setParagraphs([]);
     setSelectedIndex(null);
     setCurrentSessionId(null);
+    setCitationAnalysis(null);
+    setFullText('');
   };
+
+  const missingSources = citationAnalysis ? getMissingSources(citationAnalysis) : [];
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -480,7 +510,51 @@ export function CopilotMode() {
         </Card>
       )}
 
-      {/* File Upload */}
+      {/* Missing Sources Alert */}
+      {citationAnalysis && missingSources.length > 0 && (
+        <Card className="p-4 border-destructive bg-destructive/5">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h4 className="font-semibold text-destructive">
+                {missingSources.length} Missing Source{missingSources.length > 1 ? 's' : ''} in Library
+              </h4>
+              <p className="text-sm text-muted-foreground mt-1">
+                The following citations were found in your thesis but are not in your source library:
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {missingSources.map((citation, i) => (
+                  <Badge key={i} variant="outline" className="text-destructive border-destructive">
+                    {citation.raw}
+                    {citation.count > 1 && <span className="ml-1 opacity-60">×{citation.count}</span>}
+                  </Badge>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground mt-3">
+                Add these sources to your library for accurate verification.
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Citation Summary */}
+      {citationAnalysis && citationAnalysis.totalCitations > 0 && missingSources.length === 0 && (
+        <Card className="p-4 border-verdict-green bg-verdict-green-bg/30">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className="h-5 w-5 text-verdict-green" />
+            <div>
+              <span className="font-medium text-verdict-green">
+                All {citationAnalysis.totalCitations} citations matched!
+              </span>
+              <span className="text-sm text-muted-foreground ml-2">
+                Your source library covers all detected citations.
+              </span>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {!file && (
         <div className="border-2 border-dashed rounded-xl p-12 text-center">
           <input
