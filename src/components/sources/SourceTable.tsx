@@ -105,7 +105,8 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
     try {
       const { data, error } = await supabase.functions.invoke('suggest-label', {
         body: { 
-          filename: source.original_filename, 
+          filename: source.original_filename,
+          file_path: source.file_path,
           shorthand_id: source.shorthand_id,
           citation_style: source.citation_style || 'apa7',
         }
