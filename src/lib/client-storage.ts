@@ -234,7 +234,7 @@ export function createParagraphCheck(check: {
   thesis_paragraph_id?: string;
   raw_paragraph_text: string;
   result_json: CheckResult;
-  overall_color: 'green' | 'yellow' | 'red';
+  overall_color: 'green' | 'yellow' | 'red' | 'blue';
 }): ParagraphCheck {
   const checks = getStorageItem<ParagraphCheck[]>(CHECKS_KEY, []);
   const newCheck: ParagraphCheck = {

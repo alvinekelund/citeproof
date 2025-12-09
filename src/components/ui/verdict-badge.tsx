@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { CheckCircle2, AlertCircle, XCircle } from "lucide-react";
 
 interface VerdictBadgeProps {
-  color: 'green' | 'yellow' | 'red';
+  color: 'green' | 'yellow' | 'red' | 'blue';
   size?: 'sm' | 'md' | 'lg';
   showIcon?: boolean;
   className?: string;
@@ -12,12 +12,14 @@ const labels = {
   green: 'Supported',
   yellow: 'Partial',
   red: 'Unsupported',
+  blue: 'Skipped',
 };
 
 const icons = {
   green: CheckCircle2,
   yellow: AlertCircle,
   red: XCircle,
+  blue: CheckCircle2,
 };
 
 export function VerdictBadge({ color, size = 'md', showIcon = true, className }: VerdictBadgeProps) {
@@ -40,7 +42,7 @@ export function VerdictBadge({ color, size = 'md', showIcon = true, className }:
 }
 
 interface VerdictDotProps {
-  color: 'green' | 'yellow' | 'red';
+  color: 'green' | 'yellow' | 'red' | 'blue';
   size?: 'sm' | 'md' | 'lg';
   className?: string;
 }
@@ -53,6 +55,7 @@ export function VerdictDot({ color, size = 'md', className }: VerdictDotProps) {
         color === 'green' && "bg-verdict-green",
         color === 'yellow' && "bg-verdict-yellow",
         color === 'red' && "bg-verdict-red",
+        color === 'blue' && "bg-verdict-blue",
         size === 'sm' && "h-2 w-2",
         size === 'md' && "h-3 w-3",
         size === 'lg' && "h-4 w-4",

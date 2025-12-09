@@ -40,6 +40,7 @@ interface ParagraphData {
   result?: CheckResultType;
   sectionType?: 'chapter' | 'section' | 'subsection' | 'paragraph';
   sectionTitle?: string;
+  shouldCheck?: boolean; // false for sections that don't need AI verification
 }
 
 interface CopilotSession {
@@ -231,13 +232,38 @@ export function CopilotMode() {
         return;
       }
 
-      const newParagraphs = sections.map((section) => ({
-        index: section.index,
-        text: section.content,
-        checked: false,
-        sectionType: section.type,
-        sectionTitle: section.title,
-      }));
+      const newParagraphs = sections.map((section) => {
+        const shouldCheck = section.shouldCheck;
+        
+        // For paragraphs that don't need checking, mark them as checked with blue status
+        if (!shouldCheck) {
+          return {
+            index: section.index,
+            text: section.content,
+            checked: true,
+            sectionType: section.type,
+            sectionTitle: section.title,
+            shouldCheck: false,
+            result: {
+              summary: section.type === 'paragraph' 
+                ? 'This paragraph is in a section that does not require citation verification (e.g., references, acknowledgements, abstract).'
+                : 'Section headers do not require verification.',
+              overall_color: 'blue' as const,
+              claims: [],
+              missing_or_ambiguous_citations: [],
+            },
+          };
+        }
+        
+        return {
+          index: section.index,
+          text: section.content,
+          checked: false,
+          sectionType: section.type,
+          sectionTitle: section.title,
+          shouldCheck: true,
+        };
+      });
 
       setParagraphs(newParagraphs);
       
@@ -324,8 +350,8 @@ export function CopilotMode() {
       return;
     }
 
-    // Only check paragraphs (not section headers)
-    const uncheckedParagraphs = paragraphs.filter(p => !p.checked && p.sectionType === 'paragraph');
+    // Only check paragraphs that need checking (shouldCheck = true and not already checked)
+    const uncheckedParagraphs = paragraphs.filter(p => !p.checked && p.shouldCheck !== false);
     if (uncheckedParagraphs.length === 0) {
       toast({ title: "All paragraphs already checked" });
       return;
@@ -344,7 +370,7 @@ export function CopilotMode() {
         break;
       }
 
-      if (!paragraph.checked && paragraph.sectionType === 'paragraph') {
+      if (!paragraph.checked && paragraph.shouldCheck !== false) {
         await checkParagraph(paragraph.index);
         completed++;
         setBatchProgress((completed / totalToCheck) * 100);
@@ -380,6 +406,7 @@ export function CopilotMode() {
       case 'green': return 'border-l-verdict-green bg-verdict-green-bg/30';
       case 'yellow': return 'border-l-verdict-yellow bg-verdict-yellow-bg/30';
       case 'red': return 'border-l-verdict-red bg-verdict-red-bg/30';
+      case 'blue': return 'border-l-verdict-blue bg-verdict-blue-bg/30';
       default: return '';
     }
   };
@@ -394,10 +421,11 @@ export function CopilotMode() {
   };
 
   const checkedCount = paragraphs.filter(p => p.checked).length;
-  const paragraphOnlyCount = paragraphs.filter(p => p.sectionType === 'paragraph').length;
+  const checkableParagraphCount = paragraphs.filter(p => p.shouldCheck !== false).length;
   const greenCount = paragraphs.filter(p => p.result?.overall_color === 'green').length;
   const yellowCount = paragraphs.filter(p => p.result?.overall_color === 'yellow').length;
   const redCount = paragraphs.filter(p => p.result?.overall_color === 'red').length;
+  const blueCount = paragraphs.filter(p => p.result?.overall_color === 'blue').length;
 
   const startNewSession = () => {
     setFile(null);
@@ -588,8 +616,8 @@ export function CopilotMode() {
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
-                <Badge variant="outline">{paragraphOnlyCount} paragraphs</Badge>
-                <Badge variant="secondary">{paragraphs.length - paragraphOnlyCount} headers</Badge>
+                <Badge variant="outline">{checkableParagraphCount} to check</Badge>
+                <Badge variant="secondary">{blueCount} skipped</Badge>
               </div>
               <div className="flex gap-2">
                 {!isBatchChecking ? (
@@ -597,10 +625,10 @@ export function CopilotMode() {
                     variant="default" 
                     size="sm" 
                     onClick={startBatchCheck}
-                    disabled={checkedCount === paragraphOnlyCount || sources.length === 0}
+                    disabled={paragraphs.filter(p => !p.checked && p.shouldCheck !== false).length === 0 || sources.length === 0}
                   >
                     <Play className="h-4 w-4 mr-1" />
-                    Check All ({paragraphOnlyCount - paragraphs.filter(p => p.checked && p.sectionType === 'paragraph').length})
+                    Check All ({paragraphs.filter(p => !p.checked && p.shouldCheck !== false).length})
                   </Button>
                 ) : (
                   <Button 
@@ -626,11 +654,12 @@ export function CopilotMode() {
             {checkedCount > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                  <span>{checkedCount} checked</span>
+                  <span>{checkedCount - blueCount} verified</span>
                   <div className="flex gap-3">
                     {greenCount > 0 && <span className="text-verdict-green">{greenCount} ✓</span>}
                     {yellowCount > 0 && <span className="text-verdict-yellow">{yellowCount} ⚠</span>}
                     {redCount > 0 && <span className="text-verdict-red">{redCount} ✗</span>}
+                    {blueCount > 0 && <span className="text-verdict-blue">{blueCount} ○</span>}
                   </div>
                 </div>
                 {isBatchChecking && (
@@ -679,7 +708,7 @@ export function CopilotMode() {
                             {p.text}
                           </p>
                         </div>
-                        {!isSection && (
+                        {p.shouldCheck !== false && (
                           <Button
                             variant={p.checked ? "outline" : "default"}
                             size="sm"
@@ -751,14 +780,14 @@ export function CopilotMode() {
                     paragraphText={selectedParagraph.text}
                     sources={sources}
                   />
-                ) : selectedParagraph.sectionType === 'paragraph' ? (
+                ) : selectedParagraph.shouldCheck !== false ? (
                   <Card className="p-8 text-center">
                     <Sparkles className="h-8 w-8 mx-auto text-primary mb-2" />
                     <p className="text-muted-foreground">Click "Check" to analyze this paragraph</p>
                   </Card>
                 ) : (
                   <Card className="p-8 text-center">
-                    <p className="text-muted-foreground">Section headers are not checked</p>
+                    <p className="text-muted-foreground">This section does not require verification</p>
                   </Card>
                 )}
               </>
