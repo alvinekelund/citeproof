@@ -13,7 +13,7 @@ import { CheckResult } from "./CheckResult";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { getSources, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingData, getSessionMissingData, deleteSessionMissingData } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
-import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder } from "@/lib/citation-detector";
+import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder, deduplicateCitations } from "@/lib/citation-detector";
 import {
   Select,
   SelectContent,
@@ -79,14 +79,22 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
   const [citationAnalysis, setCitationAnalysis] = useState<CitationAnalysis | null>(null);
   const [fullText, setFullText] = useState<string>('');
 
+  // Helper to analyze and deduplicate citations
+  const analyzeAndDeduplicateCitations = useCallback(async (text: string, currentSources: Source[]) => {
+    const analysis = analyzeCitations(text, currentSources);
+    // Run AI deduplication on the results
+    const dedupedAnalysis = await deduplicateCitations(analysis);
+    return dedupedAnalysis;
+  }, []);
+
   // Refresh sources and re-analyze citations
-  const refreshSourcesAndCitations = useCallback(() => {
+  const refreshSourcesAndCitations = useCallback(async () => {
     const currentSources = getSources();
     setSources(currentSources);
     
     // Re-analyze citations if we have full text
     if (fullText) {
-      const analysis = analyzeCitations(fullText, currentSources);
+      const analysis = await analyzeAndDeduplicateCitations(fullText, currentSources);
       setCitationAnalysis(analysis);
       
       // Report used source IDs to parent
@@ -99,7 +107,7 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
         onUsedSourcesChange(usedIds);
       }
     }
-  }, [fullText, onUsedSourcesChange]);
+  }, [fullText, onUsedSourcesChange, analyzeAndDeduplicateCitations]);
 
   // Load sources and sessions on mount - auto-load most recent session
   useEffect(() => {
@@ -140,7 +148,7 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
   };
   
   // Helper to load session data without triggering toast (for auto-load)
-  const loadSessionData = (session: CopilotSession, showToast = false) => {
+  const loadSessionData = async (session: CopilotSession, showToast = false) => {
     setCurrentSessionId(session.id);
     setParagraphs(session.paragraphs_data);
     setFile({ name: session.thesis_name } as File);
@@ -151,7 +159,7 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
     if (sessionData?.fullText) {
       setFullText(sessionData.fullText);
       const currentSources = getSources();
-      const analysis = analyzeCitations(sessionData.fullText, currentSources);
+      const analysis = await analyzeAndDeduplicateCitations(sessionData.fullText, currentSources);
       setCitationAnalysis(analysis);
       
       // Report used source IDs to parent
@@ -287,9 +295,9 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
       // Store full text for citation analysis
       setFullText(text);
       
-      // Analyze citations against sources
+      // Analyze citations against sources (with AI deduplication)
       const currentSources = getSources();
-      const analysis = analyzeCitations(text, currentSources);
+      const analysis = await analyzeAndDeduplicateCitations(text, currentSources);
       setCitationAnalysis(analysis);
       
       // Report used source IDs to parent

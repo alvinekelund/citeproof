@@ -3,6 +3,7 @@
  */
 
 import { Source } from './types';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface DetectedCitation {
   raw: string;           // The raw citation text found (e.g., "(Smith et al., 2023)")
@@ -361,4 +362,45 @@ export function parseCitationForPlaceholder(citation: string): { author: string;
     year: ay?.year ? parseInt(ay.year, 10) : null,
     label,
   };
+}
+
+/**
+ * Use AI to deduplicate citations that refer to the same source
+ */
+export async function deduplicateCitations(analysis: CitationAnalysis): Promise<CitationAnalysis> {
+  // Only deduplicate if there are unmatched citations
+  const unmatchedCount = analysis.detectedCitations.filter(c => !c.matched).length;
+  if (unmatchedCount <= 1) {
+    return analysis;
+  }
+
+  try {
+    const { data, error } = await supabase.functions.invoke('dedupe-citations', {
+      body: { citations: analysis.detectedCitations }
+    });
+
+    if (error) {
+      console.error('Deduplication error:', error);
+      return analysis;
+    }
+
+    if (data?.citations) {
+      const dedupedCitations = data.citations as DetectedCitation[];
+      const matchedCount = dedupedCitations.filter(c => c.matched).length;
+      
+      console.log(`Deduplication complete: ${data.deduped || 0} duplicates removed`);
+      
+      return {
+        detectedCitations: dedupedCitations.sort((a, b) => b.count - a.count),
+        matchedCount,
+        missingCount: dedupedCitations.length - matchedCount,
+        totalCitations: dedupedCitations.length,
+      };
+    }
+
+    return analysis;
+  } catch (error) {
+    console.error('Failed to deduplicate citations:', error);
+    return analysis;
+  }
 }

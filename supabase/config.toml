@@ -42,3 +42,6 @@ verify_jwt = false
 
 [functions.ai-chat]
 verify_jwt = false
+
+[functions.dedupe-citations]
+verify_jwt = false
