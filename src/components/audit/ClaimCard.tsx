@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Eye, AlertTriangle, Lightbulb, FileText } from "lucide-react";
+import { Eye, AlertTriangle, Lightbulb, FileText, Wand2, Loader2, BookOpen, PenLine, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Claim, Source } from "@/lib/types";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
@@ -13,6 +13,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { getFile } from "@/lib/client-storage";
 import { extractTextFromFile } from "@/lib/pdf-parser";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "@/hooks/use-toast";
 
 interface ClaimCardProps {
   claim: Claim;
@@ -33,7 +35,6 @@ function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | '
   if (v.includes('no clear support') || v.includes('unsupported') || v.includes('not found')) {
     return 'red';
   }
-  // Default to yellow for ambiguous cases
   return 'yellow';
 }
 
@@ -44,18 +45,25 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
   const [textViewerTitle, setTextViewerTitle] = useState('');
   const [searchExcerpt, setSearchExcerpt] = useState('');
   const [isLoadingText, setIsLoadingText] = useState(false);
+  
+  // Rewrite state
+  const [isRewriting, setIsRewriting] = useState(false);
+  const [rewriteResult, setRewriteResult] = useState<{
+    rewritten_claim: string;
+    suggested_source?: string;
+    strategy?: string;
+    explanation: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const findSourceByLabel = (label: string): Source | undefined => {
-    // Normalize the label for matching
     const normalizedLabel = label.toLowerCase().replace(/[^\w\s,]/g, '').trim();
     
     return sources.find(s => {
-      // Check exact in_text_label match
       if (s.in_text_label && s.in_text_label.toLowerCase() === label.toLowerCase()) {
         return true;
       }
       
-      // Check if label contains part of the in_text_label
       if (s.in_text_label) {
         const normalizedSourceLabel = s.in_text_label.toLowerCase().replace(/[^\w\s,]/g, '').trim();
         if (normalizedSourceLabel.includes(normalizedLabel) || normalizedLabel.includes(normalizedSourceLabel)) {
@@ -63,13 +71,11 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
         }
       }
       
-      // Check shorthand_id match
       const shorthandLower = s.shorthand_id.toLowerCase();
       if (normalizedLabel.includes(shorthandLower.split('_')[0])) {
         return true;
       }
       
-      // Check authors match
       if (s.authors) {
         const authorParts = s.authors.toLowerCase().split(/[,&\s]+/);
         for (const part of authorParts) {
@@ -79,7 +85,6 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
         }
       }
       
-      // Check title match
       if (s.title) {
         const titleParts = s.title.toLowerCase().split(/\s+/);
         for (const part of titleParts) {
@@ -102,13 +107,11 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
       return;
     }
 
-    // Check if it's a PDF or text file
     const isPdf = source.file_path.toLowerCase().endsWith('.pdf');
     
     if (isPdf && onOpenSource) {
       onOpenSource(source, pageNumber);
     } else {
-      // Open text viewer for non-PDF files
       setIsLoadingText(true);
       setTextViewerTitle(source.original_filename);
       setSearchExcerpt(excerpt || '');
@@ -130,11 +133,60 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
     }
   };
 
-  // Highlight excerpt in text content and return sections
+  const handleRewrite = async (mode: 'find_source' | 'make_defensible') => {
+    setIsRewriting(true);
+    setRewriteResult(null);
+    
+    try {
+      const { data, error } = await supabase.functions.invoke('rewrite-claim', {
+        body: {
+          claim: claim.text,
+          sources: sources.map(s => ({
+            id: s.id,
+            in_text_label: s.in_text_label,
+            shorthand_id: s.shorthand_id,
+            title: s.title,
+            authors: s.authors,
+            year: s.year,
+          })),
+          mode,
+        },
+      });
+
+      if (error) throw error;
+      if (data.error) throw new Error(data.error);
+      
+      setRewriteResult(data.result);
+      toast({ title: "Rewrite generated", description: "Click to copy the suggestion" });
+    } catch (error: unknown) {
+      console.error('Rewrite error:', error);
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      if (msg.includes('429')) {
+        toast({ title: "Rate limited", description: "Please wait and try again", variant: "destructive" });
+      } else if (msg.includes('402')) {
+        toast({ title: "AI credits exhausted", description: "Add credits to continue", variant: "destructive" });
+      } else {
+        toast({ title: "Rewrite failed", description: msg, variant: "destructive" });
+      }
+    } finally {
+      setIsRewriting(false);
+    }
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast({ title: "Copied to clipboard" });
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({ title: "Failed to copy", variant: "destructive" });
+    }
+  };
+
   const getHighlightedSections = (): { before: string; highlight: string; after: string } | null => {
     if (!searchExcerpt || !textContent) return null;
     
-    // Find the excerpt in the text (case-insensitive, partial match)
     const searchWords = searchExcerpt.toLowerCase().split(/\s+/).filter(w => w.length > 4).slice(0, 5);
     let bestMatch = { start: -1, end: -1 };
     
@@ -160,6 +212,7 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
   };
 
   const highlightedSections = getHighlightedSections();
+  const showRewriteButtons = verdictColor === 'red' || verdictColor === 'yellow';
 
   return (
     <>
@@ -226,7 +279,7 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
 
         {/* Issues and Suggestions */}
         {claim.issues_or_suggestions && claim.issues_or_suggestions.length > 0 && (
-          <div className="space-y-1">
+          <div className="space-y-1 mb-3">
             <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide flex items-center gap-1">
               <Lightbulb className="h-3 w-3" />
               Suggestions
@@ -239,6 +292,82 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {/* AI Rewrite Section */}
+        {showRewriteButtons && (
+          <div className="border-t pt-3 mt-3">
+            <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide flex items-center gap-1 mb-2">
+              <Wand2 className="h-3 w-3" />
+              AI Rewrite Options
+            </h4>
+            <div className="flex gap-2 flex-wrap">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleRewrite('find_source')}
+                disabled={isRewriting || sources.length === 0}
+                className="text-xs"
+              >
+                {isRewriting ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <BookOpen className="h-3 w-3 mr-1" />
+                )}
+                Find Source & Cite
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleRewrite('make_defensible')}
+                disabled={isRewriting}
+                className="text-xs"
+              >
+                {isRewriting ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <PenLine className="h-3 w-3 mr-1" />
+                )}
+                Make Defensible
+              </Button>
+            </div>
+
+            {/* Rewrite Result */}
+            {rewriteResult && (
+              <div className="mt-3 p-3 bg-primary/5 border border-primary/20 rounded-lg">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <span className="text-xs font-medium text-primary">Suggested Rewrite:</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => copyToClipboard(rewriteResult.rewritten_claim)}
+                    className="h-6 text-xs"
+                  >
+                    {copied ? (
+                      <Check className="h-3 w-3 mr-1" />
+                    ) : (
+                      <Copy className="h-3 w-3 mr-1" />
+                    )}
+                    {copied ? 'Copied!' : 'Copy'}
+                  </Button>
+                </div>
+                <p className="text-sm leading-relaxed mb-2">{rewriteResult.rewritten_claim}</p>
+                {rewriteResult.suggested_source && (
+                  <p className="text-xs text-muted-foreground">
+                    <strong>Source:</strong> {rewriteResult.suggested_source}
+                  </p>
+                )}
+                {rewriteResult.strategy && (
+                  <p className="text-xs text-muted-foreground">
+                    <strong>Strategy:</strong> {rewriteResult.strategy}
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground mt-1">
+                  <strong>Explanation:</strong> {rewriteResult.explanation}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

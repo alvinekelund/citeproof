@@ -567,20 +567,29 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
 
     const totalToCheck = uncheckedParagraphs.length;
     let completed = 0;
+    const BATCH_SIZE = 3; // Process 3 paragraphs in parallel
 
-    for (const paragraph of paragraphs) {
+    // Process in batches for faster execution
+    for (let i = 0; i < uncheckedParagraphs.length; i += BATCH_SIZE) {
       if (abortRef.current) {
         toast({ title: "Batch check stopped" });
         break;
       }
 
-      if (!paragraph.checked && paragraph.shouldCheck !== false) {
-        await checkParagraph(paragraph.index);
-        completed++;
-        setBatchProgress((completed / totalToCheck) * 100);
-        
-        // Longer delay between requests to avoid rate limiting
-        await new Promise(r => setTimeout(r, 2500));
+      const batch = uncheckedParagraphs.slice(i, i + BATCH_SIZE);
+      
+      // Run batch in parallel
+      await Promise.all(batch.map(async (paragraph) => {
+        if (!abortRef.current) {
+          await checkParagraph(paragraph.index);
+          completed++;
+          setBatchProgress((completed / totalToCheck) * 100);
+        }
+      }));
+      
+      // Small delay between batches to avoid rate limiting
+      if (i + BATCH_SIZE < uncheckedParagraphs.length && !abortRef.current) {
+        await new Promise(r => setTimeout(r, 1500));
       }
     }
 
@@ -1174,6 +1183,18 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
                             {p.text}
                           </p>
                         </div>
+                        {p.shouldCheck !== false && !p.checked && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(e) => { e.stopPropagation(); markAsBlue(i); }}
+                            disabled={isBatchChecking}
+                            className="shrink-0 text-muted-foreground hover:text-verdict-blue"
+                            title="Skip - mark as no source needed"
+                          >
+                            <CircleSlash className="h-4 w-4" />
+                          </Button>
+                        )}
                         {p.shouldCheck !== false && (
                           <Button
                             variant={p.checked ? "outline" : "default"}
