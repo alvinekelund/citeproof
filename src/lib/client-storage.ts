@@ -1,9 +1,10 @@
-// Client-side storage using IndexedDB for files and localStorage for data
+// Client-side storage using IndexedDB for files and large data, localStorage for small data
 import type { Source, ThesisDocument, ThesisParagraph, ParagraphCheck, CheckResult, CitationStyle } from "./types";
 
 const DB_NAME = 'thesis-checker-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Bumped version for new stores
 const FILES_STORE = 'files';
+const TEXT_STORE = 'extracted-text'; // New store for extracted text
 
 // IndexedDB for file storage
 function openDB(): Promise<IDBDatabase> {
@@ -18,9 +19,84 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(FILES_STORE)) {
         db.createObjectStore(FILES_STORE, { keyPath: 'path' });
       }
+      // New store for extracted text (uses source ID as key)
+      if (!db.objectStoreNames.contains(TEXT_STORE)) {
+        db.createObjectStore(TEXT_STORE, { keyPath: 'id' });
+      }
     };
   });
 }
+
+// ============= EXTRACTED TEXT STORAGE (IndexedDB) =============
+
+export async function storeExtractedText(sourceId: string, text: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TEXT_STORE, 'readwrite');
+    const store = tx.objectStore(TEXT_STORE);
+    const request = store.put({ id: sourceId, text, updatedAt: new Date().toISOString() });
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function getExtractedText(sourceId: string): Promise<string | null> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TEXT_STORE, 'readonly');
+    const store = tx.objectStore(TEXT_STORE);
+    const request = store.get(sourceId);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      resolve(request.result?.text || null);
+    };
+  });
+}
+
+export async function deleteExtractedText(sourceId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TEXT_STORE, 'readwrite');
+    const store = tx.objectStore(TEXT_STORE);
+    const request = store.delete(sourceId);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+// Get all extracted texts for multiple sources at once
+export async function getExtractedTexts(sourceIds: string[]): Promise<Map<string, string>> {
+  const db = await openDB();
+  const result = new Map<string, string>();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TEXT_STORE, 'readonly');
+    const store = tx.objectStore(TEXT_STORE);
+    let pending = sourceIds.length;
+    
+    if (pending === 0) {
+      resolve(result);
+      return;
+    }
+    
+    for (const id of sourceIds) {
+      const request = store.get(id);
+      request.onerror = () => {
+        pending--;
+        if (pending === 0) resolve(result);
+      };
+      request.onsuccess = () => {
+        if (request.result?.text) {
+          result.set(id, request.result.text);
+        }
+        pending--;
+        if (pending === 0) resolve(result);
+      };
+    }
+  });
+}
+
+// ============= FILE STORAGE (IndexedDB) =============
 
 export async function storeFile(path: string, file: File): Promise<void> {
   const db = await openDB();
@@ -89,7 +165,7 @@ function generateId(): string {
   return crypto.randomUUID();
 }
 
-// LocalStorage helpers
+// LocalStorage helpers - with error handling for quota
 function getStorageItem<T>(key: string, defaultValue: T): T {
   try {
     const item = localStorage.getItem(key);
@@ -100,66 +176,142 @@ function getStorageItem<T>(key: string, defaultValue: T): T {
 }
 
 function setStorageItem<T>(key: string, value: T): void {
-  localStorage.setItem(key, JSON.stringify(value));
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    // Handle quota exceeded - log and continue
+    console.error('localStorage quota exceeded:', e);
+  }
 }
 
-// Sources
+// ============= SOURCES (localStorage for metadata, IndexedDB for text) =============
 const SOURCES_KEY = 'thesis-checker-sources';
 
+// Source type without the heavy extracted_text field for localStorage
+interface SourceMetadata extends Omit<Source, 'extracted_text'> {
+  has_extracted_text?: boolean; // Flag to indicate text is stored separately
+}
+
 export function getSources(): Source[] {
-  return getStorageItem<Source[]>(SOURCES_KEY, []);
+  const metadata = getStorageItem<SourceMetadata[]>(SOURCES_KEY, []);
+  // Return sources without extracted_text - it will be loaded separately when needed
+  return metadata.map(m => ({
+    ...m,
+    extracted_text: undefined, // Text is now in IndexedDB
+  }));
+}
+
+// Get sources with their extracted text loaded from IndexedDB
+export async function getSourcesWithText(): Promise<Source[]> {
+  const metadata = getStorageItem<SourceMetadata[]>(SOURCES_KEY, []);
+  const sourceIds = metadata.map(m => m.id);
+  const texts = await getExtractedTexts(sourceIds);
+  
+  return metadata.map(m => ({
+    ...m,
+    extracted_text: texts.get(m.id) || undefined,
+  }));
+}
+
+// Check which sources have extracted text
+export async function getSourcesTextStatus(): Promise<Map<string, boolean>> {
+  const metadata = getStorageItem<SourceMetadata[]>(SOURCES_KEY, []);
+  const sourceIds = metadata.map(m => m.id);
+  const texts = await getExtractedTexts(sourceIds);
+  
+  const status = new Map<string, boolean>();
+  for (const id of sourceIds) {
+    status.set(id, texts.has(id) && (texts.get(id)?.length || 0) > 100);
+  }
+  return status;
 }
 
 export function createSource(source: Omit<Source, 'id' | 'created_at' | 'updated_at'>): Source {
-  const sources = getSources();
+  const metadata = getStorageItem<SourceMetadata[]>(SOURCES_KEY, []);
   
   // Check for duplicate by original_filename
-  const existingIndex = sources.findIndex(s => s.original_filename === source.original_filename);
+  const existingIndex = metadata.findIndex(s => s.original_filename === source.original_filename);
+  
+  // Extract the text before saving metadata
+  const { extracted_text, ...sourceWithoutText } = source;
+  
   if (existingIndex !== -1) {
     // Update existing instead of creating duplicate
-    const updated: Source = {
-      ...sources[existingIndex],
-      ...source,
+    const updated: SourceMetadata = {
+      ...metadata[existingIndex],
+      ...sourceWithoutText,
+      has_extracted_text: !!extracted_text,
       updated_at: new Date().toISOString(),
     };
-    sources[existingIndex] = updated;
-    setStorageItem(SOURCES_KEY, sources);
-    return updated;
+    metadata[existingIndex] = updated;
+    setStorageItem(SOURCES_KEY, metadata);
+    
+    // Store extracted text separately in IndexedDB if provided
+    if (extracted_text) {
+      storeExtractedText(updated.id, extracted_text).catch(console.error);
+    }
+    
+    return { ...updated, extracted_text };
   }
   
-  const newSource: Source = {
-    ...source,
-    id: generateId(),
+  const newId = generateId();
+  const newSource: SourceMetadata = {
+    ...sourceWithoutText,
+    id: newId,
     citation_style: source.citation_style || 'apa7',
+    has_extracted_text: !!extracted_text,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
-  sources.unshift(newSource);
-  setStorageItem(SOURCES_KEY, sources);
-  return newSource;
+  metadata.unshift(newSource);
+  setStorageItem(SOURCES_KEY, metadata);
+  
+  // Store extracted text separately in IndexedDB if provided
+  if (extracted_text) {
+    storeExtractedText(newId, extracted_text).catch(console.error);
+  }
+  
+  return { ...newSource, extracted_text };
 }
 
 export function updateSource(id: string, updates: Partial<Source>): Source {
-  const sources = getSources();
-  const index = sources.findIndex(s => s.id === id);
+  const metadata = getStorageItem<SourceMetadata[]>(SOURCES_KEY, []);
+  const index = metadata.findIndex(s => s.id === id);
   if (index === -1) throw new Error('Source not found');
   
-  sources[index] = {
-    ...sources[index],
-    ...updates,
+  // Extract the text before saving metadata
+  const { extracted_text, ...updatesWithoutText } = updates;
+  
+  metadata[index] = {
+    ...metadata[index],
+    ...updatesWithoutText,
+    has_extracted_text: extracted_text !== undefined ? !!extracted_text : metadata[index].has_extracted_text,
     updated_at: new Date().toISOString(),
   };
-  setStorageItem(SOURCES_KEY, sources);
-  return sources[index];
+  setStorageItem(SOURCES_KEY, metadata);
+  
+  // Store extracted text separately in IndexedDB if provided
+  if (extracted_text !== undefined) {
+    if (extracted_text) {
+      storeExtractedText(id, extracted_text).catch(console.error);
+    } else {
+      deleteExtractedText(id).catch(console.error);
+    }
+  }
+  
+  return { ...metadata[index], extracted_text };
 }
 
 export function deleteSource(id: string): void {
-  const sources = getSources();
-  const filtered = sources.filter(s => s.id !== id);
+  const metadata = getStorageItem<SourceMetadata[]>(SOURCES_KEY, []);
+  const filtered = metadata.filter(s => s.id !== id);
   setStorageItem(SOURCES_KEY, filtered);
+  
+  // Also delete extracted text from IndexedDB
+  deleteExtractedText(id).catch(console.error);
 }
 
-// Thesis documents
+// ============= THESIS DOCUMENTS =============
 const DOCS_KEY = 'thesis-checker-documents';
 const PARAGRAPHS_KEY = 'thesis-checker-paragraphs';
 
@@ -209,7 +361,7 @@ export function createThesisParagraphs(paragraphs: Omit<ThesisParagraph, 'id' | 
   setStorageItem(PARAGRAPHS_KEY, [...all, ...newParagraphs]);
 }
 
-// Paragraph checks (history)
+// ============= PARAGRAPH CHECKS (HISTORY) =============
 const CHECKS_KEY = 'thesis-checker-checks';
 
 export function getParagraphChecks(): ParagraphCheck[] {
@@ -247,7 +399,7 @@ export function createParagraphCheck(check: {
   return newCheck;
 }
 
-// File upload helper
+// ============= FILE UPLOAD HELPER =============
 export async function uploadFile(file: File, folder: string): Promise<string> {
   const filename = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
   const filePath = `${folder}/${filename}`;
@@ -302,7 +454,7 @@ export async function openFileInNewTab(filePath: string): Promise<boolean> {
   }
 }
 
-// Pending citations - citations detected in thesis but not in library
+// ============= PENDING CITATIONS =============
 const PENDING_CITATIONS_KEY = 'thesis-checker-pending-citations';
 
 export interface PendingCitation {
@@ -359,7 +511,7 @@ export function findMatchingPendingCitation(author: string, year: number | null)
   }) || null;
 }
 
-// Session missing citations - persisted per session
+// ============= SESSION DATA (for citation re-analysis) =============
 const SESSION_MISSING_KEY = 'thesis-checker-session-missing';
 
 export interface SessionMissingCitations {
@@ -382,7 +534,15 @@ export function saveSessionMissingData(data: SessionMissingCitations): void {
   }
   // Keep only last 10 sessions
   while (all.length > 10) all.shift();
-  setStorageItem(SESSION_MISSING_KEY, all);
+  
+  try {
+    setStorageItem(SESSION_MISSING_KEY, all);
+  } catch (e) {
+    // If quota exceeded, try removing oldest entries
+    console.warn('Session data storage quota issue, trimming old sessions');
+    while (all.length > 3) all.shift();
+    setStorageItem(SESSION_MISSING_KEY, all);
+  }
 }
 
 export function deleteSessionMissingData(sessionId: string): void {

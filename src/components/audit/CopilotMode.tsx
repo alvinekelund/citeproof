@@ -11,7 +11,7 @@ import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, Thesi
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
-import { getSources, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingData, getSessionMissingData, deleteSessionMissingData } from "@/lib/client-storage";
+import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingData, getSessionMissingData, deleteSessionMissingData } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
 import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder, deduplicateCitations } from "@/lib/citation-detector";
 import {
@@ -174,6 +174,7 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
   
   // Helper to load session data without triggering toast (for auto-load)
   const loadSessionData = async (session: CopilotSession, showToast = false) => {
+    console.log('[CopilotMode] Loading session:', session.thesis_name);
     setCurrentSessionId(session.id);
     setParagraphs(session.paragraphs_data);
     setFile({ name: session.thesis_name } as File);
@@ -181,10 +182,14 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
     
     // Restore fullText and re-analyze citations against current library
     const sessionData = getSessionMissingData(session.id);
+    console.log('[CopilotMode] Session data:', sessionData ? `${sessionData.fullText?.length} chars` : 'none');
+    
     if (sessionData?.fullText) {
       setFullText(sessionData.fullText);
       const currentSources = getSources();
+      console.log('[CopilotMode] Analyzing citations with', currentSources.length, 'sources');
       const analysis = await analyzeAndDeduplicateCitations(sessionData.fullText, currentSources);
+      console.log('[CopilotMode] Analysis result:', analysis.matchedCount, 'matched,', analysis.missingCount, 'missing');
       setCitationAnalysis(analysis);
       
       // Report used source IDs to parent
@@ -194,6 +199,7 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
             .filter(c => c.matched && c.matchedSourceId)
             .map(c => c.matchedSourceId!)
         );
+        console.log('[CopilotMode] Reporting used sources:', usedIds.size);
         onUsedSourcesChange(usedIds);
       }
       
@@ -209,9 +215,11 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
               count: c.count,
             };
           });
+        console.log('[CopilotMode] Reporting unmatched:', unmatched.length);
         onUnmatchedCitationsChange(unmatched);
       }
     } else {
+      console.log('[CopilotMode] No session fullText, clearing citation state');
       setFullText('');
       setCitationAnalysis(null);
       if (onUsedSourcesChange) {
@@ -450,10 +458,13 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
     setSelectedIndex(index);
 
     try {
+      // Load sources with extracted text from IndexedDB
+      const sourcesWithText = await getSourcesWithText();
+      
       const { data, error } = await supabase.functions.invoke('check-paragraph', {
         body: {
           paragraph: paragraph.text,
-          sources: sources.map(s => ({
+          sources: sourcesWithText.map(s => ({
             id: s.id,
             in_text_label: s.in_text_label,
             shorthand_id: s.shorthand_id,
@@ -556,8 +567,10 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedC
       return;
     }
 
-    // Warn if sources are missing text content
-    const sourcesWithText = sources.filter(s => s.extracted_text && s.extracted_text.length > 100);
+    // Load sources with text from IndexedDB to check text availability
+    const sourcesWithFullText = await getSourcesWithText();
+    const sourcesWithText = sourcesWithFullText.filter(s => s.extracted_text && s.extracted_text.length > 100);
+    
     if (sourcesWithText.length === 0) {
       toast({ 
         title: "No source text available", 
