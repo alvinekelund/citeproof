@@ -44,8 +44,14 @@ export function ThesisSelector({
 
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || file.type !== 'application/pdf') {
-      toast({ title: "Please select a PDF file", variant: "destructive" });
+    if (!file) return;
+    
+    const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'];
+    const validExts = ['.pdf', '.docx', '.txt'];
+    const ext = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+    
+    if (!validTypes.includes(file.type) && !validExts.includes(ext)) {
+      toast({ title: "Please select a PDF, DOCX, or TXT file", variant: "destructive" });
       return;
     }
 
@@ -59,10 +65,11 @@ export function ThesisSelector({
       setUploadStatus('File uploaded, parsing PDF...');
       
       // Create document record first
+      const ext = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
       const doc = await createThesisDocument({
         filename: filePath.split('/').pop() || file.name,
         file_path: filePath,
-        title: file.name.replace(/\.pdf$/i, ''),
+        title: file.name.replace(/\.(pdf|docx|txt)$/i, ''),
         total_paragraphs: 0,
       });
 
@@ -174,7 +181,7 @@ export function ThesisSelector({
         <div className="flex items-center gap-2">
           <input
             type="file"
-            accept=".pdf"
+            accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
             onChange={handleUpload}
             className="hidden"
             id="thesis-upload"
