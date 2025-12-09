@@ -10,9 +10,21 @@ export interface Source {
   authors?: string;
   year?: number;
   notes?: string;
+  citation_style: CitationStyle;
   created_at: string;
   updated_at: string;
 }
+
+export type CitationStyle = 'apa7' | 'mla9' | 'chicago' | 'harvard' | 'ieee' | 'vancouver';
+
+export const CITATION_STYLES: { value: CitationStyle; label: string; example: string }[] = [
+  { value: 'apa7', label: 'APA 7th Edition', example: '(Smith et al., 2023)' },
+  { value: 'mla9', label: 'MLA 9th Edition', example: '(Smith et al. 45)' },
+  { value: 'chicago', label: 'Chicago', example: '(Smith et al. 2023)' },
+  { value: 'harvard', label: 'Harvard', example: '(Smith et al., 2023)' },
+  { value: 'ieee', label: 'IEEE', example: '[1]' },
+  { value: 'vancouver', label: 'Vancouver', example: '(1)' },
+];
 
 export interface ThesisDocument {
   id: string;
