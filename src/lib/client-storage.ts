@@ -2,9 +2,10 @@
 import type { Source, ThesisDocument, ThesisParagraph, ParagraphCheck, CheckResult, CitationStyle } from "./types";
 
 const DB_NAME = 'thesis-checker-db';
-const DB_VERSION = 2; // Bumped version for new stores
+const DB_VERSION = 3; // Bumped version for new session text store
 const FILES_STORE = 'files';
-const TEXT_STORE = 'extracted-text'; // New store for extracted text
+const TEXT_STORE = 'extracted-text';
+const SESSION_TEXT_STORE = 'session-text'; // New store for session full text
 
 // IndexedDB for file storage
 function openDB(): Promise<IDBDatabase> {
@@ -19,9 +20,13 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(FILES_STORE)) {
         db.createObjectStore(FILES_STORE, { keyPath: 'path' });
       }
-      // New store for extracted text (uses source ID as key)
+      // Store for extracted text (uses source ID as key)
       if (!db.objectStoreNames.contains(TEXT_STORE)) {
         db.createObjectStore(TEXT_STORE, { keyPath: 'id' });
+      }
+      // New store for session full text (uses session ID as key)
+      if (!db.objectStoreNames.contains(SESSION_TEXT_STORE)) {
+        db.createObjectStore(SESSION_TEXT_STORE, { keyPath: 'sessionId' });
       }
     };
   });
@@ -94,6 +99,58 @@ export async function getExtractedTexts(sourceIds: string[]): Promise<Map<string
       };
     }
   });
+}
+
+// ============= SESSION TEXT STORAGE (IndexedDB) =============
+
+export async function storeSessionText(sessionId: string, text: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SESSION_TEXT_STORE, 'readwrite');
+    const store = tx.objectStore(SESSION_TEXT_STORE);
+    const request = store.put({ sessionId, text, updatedAt: new Date().toISOString() });
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function getSessionText(sessionId: string): Promise<string | null> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(SESSION_TEXT_STORE, 'readonly');
+      const store = tx.objectStore(SESSION_TEXT_STORE);
+      const request = store.get(sessionId);
+      request.onerror = () => {
+        console.error('Error getting session text:', request.error);
+        resolve(null);
+      };
+      request.onsuccess = () => {
+        resolve(request.result?.text || null);
+      };
+    });
+  } catch (e) {
+    console.error('Failed to get session text:', e);
+    return null;
+  }
+}
+
+export async function deleteSessionText(sessionId: string): Promise<void> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(SESSION_TEXT_STORE, 'readwrite');
+      const store = tx.objectStore(SESSION_TEXT_STORE);
+      const request = store.delete(sessionId);
+      request.onerror = () => {
+        console.error('Error deleting session text:', request.error);
+        resolve();
+      };
+      request.onsuccess = () => resolve();
+    });
+  } catch (e) {
+    console.error('Failed to delete session text:', e);
+  }
 }
 
 // ============= FILE STORAGE (IndexedDB) =============
@@ -512,6 +569,9 @@ export function findMatchingPendingCitation(author: string, year: number | null)
 }
 
 // ============= SESSION DATA (for citation re-analysis) =============
+// NOTE: fullText is now stored in IndexedDB via storeSessionText/getSessionText
+// This localStorage version is kept for backward compatibility but deprecated
+
 const SESSION_MISSING_KEY = 'thesis-checker-session-missing';
 
 export interface SessionMissingCitations {
@@ -519,33 +579,56 @@ export interface SessionMissingCitations {
   fullText: string; // Store full text for re-analysis
 }
 
+// Get session missing data - first try IndexedDB, fallback to localStorage
+export async function getSessionMissingDataAsync(sessionId: string): Promise<SessionMissingCitations | null> {
+  // Try IndexedDB first
+  const idbText = await getSessionText(sessionId);
+  if (idbText) {
+    return { sessionId, fullText: idbText };
+  }
+  
+  // Fallback to localStorage for backward compatibility
+  const all = getStorageItem<SessionMissingCitations[]>(SESSION_MISSING_KEY, []);
+  const found = all.find(s => s.sessionId === sessionId);
+  
+  // If found in localStorage, migrate to IndexedDB
+  if (found?.fullText) {
+    await storeSessionText(sessionId, found.fullText).catch(console.error);
+    // Remove from localStorage to free up space
+    const filtered = all.filter(s => s.sessionId !== sessionId);
+    setStorageItem(SESSION_MISSING_KEY, filtered);
+    return found;
+  }
+  
+  return null;
+}
+
+// Deprecated: sync version for backward compatibility
 export function getSessionMissingData(sessionId: string): SessionMissingCitations | null {
   const all = getStorageItem<SessionMissingCitations[]>(SESSION_MISSING_KEY, []);
   return all.find(s => s.sessionId === sessionId) || null;
 }
 
+// Save session missing data - now stores in IndexedDB
+export async function saveSessionMissingDataAsync(data: SessionMissingCitations): Promise<void> {
+  await storeSessionText(data.sessionId, data.fullText);
+}
+
+// Deprecated: sync version that stores in localStorage (for very short texts only)
 export function saveSessionMissingData(data: SessionMissingCitations): void {
+  // Store in IndexedDB for large texts
+  storeSessionText(data.sessionId, data.fullText).catch(console.error);
+}
+
+export async function deleteSessionMissingDataAsync(sessionId: string): Promise<void> {
+  await deleteSessionText(sessionId);
+  // Also clean up localStorage
   const all = getStorageItem<SessionMissingCitations[]>(SESSION_MISSING_KEY, []);
-  const existing = all.findIndex(s => s.sessionId === data.sessionId);
-  if (existing >= 0) {
-    all[existing] = data;
-  } else {
-    all.push(data);
-  }
-  // Keep only last 10 sessions
-  while (all.length > 10) all.shift();
-  
-  try {
-    setStorageItem(SESSION_MISSING_KEY, all);
-  } catch (e) {
-    // If quota exceeded, try removing oldest entries
-    console.warn('Session data storage quota issue, trimming old sessions');
-    while (all.length > 3) all.shift();
-    setStorageItem(SESSION_MISSING_KEY, all);
-  }
+  setStorageItem(SESSION_MISSING_KEY, all.filter(s => s.sessionId !== sessionId));
 }
 
 export function deleteSessionMissingData(sessionId: string): void {
+  deleteSessionText(sessionId).catch(console.error);
   const all = getStorageItem<SessionMissingCitations[]>(SESSION_MISSING_KEY, []);
   setStorageItem(SESSION_MISSING_KEY, all.filter(s => s.sessionId !== sessionId));
 }
