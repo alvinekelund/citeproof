@@ -11,9 +11,9 @@ import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, Thesi
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
-import { getSources, createParagraphCheck } from "@/lib/client-storage";
+import { getSources, createParagraphCheck, addPendingCitation, clearPendingCitations } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
-import { analyzeCitations, CitationAnalysis, getMissingSources } from "@/lib/citation-detector";
+import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder } from "@/lib/citation-detector";
 import {
   Select,
   SelectContent,
@@ -544,22 +544,66 @@ export function CopilotMode() {
           <div className="flex items-start gap-3">
             <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
             <div className="flex-1">
-              <h4 className="font-semibold text-destructive">
-                {missingSources.length} Missing Source{missingSources.length > 1 ? 's' : ''} in Library
-              </h4>
+              <div className="flex items-center justify-between">
+                <h4 className="font-semibold text-destructive">
+                  {missingSources.length} Missing Source{missingSources.length > 1 ? 's' : ''} in Library
+                </h4>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => {
+                    // Add all missing citations as pending for matching
+                    clearPendingCitations();
+                    for (const citation of missingSources) {
+                      const parsed = parseCitationForPlaceholder(citation.raw);
+                      addPendingCitation({
+                        label: parsed.label,
+                        author: parsed.author,
+                        year: parsed.year,
+                        count: citation.count,
+                      });
+                    }
+                    toast({ 
+                      title: "Citations ready for matching", 
+                      description: `${missingSources.length} citations added. Now upload PDFs to your library - they'll be auto-matched.` 
+                    });
+                  }}
+                >
+                  Queue All for Matching
+                </Button>
+              </div>
               <p className="text-sm text-muted-foreground mt-1">
-                The following citations were found in your thesis but are not in your source library:
+                Click a citation to add it to the pending list, then upload the PDF to auto-match:
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {missingSources.map((citation, i) => (
-                  <Badge key={i} variant="outline" className="text-destructive border-destructive">
-                    {citation.raw}
-                    {citation.count > 1 && <span className="ml-1 opacity-60">×{citation.count}</span>}
-                  </Badge>
-                ))}
+                {missingSources.map((citation, i) => {
+                  const parsed = parseCitationForPlaceholder(citation.raw);
+                  return (
+                    <Badge 
+                      key={i} 
+                      variant="outline" 
+                      className="text-destructive border-destructive cursor-pointer hover:bg-destructive/10 transition-colors"
+                      onClick={() => {
+                        addPendingCitation({
+                          label: parsed.label,
+                          author: parsed.author,
+                          year: parsed.year,
+                          count: citation.count,
+                        });
+                        toast({ 
+                          title: "Citation queued", 
+                          description: `"${citation.raw}" is ready for matching. Upload the PDF to your library.` 
+                        });
+                      }}
+                    >
+                      {citation.raw}
+                      {citation.count > 1 && <span className="ml-1 opacity-60">×{citation.count}</span>}
+                    </Badge>
+                  );
+                })}
               </div>
               <p className="text-xs text-muted-foreground mt-3">
-                Add these sources to your library for accurate verification.
+                Go to Sources tab to upload PDFs. They'll automatically be matched to queued citations.
               </p>
             </div>
           </div>

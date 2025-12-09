@@ -1,11 +1,12 @@
 import { useCallback, useState } from "react";
-import { Upload, FileText, Loader2, Sparkles } from "lucide-react";
+import { Upload, FileText, Loader2, Sparkles, Link } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { uploadFile, createSource, generateShorthandId, updateSource } from "@/lib/client-storage";
+import { uploadFile, createSource, generateShorthandId, updateSource, getPendingCitations, removePendingCitation } from "@/lib/client-storage";
 import { toast } from "@/hooks/use-toast";
 import { CitationStyle, CITATION_STYLES } from "@/lib/types";
 import { extractTextFromFile } from "@/lib/pdf-parser";
 import { extractMetadataFromText } from "@/lib/metadata-extractor";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -23,6 +24,12 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string[]>([]);
   const [citationStyle, setCitationStyle] = useState<CitationStyle>('apa7');
+  const [pendingCitations, setPendingCitations] = useState(getPendingCitations());
+
+  // Refresh pending citations
+  const refreshPending = () => {
+    setPendingCitations(getPendingCitations());
+  };
 
   const handleFiles = useCallback(async (files: FileList) => {
     const pdfFiles = Array.from(files).filter(f => f.type === 'application/pdf');
@@ -58,6 +65,9 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
         });
 
         // Try to extract metadata from the file
+        let extractedAuthor = '';
+        let extractedYear: number | null = null;
+        
         try {
           setUploadProgress(prev => [...prev, `Extracting metadata from ${file.name}...`]);
           
@@ -73,8 +83,16 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
             if (metadata && Object.keys(metadata).length > 0) {
               const updates: any = {};
               if (metadata.suggested_label) updates.in_text_label = metadata.suggested_label;
-              if (metadata.authors) updates.authors = metadata.authors;
-              if (metadata.year) updates.year = metadata.year;
+              if (metadata.authors) {
+                updates.authors = metadata.authors;
+                // Extract first author surname for matching
+                const match = metadata.authors.match(/^([A-Z][a-zA-Z''-]+)/);
+                if (match) extractedAuthor = match[1].toLowerCase();
+              }
+              if (metadata.year) {
+                updates.year = metadata.year;
+                extractedYear = metadata.year;
+              }
               if (metadata.title) updates.title = metadata.title;
               
               if (Object.keys(updates).length > 0) {
@@ -92,6 +110,23 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
         } catch {
           setUploadProgress(prev => [...prev, `✓ ${file.name} uploaded`]);
         }
+
+        // Try to match with pending citations
+        if (extractedAuthor || extractedYear) {
+          const currentPending = getPendingCitations();
+          const matched = currentPending.find(p => {
+            const pendingAuthor = p.author.toLowerCase();
+            const yearMatches = !p.year || !extractedYear || p.year === extractedYear;
+            return pendingAuthor === extractedAuthor && yearMatches;
+          });
+          
+          if (matched) {
+            // Update the source with the pending citation label
+            updateSource(source.id, { in_text_label: matched.label });
+            removePendingCitation(matched.id);
+            setUploadProgress(prev => [...prev, `🔗 Matched to citation: ${matched.label}`]);
+          }
+        }
       } catch (error) {
         console.error('Upload error:', error);
         setUploadProgress(prev => [...prev, `✗ Failed to upload ${file.name}`]);
@@ -99,6 +134,7 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
     }
 
     setIsUploading(false);
+    refreshPending();
     onUploadComplete();
     toast({
       title: "Upload complete",
@@ -132,6 +168,42 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
 
   return (
     <div className="space-y-4">
+      {/* Pending Citations */}
+      {pendingCitations.length > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Link className="h-4 w-4 text-amber-600" />
+            <span className="text-sm font-medium text-amber-700">
+              {pendingCitations.length} citation{pendingCitations.length > 1 ? 's' : ''} waiting for match
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {pendingCitations.slice(0, 8).map(p => (
+              <Badge 
+                key={p.id} 
+                variant="outline" 
+                className="text-xs text-amber-700 border-amber-500/50 cursor-pointer hover:bg-amber-500/20"
+                onClick={() => {
+                  removePendingCitation(p.id);
+                  refreshPending();
+                }}
+                title="Click to remove from queue"
+              >
+                {p.label}
+              </Badge>
+            ))}
+            {pendingCitations.length > 8 && (
+              <Badge variant="secondary" className="text-xs">
+                +{pendingCitations.length - 8} more
+              </Badge>
+            )}
+          </div>
+          <p className="text-xs text-amber-600 mt-2">
+            Upload PDFs below - they'll auto-match to these citations
+          </p>
+        </div>
+      )}
+
       {/* Citation Style Selector */}
       <div className="space-y-2">
         <label className="text-sm font-medium">Citation Style</label>
@@ -199,6 +271,7 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
               <span className={cn(
                 msg.startsWith('✗') ? "text-destructive" : 
                 msg.startsWith('✓') ? "text-verdict-green" : 
+                msg.startsWith('🔗') ? "text-amber-600 font-medium" :
                 "text-muted-foreground"
               )}>
                 {msg}
