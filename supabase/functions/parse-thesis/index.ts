@@ -45,14 +45,14 @@ serve(async (req) => {
     const arrayBuffer = await fileData.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
 
-    // Extract text from PDF
-    const text = await extractPdfText(bytes);
+    // Simple text extraction - lightweight approach to avoid compute limits
+    const text = extractPdfTextSimple(bytes);
 
     if (!text || text.length < 100) {
       return new Response(
         JSON.stringify({ 
           error: 'Could not extract text from PDF',
-          message: 'This PDF may be image-based or encrypted. Please try a different file or manually enter paragraph text.',
+          message: 'This PDF may be image-based or use advanced encoding. Please manually enter paragraph text.',
         }),
         { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -80,67 +80,56 @@ serve(async (req) => {
   }
 });
 
-async function extractPdfText(bytes: Uint8Array): Promise<string> {
+// Lightweight PDF text extraction - no decompression to avoid compute limits
+function extractPdfTextSimple(bytes: Uint8Array): string {
   const decoder = new TextDecoder('latin1');
   const pdfContent = decoder.decode(bytes);
   
   const extractedTexts: string[] = [];
   
-  // Method 1: Try to decompress and extract from FlateDecode streams
-  const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
-  let streamMatch;
-  
-  while ((streamMatch = streamRegex.exec(pdfContent)) !== null) {
-    const streamData = streamMatch[1];
-    
-    // Check if this might be text content by looking for readable patterns after decompression
-    try {
-      // Try to decompress using DecompressionStream (available in Deno)
-      const streamBytes = new Uint8Array(streamData.length);
-      for (let i = 0; i < streamData.length; i++) {
-        streamBytes[i] = streamData.charCodeAt(i);
-      }
-      
-      try {
-        const decompressed = await decompressData(streamBytes);
-        const decompressedText = new TextDecoder('latin1').decode(decompressed);
-        
-        // Extract text from the decompressed content
-        const texts = extractTextFromContent(decompressedText);
-        if (texts.length > 0) {
-          extractedTexts.push(...texts);
-        }
-      } catch {
-        // Not compressed or different compression, try raw
-        const texts = extractTextFromContent(streamData);
-        if (texts.length > 0) {
-          extractedTexts.push(...texts);
-        }
-      }
-    } catch {
-      // Skip this stream
-    }
-  }
-  
-  // Method 2: Extract text from BT...ET blocks (uncompressed PDFs)
+  // Method 1: Extract from BT...ET text blocks (uncompressed PDFs)
   const textObjectRegex = /BT\s*([\s\S]*?)\s*ET/g;
   let match;
   
   while ((match = textObjectRegex.exec(pdfContent)) !== null) {
     const block = match[1];
-    const texts = extractTextFromContent(block);
-    if (texts.length > 0) {
-      extractedTexts.push(...texts);
+    
+    // Extract from Tj operator
+    const tjRegex = /\(([^)]+)\)\s*Tj/g;
+    let tjMatch;
+    while ((tjMatch = tjRegex.exec(block)) !== null) {
+      const decoded = decodePdfString(tjMatch[1]);
+      if (decoded.length > 1) {
+        extractedTexts.push(decoded);
+      }
+    }
+    
+    // Extract from TJ operator (arrays)
+    const tjArrayRegex = /\[((?:[^[\]]*|\[[^\]]*\])*)\]\s*TJ/gi;
+    let tjArrayMatch;
+    while ((tjArrayMatch = tjArrayRegex.exec(block)) !== null) {
+      const arrayContent = tjArrayMatch[1];
+      const stringParts = arrayContent.match(/\(([^)]*)\)/g);
+      if (stringParts) {
+        const combined = stringParts
+          .map(p => decodePdfString(p.slice(1, -1)))
+          .join('');
+        if (combined.length > 1) {
+          extractedTexts.push(combined);
+        }
+      }
     }
   }
   
-  // Method 3: If still no text, look for readable ASCII sequences
-  if (extractedTexts.length === 0) {
-    const asciiRegex = /[\x20-\x7E]{30,}/g;
+  // Method 2: Look for readable text sequences in the PDF
+  if (extractedTexts.length < 10) {
+    // Match longer sequences of readable ASCII
+    const asciiRegex = /[\x20-\x7E]{40,}/g;
     let asciiMatch;
     while ((asciiMatch = asciiRegex.exec(pdfContent)) !== null) {
       const text = asciiMatch[0];
-      if (!isPdfCommand(text) && hasRealWords(text)) {
+      // Filter out PDF commands and binary-looking content
+      if (!isPdfCommand(text) && hasRealWords(text) && !extractedTexts.includes(text)) {
         extractedTexts.push(text);
       }
     }
@@ -158,72 +147,7 @@ async function extractPdfText(bytes: Uint8Array): Promise<string> {
   return result;
 }
 
-async function decompressData(data: Uint8Array): Promise<Uint8Array> {
-  // Use pako-style zlib decompression via DecompressionStream
-  const ds = new DecompressionStream('deflate-raw');
-  const writer = ds.writable.getWriter();
-  
-  // Skip zlib header (first 2 bytes) if present
-  const startOffset = (data[0] === 0x78) ? 2 : 0;
-  const inputData = data.slice(startOffset);
-  
-  writer.write(inputData);
-  writer.close();
-  
-  const chunks: Uint8Array[] = [];
-  const reader = ds.readable.getReader();
-  
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  
-  const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  
-  return result;
-}
-
-function extractTextFromContent(content: string): string[] {
-  const texts: string[] = [];
-  
-  // Extract from Tj operator: (text) Tj
-  const tjRegex = /\(([^)]+)\)\s*Tj/g;
-  let tjMatch;
-  while ((tjMatch = tjRegex.exec(content)) !== null) {
-    const decoded = decodePdfString(tjMatch[1]);
-    if (decoded.length > 1) {
-      texts.push(decoded);
-    }
-  }
-  
-  // Extract from TJ operator: [(text) num (text) ...] TJ
-  const tjArrayRegex = /\[((?:[^[\]]*|\[[^\]]*\])*)\]\s*TJ/gi;
-  let tjArrayMatch;
-  while ((tjArrayMatch = tjArrayRegex.exec(content)) !== null) {
-    const arrayContent = tjArrayMatch[1];
-    const stringParts = arrayContent.match(/\(([^)]*)\)/g);
-    if (stringParts) {
-      const combined = stringParts
-        .map(p => decodePdfString(p.slice(1, -1)))
-        .join('');
-      if (combined.length > 1) {
-        texts.push(combined);
-      }
-    }
-  }
-  
-  return texts;
-}
-
 function decodePdfString(str: string): string {
-  // Handle PDF escape sequences
   return str
     .replace(/\\n/g, '\n')
     .replace(/\\r/g, '\r')
@@ -234,9 +158,8 @@ function decodePdfString(str: string): string {
 }
 
 function isPdfCommand(text: string): boolean {
-  // Check if text looks like PDF commands
   const commandPatterns = [
-    /^\/[A-Z]/,
+    /^\/[A-Z]/i,
     /^\d+\s+\d+\s+obj/,
     /^stream$/,
     /^endstream$/,
@@ -244,14 +167,19 @@ function isPdfCommand(text: string): boolean {
     /<<.*>>/,
     /^xref$/,
     /^trailer$/,
+    /^startxref$/,
+    /^%%EOF/,
+    /\/Type\//,
+    /\/Font\//,
+    /\/BaseFont\//,
+    /\/Encoding\//,
   ];
   
   return commandPatterns.some(p => p.test(text));
 }
 
 function hasRealWords(text: string): boolean {
-  // Check if text contains real English words
-  const commonWords = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out'];
+  const commonWords = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'this', 'that', 'with', 'from', 'they', 'will', 'what', 'when', 'there', 'their', 'which', 'about'];
   const lowerText = text.toLowerCase();
   
   let wordCount = 0;
@@ -261,7 +189,7 @@ function hasRealWords(text: string): boolean {
     }
   }
   
-  return wordCount >= 2;
+  return wordCount >= 3;
 }
 
 function splitIntoParagraphs(text: string): string[] {
