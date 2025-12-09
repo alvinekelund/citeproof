@@ -39,9 +39,9 @@ TASK
 4. Provide evidence:
    - For each supported or partially supported claim, list one or more evidence entries with:
      - label: in-text label
-     - excerpt: short quote (1–3 sentences or up to ~25 words)
-     - page_number: estimate based on context (use 1 if unknown)
-     - section: if mentioned
+     - excerpt: short quote (1–3 sentences or up to ~25 words) that supports the claim
+     - page_number: use 0 if you don't know the exact page (do NOT guess page 1)
+     - section: section name if you can infer it from the excerpt context (e.g. "Abstract", "Introduction", "Results")
 
 5. For claims with no support, clearly state: "No clear supporting passage found in [LABEL]."
 
