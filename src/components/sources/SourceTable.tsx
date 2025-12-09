@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { Eye, Pencil, Trash2, Save, X, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -39,26 +39,72 @@ import { cn } from "@/lib/utils";
 import { extractTextFromFile } from "@/lib/pdf-parser";
 import { extractMetadataFromText } from "@/lib/metadata-extractor";
 import { PdfViewerDialog } from "./PdfViewerDialog";
+import { LibraryItem } from "./SourceLibrary";
 
-type SortField = 'in_text_label' | 'authors' | 'year' | 'created_at';
+type SortField = 'status' | 'in_text_label' | 'authors' | 'year' | 'created_at';
 type SortDirection = 'asc' | 'desc';
 
 interface SourceTableProps {
   sources: Source[];
+  libraryItems?: LibraryItem[];
   onUpdate: () => void;
   usedSourceIds?: Set<string>;
 }
 
-export function SourceTable({ sources, onUpdate, usedSourceIds }: SourceTableProps) {
+export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds }: SourceTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editData, setEditData] = useState<Partial<Source>>({});
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [viewingSource, setViewingSource] = useState<Source | null>(null);
-  const [sortField, setSortField] = useState<SortField>('created_at');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+  const [sortField, setSortField] = useState<SortField>('status');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
-  const sortedSources = useMemo(() => {
+  // If libraryItems provided, use those; otherwise fall back to sorting sources
+  const displayItems = useMemo(() => {
+    if (libraryItems && libraryItems.length > 0) {
+      // Already sorted by status in SourceLibrary, but allow re-sorting
+      return [...libraryItems].sort((a, b) => {
+        // Status order: unmatched (0) < unused (1) < used (2)
+        const getStatusOrder = (item: LibraryItem) => {
+          if (item.type === 'unmatched') return 0;
+          return item.status === 'unused' ? 1 : 2;
+        };
+        
+        let aVal: any, bVal: any;
+        
+        switch (sortField) {
+          case 'status':
+            aVal = getStatusOrder(a);
+            bVal = getStatusOrder(b);
+            break;
+          case 'in_text_label':
+            aVal = (a.type === 'source' ? a.data.in_text_label : a.data.label)?.toLowerCase() || '';
+            bVal = (b.type === 'source' ? b.data.in_text_label : b.data.label)?.toLowerCase() || '';
+            break;
+          case 'authors':
+            aVal = (a.type === 'source' ? a.data.authors : '')?.toLowerCase() || '';
+            bVal = (b.type === 'source' ? b.data.authors : '')?.toLowerCase() || '';
+            break;
+          case 'year':
+            aVal = a.type === 'source' ? (a.data.year || 0) : (a.data.year || 0);
+            bVal = b.type === 'source' ? (b.data.year || 0) : (b.data.year || 0);
+            break;
+          case 'created_at':
+            aVal = a.type === 'source' ? new Date(a.data.created_at).getTime() : 0;
+            bVal = b.type === 'source' ? new Date(b.data.created_at).getTime() : 0;
+            break;
+          default:
+            return 0;
+        }
+        
+        if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+    
+    // Fallback: use old sorting logic for sources only
     return [...sources].sort((a, b) => {
       let aVal: any, bVal: any;
       
@@ -86,8 +132,12 @@ export function SourceTable({ sources, onUpdate, usedSourceIds }: SourceTablePro
       if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
       if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
       return 0;
-    });
-  }, [sources, sortField, sortDirection]);
+    }).map(source => ({
+      type: 'source' as const,
+      data: source,
+      status: (usedSourceIds && usedSourceIds.size > 0 && usedSourceIds.has(source.id)) ? 'used' as const : 'unused' as const,
+    }));
+  }, [libraryItems, sources, usedSourceIds, sortField, sortDirection]);
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
@@ -222,7 +272,7 @@ export function SourceTable({ sources, onUpdate, usedSourceIds }: SourceTablePro
     return CITATION_STYLES.find(s => s.value === style)?.label || style;
   };
 
-  if (sources.length === 0) {
+  if (displayItems.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground">
         <p>No sources yet. Upload PDFs above to get started.</p>
@@ -250,6 +300,11 @@ export function SourceTable({ sources, onUpdate, usedSourceIds }: SourceTablePro
         <Table>
           <TableHeader>
             <TableRow className="bg-secondary/30">
+              <TableHead className="font-semibold w-16">
+                <Button variant="ghost" size="sm" className="h-auto p-0 font-semibold" onClick={() => toggleSort('status')}>
+                  Status {getSortIcon('status')}
+                </Button>
+              </TableHead>
               <TableHead className="font-semibold">
                 <Button variant="ghost" size="sm" className="h-auto p-0 font-semibold" onClick={() => toggleSort('in_text_label')}>
                   In-text Label {getSortIcon('in_text_label')}
@@ -265,158 +320,182 @@ export function SourceTable({ sources, onUpdate, usedSourceIds }: SourceTablePro
                   Year {getSortIcon('year')}
                 </Button>
               </TableHead>
-              <TableHead className="font-semibold">Style</TableHead>
               <TableHead className="font-semibold">File</TableHead>
               <TableHead className="font-semibold w-32">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sortedSources.map((source) => {
-              const isUnused = usedSourceIds && usedSourceIds.size > 0 && !usedSourceIds.has(source.id);
+            {displayItems.map((item, idx) => {
+              if (item.type === 'unmatched') {
+                // Render unmatched citation row (red)
+                return (
+                  <TableRow key={`unmatched-${idx}`} className="bg-destructive/10">
+                    <TableCell>
+                      <span className="text-xs bg-destructive/20 text-destructive px-1.5 py-0.5 rounded flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        Missing
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-mono text-sm text-destructive">
+                        {item.data.label}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-muted-foreground">—</span>
+                    </TableCell>
+                    <TableCell>
+                      <span className={cn(!item.data.year && "text-muted-foreground")}>
+                        {item.data.year || '—'}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-muted-foreground text-sm">No file</span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-muted-foreground">Upload PDF to match</span>
+                    </TableCell>
+                  </TableRow>
+                );
+              }
+              
+              // Render source row
+              const source = item.data;
+              const isUsed = item.status === 'used';
+              const isUnused = item.status === 'unused';
+              
               return (
-              <TableRow key={source.id} className={cn("source-row", isUnused && "bg-amber-500/10")}>
-                <TableCell>
-                  {editingId === source.id ? (
-                    <Input
-                      value={editData.in_text_label || ''}
-                      onChange={(e) => setEditData({ ...editData, in_text_label: e.target.value })}
-                      placeholder="(Author et al., 2023)"
-                      className="h-8"
-                    />
-                  ) : (
-                    <div className="flex items-center gap-2">
+                <TableRow 
+                  key={source.id} 
+                  className={cn(
+                    "source-row",
+                    isUsed && "bg-verdict-green-bg/30",
+                    isUnused && "bg-amber-500/10"
+                  )}
+                >
+                  <TableCell>
+                    {isUsed ? (
+                      <span className="text-xs bg-verdict-green-bg text-verdict-green px-1.5 py-0.5 rounded">
+                        Used
+                      </span>
+                    ) : (
+                      <span className="text-xs bg-amber-500/20 text-amber-600 px-1.5 py-0.5 rounded">
+                        Unused
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {editingId === source.id ? (
+                      <Input
+                        value={editData.in_text_label || ''}
+                        onChange={(e) => setEditData({ ...editData, in_text_label: e.target.value })}
+                        placeholder="(Author et al., 2023)"
+                        className="h-8"
+                      />
+                    ) : (
                       <span className={cn(
                         "font-mono text-sm",
                         !source.in_text_label && "text-muted-foreground italic"
                       )}>
                         {source.in_text_label || 'No label set'}
                       </span>
-                      {isUnused && (
-                        <span className="text-xs bg-amber-500/20 text-amber-600 px-1.5 py-0.5 rounded">
-                          Not used
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {editingId === source.id ? (
+                      <Input
+                        value={editData.authors || ''}
+                        onChange={(e) => setEditData({ ...editData, authors: e.target.value })}
+                        placeholder="Authors"
+                        className="h-8"
+                      />
+                    ) : (
+                      <div>
+                        <span className={cn(!source.authors && "text-muted-foreground")}>
+                          {source.authors || '—'}
                         </span>
-                      )}
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editingId === source.id ? (
-                    <Input
-                      value={editData.authors || ''}
-                      onChange={(e) => setEditData({ ...editData, authors: e.target.value })}
-                      placeholder="Authors"
-                      className="h-8"
-                    />
-                  ) : (
-                    <div>
-                      <span className={cn(!source.authors && "text-muted-foreground")}>
-                        {source.authors || '—'}
+                        {source.title && (
+                          <p className="text-xs text-muted-foreground truncate max-w-[200px]" title={source.title}>
+                            {source.title}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {editingId === source.id ? (
+                      <Input
+                        type="number"
+                        value={editData.year || ''}
+                        onChange={(e) => setEditData({ ...editData, year: parseInt(e.target.value) || undefined })}
+                        placeholder="Year"
+                        className="h-8 w-20"
+                      />
+                    ) : (
+                      <span className={cn(!source.year && "text-muted-foreground")}>
+                        {source.year || '—'}
                       </span>
-                      {source.title && (
-                        <p className="text-xs text-muted-foreground truncate max-w-[200px]" title={source.title}>
-                          {source.title}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editingId === source.id ? (
-                    <Input
-                      type="number"
-                      value={editData.year || ''}
-                      onChange={(e) => setEditData({ ...editData, year: parseInt(e.target.value) || undefined })}
-                      placeholder="Year"
-                      className="h-8 w-20"
-                    />
-                  ) : (
-                    <span className={cn(!source.year && "text-muted-foreground")}>
-                      {source.year || '—'}
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editingId === source.id ? (
-                    <Select
-                      value={editData.citation_style || 'apa7'}
-                      onValueChange={(v) => setEditData({ ...editData, citation_style: v as CitationStyle })}
-                    >
-                      <SelectTrigger className="h-8 w-28">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {CITATION_STYLES.map(style => (
-                          <SelectItem key={style.value} value={style.value}>
-                            {style.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <span className="text-xs bg-secondary px-2 py-1 rounded">
-                      {getStyleLabel(source.citation_style)}
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => openFile(source)}
-                        className="text-primary hover:text-primary/80"
-                      >
-                        <Eye className="h-4 w-4 mr-1" />
-                        View
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p className="text-xs">{source.original_filename}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TableCell>
-                <TableCell>
-                  {editingId === source.id ? (
-                    <div className="flex gap-1">
-                      <Button variant="ghost" size="icon" onClick={saveEdit} className="h-8 w-8 text-verdict-green">
-                        <Save className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={cancelEdit} className="h-8 w-8">
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="flex gap-1">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            onClick={() => extractMetadata(source)} 
-                            disabled={extractingId === source.id}
-                            className="h-8 w-8"
-                          >
-                            {extractingId === source.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <RefreshCw className="h-4 w-4" />
-                            )}
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Re-extract metadata</TooltipContent>
-                      </Tooltip>
-                      <Button variant="ghost" size="icon" onClick={() => startEdit(source)} className="h-8 w-8">
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => setDeleteId(source.id)} className="h-8 w-8 text-destructive">
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  )}
-                </TableCell>
-              </TableRow>
-            );
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openFile(source)}
+                          className="text-primary hover:text-primary/80"
+                        >
+                          <Eye className="h-4 w-4 mr-1" />
+                          View
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p className="text-xs">{source.original_filename}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    {editingId === source.id ? (
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="icon" onClick={saveEdit} className="h-8 w-8 text-verdict-green">
+                          <Save className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={cancelEdit} className="h-8 w-8">
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-1">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              onClick={() => extractMetadata(source)} 
+                              disabled={extractingId === source.id}
+                              className="h-8 w-8"
+                            >
+                              {extractingId === source.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Re-extract metadata</TooltipContent>
+                        </Tooltip>
+                        <Button variant="ghost" size="icon" onClick={() => startEdit(source)} className="h-8 w-8">
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => setDeleteId(source.id)} className="h-8 w-8 text-destructive">
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
             })}
           </TableBody>
         </Table>

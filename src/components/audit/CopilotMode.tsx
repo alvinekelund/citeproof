@@ -53,12 +53,19 @@ interface CopilotSession {
   paragraphs_data: ParagraphData[];
 }
 
+export interface UnmatchedCitation {
+  label: string;
+  year?: number;
+  count: number;
+}
+
 interface CopilotModeProps {
   onSourcesChange?: () => void;
   onUsedSourcesChange?: (usedIds: Set<string>) => void;
+  onUnmatchedCitationsChange?: (citations: UnmatchedCitation[]) => void;
 }
 
-export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotModeProps) {
+export function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedCitationsChange }: CopilotModeProps) {
   const [file, setFile] = useState<File | null>(null);
   const [paragraphs, setParagraphs] = useState<ParagraphData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -109,8 +116,23 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
         );
         onUsedSourcesChange(usedIds);
       }
+      
+      // Report unmatched citations to parent for library display
+      if (onUnmatchedCitationsChange) {
+        const unmatched = analysis.detectedCitations
+          .filter(c => !c.matched)
+          .map(c => {
+            const parsed = parseCitationForPlaceholder(c.raw);
+            return {
+              label: parsed.label,
+              year: parsed.year,
+              count: c.count,
+            };
+          });
+        onUnmatchedCitationsChange(unmatched);
+      }
     }
-  }, [fullText, onUsedSourcesChange, analyzeAndDeduplicateCitations]);
+  }, [fullText, onUsedSourcesChange, onUnmatchedCitationsChange, analyzeAndDeduplicateCitations]);
 
   // Load sources and sessions on mount - auto-load most recent session
   useEffect(() => {
@@ -174,11 +196,29 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
         );
         onUsedSourcesChange(usedIds);
       }
+      
+      // Report unmatched citations to parent for library display
+      if (onUnmatchedCitationsChange) {
+        const unmatched = analysis.detectedCitations
+          .filter(c => !c.matched)
+          .map(c => {
+            const parsed = parseCitationForPlaceholder(c.raw);
+            return {
+              label: parsed.label,
+              year: parsed.year,
+              count: c.count,
+            };
+          });
+        onUnmatchedCitationsChange(unmatched);
+      }
     } else {
       setFullText('');
       setCitationAnalysis(null);
       if (onUsedSourcesChange) {
         onUsedSourcesChange(new Set());
+      }
+      if (onUnmatchedCitationsChange) {
+        onUnmatchedCitationsChange([]);
       }
     }
     
@@ -311,6 +351,21 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
             .map(c => c.matchedSourceId!)
         );
         onUsedSourcesChange(usedIds);
+      }
+      
+      // Report unmatched citations to parent for library display
+      if (onUnmatchedCitationsChange) {
+        const unmatched = analysis.detectedCitations
+          .filter(c => !c.matched)
+          .map(c => {
+            const parsed = parseCitationForPlaceholder(c.raw);
+            return {
+              label: parsed.label,
+              year: parsed.year,
+              count: c.count,
+            };
+          });
+        onUnmatchedCitationsChange(unmatched);
       }
       
       if (analysis.missingCount > 0) {
@@ -920,8 +975,43 @@ export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotMod
         </Card>
       )}
 
+      {/* Matched Sources Display (green) */}
+      {citationAnalysis && citationAnalysis.matchedCount > 0 && (
+        <Card className="p-4 border-verdict-green bg-verdict-green-bg/30">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 className="h-5 w-5 text-verdict-green shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="font-semibold text-verdict-green">
+                  {citationAnalysis.matchedCount} Matched Source{citationAnalysis.matchedCount > 1 ? 's' : ''} in Library
+                </span>
+                <Button variant="outline" size="sm" onClick={refreshSourcesAndCitations}>
+                  <RefreshCw className="h-4 w-4 mr-1" />
+                  Re-analyze
+                </Button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {citationAnalysis.detectedCitations
+                  .filter(c => c.matched)
+                  .map((citation, i) => (
+                    <Badge 
+                      key={i} 
+                      variant="outline" 
+                      className="text-verdict-green border-verdict-green bg-verdict-green-bg/50"
+                    >
+                      {citation.raw}
+                      {citation.count > 1 && <span className="ml-1 opacity-60">×{citation.count}</span>}
+                    </Badge>
+                  ))
+                }
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Citation Summary with Re-analyze button */}
-      {citationAnalysis && citationAnalysis.totalCitations > 0 && missingSources.length === 0 && (
+      {citationAnalysis && citationAnalysis.totalCitations > 0 && missingSources.length === 0 && citationAnalysis.matchedCount === 0 && (
         <Card className="p-4 border-verdict-green bg-verdict-green-bg/30">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
