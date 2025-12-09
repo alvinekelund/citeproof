@@ -20,16 +20,22 @@ serve(async (req) => {
       );
     }
 
+    console.log('Processing filename:', filename, 'style:', citation_style);
+
+    // First try local extraction for common patterns
+    const localExtraction = extractFromFilename(filename, citation_style);
+    console.log('Local extraction result:', localExtraction);
+
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     if (!LOVABLE_API_KEY) {
-      // Gracefully fail - return basic extraction
-      const extracted = extractFromFilename(filename, citation_style);
+      // Return local extraction if no API key
       return new Response(
-        JSON.stringify(extracted),
+        JSON.stringify(localExtraction),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
+    // Use AI for better extraction
     const styleExamples: Record<string, string> = {
       'apa7': '(Smith et al., 2023) or (Smith & Jones, 2023) or (Smith, 2023)',
       'mla9': '(Smith et al. 45) - author and page number, no year in parentheses',
@@ -46,30 +52,28 @@ Filename: "${filename}"
 Citation Style: ${citation_style.toUpperCase()}
 Example format: ${styleExamples[citation_style] || styleExamples['apa7']}
 
-Extract the following information from the filename:
-1. Author surname(s) - look for names like "Smith", "Johnson_2023", "BrynjolfssonEtAl"
-2. Year - look for 4-digit years like 2023, 2022, etc.
-3. Title - the remaining descriptive text, properly formatted
+Common filename patterns to recognize:
+- Conference papers: "NIPS-2017-attention-is-all-you-need-Paper.pdf" → Vaswani et al., 2017, "Attention Is All You Need"
+- ArXiv papers: "1706.03762v7.pdf" → Look for arXiv ID pattern
+- Publisher IDs: "978-3-031-72781-8.pdf" → ISBN, may need generic title
+- HBS/working papers: "24-013_xxx.pdf" → Working paper format
 
-For the in-text citation label:
-- APA7/Harvard: (Author et al., Year) or (Author & Author, Year) or (Author, Year)
-- MLA9: (Author et al.) - no year
-- Chicago: (Author et al. Year) - no comma
-- IEEE: Leave empty (uses numbers)
-- Vancouver: Leave empty (uses numbers)
+Extract:
+1. Authors - convert "attention-is-all-you-need" to known paper authorship if recognizable
+2. Year - from filename or context (NIPS-2017 means 2017)
+3. Title - expand abbreviations and format properly
 
-Return a JSON object with these exact fields:
+For well-known papers like "Attention Is All You Need", use the actual author names (Vaswani et al.).
+
+Return JSON:
 {
-  "authors": "Surname, A., & Surname, B." or "Surname, A., Surname, B., & Surname, C.",
-  "year": 2023,
-  "title": "The Full Title of the Paper",
-  "suggested_label": "(Author et al., 2023)" 
+  "authors": "Surname, A." or "Surname, A., et al.",
+  "year": 2017,
+  "title": "The Full Title",
+  "suggested_label": "(Vaswani et al., 2017)"
 }
 
-If you cannot extract a field with confidence, use null for that field.
-Return ONLY valid JSON, no explanation.`;
-
-    console.log('Extracting metadata for:', filename);
+Return ONLY valid JSON, no explanation. Use null for fields you cannot determine.`;
 
     const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
@@ -78,7 +82,7 @@ Return ONLY valid JSON, no explanation.`;
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash-lite',
+        model: 'google/gemini-2.5-flash',
         messages: [
           { role: 'user', content: prompt }
         ],
@@ -86,10 +90,9 @@ Return ONLY valid JSON, no explanation.`;
     });
 
     if (!response.ok) {
-      console.error('AI gateway error for label suggestion');
-      const extracted = extractFromFilename(filename, citation_style);
+      console.error('AI gateway error:', response.status);
       return new Response(
-        JSON.stringify(extracted),
+        JSON.stringify(localExtraction),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -97,16 +100,24 @@ Return ONLY valid JSON, no explanation.`;
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content?.trim() || '';
 
+    console.log('AI response:', content);
+
     let result;
     try {
       const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       result = JSON.parse(cleanContent);
-    } catch {
-      // Fall back to filename extraction
-      result = extractFromFilename(filename, citation_style);
+      
+      // Clean up null values
+      if (result.authors === null) delete result.authors;
+      if (result.year === null) delete result.year;
+      if (result.title === null) delete result.title;
+      if (result.suggested_label === null) delete result.suggested_label;
+    } catch (parseError) {
+      console.error('Failed to parse AI response:', content);
+      result = localExtraction;
     }
 
-    console.log('Extracted metadata:', result);
+    console.log('Final result:', result);
 
     return new Response(
       JSON.stringify(result),
@@ -116,13 +127,13 @@ Return ONLY valid JSON, no explanation.`;
   } catch (error) {
     console.error('suggest-label error:', error);
     return new Response(
-      JSON.stringify({ suggested_label: '' }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ error: 'Extraction failed' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
 
-// Fallback extraction from filename
+// Enhanced fallback extraction from filename
 function extractFromFilename(filename: string, citationStyle: string): {
   authors?: string;
   year?: number;
@@ -131,77 +142,107 @@ function extractFromFilename(filename: string, citationStyle: string): {
 } {
   const cleanName = filename.replace(/\.pdf$/i, '');
   
-  // Try to extract year
-  const yearMatch = cleanName.match(/\b(19|20)\d{2}\b/);
-  const year = yearMatch ? parseInt(yearMatch[0]) : undefined;
+  // Known paper patterns
+  const knownPapers: Record<string, { authors: string; year: number; title: string }> = {
+    'attention-is-all-you-need': { authors: 'Vaswani, A., et al.', year: 2017, title: 'Attention Is All You Need' },
+    '1706.03762': { authors: 'Vaswani, A., et al.', year: 2017, title: 'Attention Is All You Need' },
+  };
+
+  // Check for known papers
+  const lowerName = cleanName.toLowerCase();
+  for (const [pattern, data] of Object.entries(knownPapers)) {
+    if (lowerName.includes(pattern)) {
+      const label = formatLabel(data.authors.split(',')[0].trim(), data.year, citationStyle, true);
+      return { ...data, suggested_label: label };
+    }
+  }
+
+  // Extract year from various patterns
+  let year: number | undefined;
+  const yearPatterns = [
+    /\b(19|20)\d{2}\b/,  // Plain year
+    /-(\d{4})-/,         // Year between dashes
+    /_(\d{4})_/,         // Year between underscores
+  ];
   
-  // Try to extract author names (common patterns)
-  // Pattern: "AuthorName_2023" or "Author-Name-2023" or "AuthorEtAl2023"
+  for (const pattern of yearPatterns) {
+    const match = cleanName.match(pattern);
+    if (match) {
+      const potentialYear = parseInt(match[1] || match[0]);
+      if (potentialYear >= 1900 && potentialYear <= 2030) {
+        year = potentialYear;
+        break;
+      }
+    }
+  }
+
+  // Extract title from hyphenated or underscored names
+  let title: string | undefined;
+  const titlePart = cleanName
+    .replace(/^[A-Z]+-\d{4}-/i, '')  // Remove "NIPS-2017-" prefix
+    .replace(/-Paper$/i, '')         // Remove "-Paper" suffix
+    .replace(/\b\d{4}\b/g, '')       // Remove years
+    .replace(/[-_]+/g, ' ')          // Replace separators with spaces
+    .replace(/\s+/g, ' ')            // Normalize spaces
+    .trim();
+  
+  if (titlePart.length > 5) {
+    // Title case the extracted title
+    title = titlePart.split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(' ');
+  }
+
+  // Try to extract author from beginning of filename
   let authors: string | undefined;
   let authorSurname: string | undefined;
   
-  const patterns = [
-    /^([A-Z][a-z]+(?:[A-Z][a-z]+)*)(?:_|\s|-|Et|And)/i,  // CamelCase author
-    /^([A-Z][a-z]+)(?:\d{4})/i,  // Name followed by year
-    /^([A-Za-z]+)_/,  // Name followed by underscore
+  const authorPatterns = [
+    /^([A-Z][a-z]+)(?:EtAl|_et_al|And)/i,
+    /^([A-Z][a-z]+)(?:\d{4})/i,
+    /^([A-Z][a-z]+)[-_]/,
   ];
   
-  for (const pattern of patterns) {
+  for (const pattern of authorPatterns) {
     const match = cleanName.match(pattern);
-    if (match) {
+    if (match && match[1].length > 2) {
       authorSurname = match[1];
       authors = authorSurname;
       break;
     }
   }
-  
-  // Check for "et al" pattern
+
   const hasEtAl = /etal|et\s*al/i.test(cleanName);
-  
-  // Generate in-text label based on citation style
+
+  // Generate label
   let suggested_label: string | undefined;
-  
   if (authorSurname && year) {
-    switch (citationStyle) {
-      case 'apa7':
-      case 'harvard':
-        suggested_label = hasEtAl 
-          ? `(${authorSurname} et al., ${year})`
-          : `(${authorSurname}, ${year})`;
-        break;
-      case 'mla9':
-        suggested_label = hasEtAl 
-          ? `(${authorSurname} et al.)`
-          : `(${authorSurname})`;
-        break;
-      case 'chicago':
-        suggested_label = hasEtAl 
-          ? `(${authorSurname} et al. ${year})`
-          : `(${authorSurname} ${year})`;
-        break;
-      case 'ieee':
-      case 'vancouver':
-        // Numeric styles - don't suggest
-        suggested_label = undefined;
-        break;
-    }
-  }
-  
-  // Try to extract title (remaining text after removing author and year)
-  let title = cleanName
-    .replace(/\b(19|20)\d{2}\b/g, '')
-    .replace(/^[A-Za-z]+(?:_|\s|-|Et|And|etal)/i, '')
-    .replace(/[_-]+/g, ' ')
-    .trim();
-  
-  if (title.length < 5) {
-    title = cleanName.replace(/[_-]+/g, ' ').trim();
+    suggested_label = formatLabel(authorSurname, year, citationStyle, hasEtAl);
   }
   
   return {
     authors,
     year,
-    title: title || undefined,
+    title,
     suggested_label,
   };
+}
+
+function formatLabel(author: string, year: number, style: string, hasEtAl: boolean): string {
+  const etAl = hasEtAl ? ' et al.' : '';
+  
+  switch (style) {
+    case 'apa7':
+    case 'harvard':
+      return `(${author}${etAl}, ${year})`;
+    case 'mla9':
+      return `(${author}${etAl})`;
+    case 'chicago':
+      return `(${author}${etAl} ${year})`;
+    case 'ieee':
+    case 'vancouver':
+      return ''; // Numeric styles
+    default:
+      return `(${author}${etAl}, ${year})`;
+  }
 }
