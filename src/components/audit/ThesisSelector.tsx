@@ -36,7 +36,6 @@ export function ThesisSelector({
   onDocumentsUpdate,
 }: ThesisSelectorProps) {
   const [isUploading, setIsUploading] = useState(false);
-  const [isNavigating, setIsNavigating] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [parseError, setParseError] = useState<string | null>(null);
 
@@ -133,7 +132,7 @@ export function ThesisSelector({
     }
   }, [onDocumentsUpdate, onDocumentSelect]);
 
-  const navigateParagraph = async (direction: 'prev' | 'next') => {
+  const navigateParagraph = (direction: 'prev' | 'next') => {
     if (!selectedDocId || !currentParagraph) return;
     
     const newIndex = direction === 'next' 
@@ -145,29 +144,16 @@ export function ThesisSelector({
       return;
     }
 
-    setIsNavigating(true);
-    try {
-      const paragraph = getThesisParagraph(selectedDocId, newIndex);
-      onParagraphChange(paragraph);
-    } catch (error) {
-      console.error('Navigation error:', error);
-    } finally {
-      setIsNavigating(false);
-    }
+    const paragraph = getThesisParagraph(selectedDocId, newIndex);
+    onParagraphChange(paragraph);
   };
 
-  const handleDocSelect = async (docId: string) => {
+  const handleDocSelect = (docId: string) => {
     onDocumentSelect(docId);
-    setIsNavigating(true);
     setParseError(null);
-    try {
-      const paragraph = getThesisParagraph(docId, 0);
-      onParagraphChange(paragraph);
-    } catch (error) {
-      console.error('Error loading first paragraph:', error);
-    } finally {
-      setIsNavigating(false);
-    }
+    
+    const paragraph = getThesisParagraph(docId, 0);
+    onParagraphChange(paragraph);
   };
 
   return (
@@ -242,7 +228,7 @@ export function ThesisSelector({
                   variant="outline"
                   size="sm"
                   onClick={() => navigateParagraph('prev')}
-                  disabled={currentParagraph.index === 0 || isNavigating}
+                  disabled={currentParagraph.index === 0}
                 >
                   <ChevronLeft className="h-4 w-4" />
                   Previous
@@ -251,7 +237,7 @@ export function ThesisSelector({
                   variant="outline"
                   size="sm"
                   onClick={() => navigateParagraph('next')}
-                  disabled={currentParagraph.index >= selectedDoc.total_paragraphs - 1 || isNavigating}
+                  disabled={currentParagraph.index >= selectedDoc.total_paragraphs - 1}
                 >
                   Next
                   <ChevronRight className="h-4 w-4" />
