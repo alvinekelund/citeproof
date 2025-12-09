@@ -450,21 +450,38 @@ function isPurelyCitationList(text: string): boolean {
   return citationLikeLines / lines.length > 0.6;
 }
 
-// Citation patterns to detect
+// Citation patterns to detect - more conservative to avoid false negatives
 const CITATION_PATTERNS = [
-  /\([A-Z][a-z]+(?:\s+(?:et\s+al\.?|and|&)\s*[A-Z][a-z]+)*,?\s*\d{4}[a-z]?\)/g,  // (Author, 2023) or (Author et al., 2023)
+  /\([^)]*\d{4}[a-z]?[^)]*\)/g,  // Any parentheses containing a year (very broad)
   /\[[0-9,\s\-–]+\]/g,  // [1] or [1, 2] or [1-5]
-  /[A-Z][a-z]+\s+(?:et\s+al\.?\s+)?\(\d{4}[a-z]?\)/g,  // Author (2023) or Author et al. (2023)
+  /[A-Z][a-z]+\s+(?:et\s+al\.?\s*)?\(\d{4}[a-z]?\)/g,  // Author (2023) or Author et al. (2023)
 ];
 
-// Check if text contains any citations
+// Check if text contains any citations - be conservative (only skip if definitely no citations)
 export function hasCitations(text: string): boolean {
+  // Quick check: if text contains a 4-digit year in parentheses, likely has citations
+  if (/\([^)]*\b(19|20)\d{2}\b[^)]*\)/.test(text)) {
+    return true;
+  }
+  
+  // Check for numbered citations
+  if (/\[\d+\]/.test(text)) {
+    return true;
+  }
+  
+  // Check for "et al" which is a strong indicator of citations
+  if (/et\s+al\.?/i.test(text)) {
+    return true;
+  }
+  
+  // Check standard patterns
   for (const pattern of CITATION_PATTERNS) {
-    pattern.lastIndex = 0; // Reset regex state
+    pattern.lastIndex = 0;
     if (pattern.test(text)) {
       return true;
     }
   }
+  
   return false;
 }
 
