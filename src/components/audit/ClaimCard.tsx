@@ -184,7 +184,7 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
           <VerdictBadge color={verdictColor} />
         </div>
 
-        {claim.intended_citations.length > 0 && (
+        {claim.intended_citations && claim.intended_citations.length > 0 && (
           <div className="mb-3">
             <span className="text-xs font-medium text-muted-foreground">Citations: </span>
             <span className="text-xs font-mono">{claim.intended_citations.join(', ')}</span>
@@ -194,7 +194,7 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
         <p className="text-sm text-muted-foreground mb-3">{claim.verdict}</p>
 
         {/* Evidence */}
-        {claim.evidence.length > 0 && (
+        {claim.evidence && claim.evidence.length > 0 && (
           <div className="space-y-2 mb-3">
             <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Evidence</h4>
             {claim.evidence.map((ev, i) => (
@@ -225,7 +225,7 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
         )}
 
         {/* Issues and Suggestions */}
-        {claim.issues_or_suggestions.length > 0 && (
+        {claim.issues_or_suggestions && claim.issues_or_suggestions.length > 0 && (
           <div className="space-y-1">
             <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide flex items-center gap-1">
               <Lightbulb className="h-3 w-3" />
