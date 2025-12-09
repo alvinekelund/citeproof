@@ -45,3 +45,6 @@ verify_jwt = false
 
 [functions.dedupe-citations]
 verify_jwt = false
+
+[functions.rewrite-claim]
+verify_jwt = false
