@@ -120,11 +120,11 @@ serve(async (req) => {
       );
     }
 
-    const GOOGLE_AI_API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
-    if (!GOOGLE_AI_API_KEY) {
-      console.error('GOOGLE_AI_API_KEY not configured');
+    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
+    if (!LOVABLE_API_KEY) {
+      console.error('LOVABLE_API_KEY not configured');
       return new Response(
-        JSON.stringify({ error: 'AI features are unavailable. Please configure the Google API key.' }),
+        JSON.stringify({ error: 'AI features are unavailable. Please configure the API key.' }),
         { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -138,26 +138,20 @@ serve(async (req) => {
 
     const userMessage = `PARAGRAPH TO ANALYZE:\n"${paragraph}"${sourcesContext}\n\nAnalyze this paragraph and return the JSON result.`;
 
-    console.log('Calling Google Gemini API for paragraph check...');
+    console.log('Calling Lovable AI gateway for paragraph check...');
 
-    // Use Google's Gemini API directly
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`, {
+    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: SYSTEM_PROMPT + "\n\n" + userMessage }
-            ]
-          }
+        model: 'google/gemini-2.5-flash',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userMessage }
         ],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 4096,
-        }
       }),
     });
 
@@ -179,10 +173,10 @@ serve(async (req) => {
     }
 
     const data = await response.json();
-    console.log('Gemini response received');
+    console.log('AI response received');
     
-    // Extract content from Gemini response format
-    const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    // Extract content from OpenAI-compatible response format
+    const content = data.choices?.[0]?.message?.content;
 
     if (!content) {
       console.error('No content in Gemini response:', JSON.stringify(data));
