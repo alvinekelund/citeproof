@@ -55,9 +55,10 @@ interface CopilotSession {
 
 interface CopilotModeProps {
   onSourcesChange?: () => void;
+  onUsedSourcesChange?: (usedIds: Set<string>) => void;
 }
 
-export function CopilotMode({ onSourcesChange }: CopilotModeProps) {
+export function CopilotMode({ onSourcesChange, onUsedSourcesChange }: CopilotModeProps) {
   const [file, setFile] = useState<File | null>(null);
   const [paragraphs, setParagraphs] = useState<ParagraphData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -87,8 +88,18 @@ export function CopilotMode({ onSourcesChange }: CopilotModeProps) {
     if (fullText) {
       const analysis = analyzeCitations(fullText, currentSources);
       setCitationAnalysis(analysis);
+      
+      // Report used source IDs to parent
+      if (onUsedSourcesChange) {
+        const usedIds = new Set<string>(
+          analysis.detectedCitations
+            .filter(c => c.matched && c.matchedSourceId)
+            .map(c => c.matchedSourceId!)
+        );
+        onUsedSourcesChange(usedIds);
+      }
     }
-  }, [fullText]);
+  }, [fullText, onUsedSourcesChange]);
 
   // Load sources and sessions on mount - auto-load most recent session
   useEffect(() => {
@@ -142,9 +153,22 @@ export function CopilotMode({ onSourcesChange }: CopilotModeProps) {
       const currentSources = getSources();
       const analysis = analyzeCitations(sessionData.fullText, currentSources);
       setCitationAnalysis(analysis);
+      
+      // Report used source IDs to parent
+      if (onUsedSourcesChange) {
+        const usedIds = new Set<string>(
+          analysis.detectedCitations
+            .filter(c => c.matched && c.matchedSourceId)
+            .map(c => c.matchedSourceId!)
+        );
+        onUsedSourcesChange(usedIds);
+      }
     } else {
       setFullText('');
       setCitationAnalysis(null);
+      if (onUsedSourcesChange) {
+        onUsedSourcesChange(new Set());
+      }
     }
     
     if (showToast) {
@@ -267,6 +291,16 @@ export function CopilotMode({ onSourcesChange }: CopilotModeProps) {
       const currentSources = getSources();
       const analysis = analyzeCitations(text, currentSources);
       setCitationAnalysis(analysis);
+      
+      // Report used source IDs to parent
+      if (onUsedSourcesChange) {
+        const usedIds = new Set<string>(
+          analysis.detectedCitations
+            .filter(c => c.matched && c.matchedSourceId)
+            .map(c => c.matchedSourceId!)
+        );
+        onUsedSourcesChange(usedIds);
+      }
       
       if (analysis.missingCount > 0) {
         toast({ 

@@ -46,9 +46,10 @@ type SortDirection = 'asc' | 'desc';
 interface SourceTableProps {
   sources: Source[];
   onUpdate: () => void;
+  usedSourceIds?: Set<string>;
 }
 
-export function SourceTable({ sources, onUpdate }: SourceTableProps) {
+export function SourceTable({ sources, onUpdate, usedSourceIds }: SourceTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editData, setEditData] = useState<Partial<Source>>({});
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -270,8 +271,10 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sortedSources.map((source) => (
-              <TableRow key={source.id} className="source-row">
+            {sortedSources.map((source) => {
+              const isUnused = usedSourceIds && usedSourceIds.size > 0 && !usedSourceIds.has(source.id);
+              return (
+              <TableRow key={source.id} className={cn("source-row", isUnused && "bg-amber-500/10")}>
                 <TableCell>
                   {editingId === source.id ? (
                     <Input
@@ -281,12 +284,19 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
                       className="h-8"
                     />
                   ) : (
-                    <span className={cn(
-                      "font-mono text-sm",
-                      !source.in_text_label && "text-muted-foreground italic"
-                    )}>
-                      {source.in_text_label || 'No label set'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className={cn(
+                        "font-mono text-sm",
+                        !source.in_text_label && "text-muted-foreground italic"
+                      )}>
+                        {source.in_text_label || 'No label set'}
+                      </span>
+                      {isUnused && (
+                        <span className="text-xs bg-amber-500/20 text-amber-600 px-1.5 py-0.5 rounded">
+                          Not used
+                        </span>
+                      )}
+                    </div>
                   )}
                 </TableCell>
                 <TableCell>
@@ -406,7 +416,8 @@ export function SourceTable({ sources, onUpdate }: SourceTableProps) {
                   )}
                 </TableCell>
               </TableRow>
-            ))}
+            );
+            })}
           </TableBody>
         </Table>
       </div>

@@ -6,7 +6,11 @@ import { SourceTable } from "./SourceTable";
 import { Source } from "@/lib/types";
 import { getSources } from "@/lib/client-storage";
 
-export function SourceLibrary() {
+interface SourceLibraryProps {
+  usedSourceIds?: Set<string>;
+}
+
+export function SourceLibrary({ usedSourceIds }: SourceLibraryProps) {
   const [sources, setSources] = useState<Source[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -26,6 +30,10 @@ export function SourceLibrary() {
     loadSources();
   }, []);
 
+  const unusedCount = usedSourceIds && usedSourceIds.size > 0 
+    ? sources.filter(s => !usedSourceIds.has(s.id)).length 
+    : 0;
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -35,6 +43,11 @@ export function SourceLibrary() {
             <h2 className="scholarly-heading text-2xl font-bold">Source Library</h2>
             <p className="text-sm text-muted-foreground">
               {sources.length} source{sources.length !== 1 ? 's' : ''} in your library
+              {unusedCount > 0 && (
+                <span className="text-amber-500 ml-2">
+                  ({unusedCount} not used in current file)
+                </span>
+              )}
             </p>
           </div>
         </div>
@@ -49,7 +62,7 @@ export function SourceLibrary() {
           <SourceDropzone onUploadComplete={loadSources} />
         </div>
         <div>
-          <SourceTable sources={sources} onUpdate={loadSources} />
+          <SourceTable sources={sources} onUpdate={loadSources} usedSourceIds={usedSourceIds} />
         </div>
       </div>
     </div>
