@@ -168,42 +168,6 @@ export function SourceDropzone({ onUploadComplete }: SourceDropzoneProps) {
 
   return (
     <div className="space-y-4">
-      {/* Pending Citations */}
-      {pendingCitations.length > 0 && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
-          <div className="flex items-center gap-2 mb-2">
-            <Link className="h-4 w-4 text-amber-600" />
-            <span className="text-sm font-medium text-amber-700">
-              {pendingCitations.length} citation{pendingCitations.length > 1 ? 's' : ''} waiting for match
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {pendingCitations.slice(0, 8).map(p => (
-              <Badge 
-                key={p.id} 
-                variant="outline" 
-                className="text-xs text-amber-700 border-amber-500/50 cursor-pointer hover:bg-amber-500/20"
-                onClick={() => {
-                  removePendingCitation(p.id);
-                  refreshPending();
-                }}
-                title="Click to remove from queue"
-              >
-                {p.label}
-              </Badge>
-            ))}
-            {pendingCitations.length > 8 && (
-              <Badge variant="secondary" className="text-xs">
-                +{pendingCitations.length - 8} more
-              </Badge>
-            )}
-          </div>
-          <p className="text-xs text-amber-600 mt-2">
-            Upload PDFs below - they'll auto-match to these citations
-          </p>
-        </div>
-      )}
-
       {/* Citation Style Selector */}
       <div className="space-y-2">
         <label className="text-sm font-medium">Citation Style</label>
