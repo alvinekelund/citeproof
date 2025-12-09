@@ -94,6 +94,8 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [dismissedCitations, setDismissedCitations] = useState<Set<string>>(new Set());
   const [missingSourcesCollapsed, setMissingSourcesCollapsed] = useState(false);
   const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set());
+  const [retryingParagraphs, setRetryingParagraphs] = useState<Set<number>>(new Set());
+  const [currentBatchSize, setCurrentBatchSize] = useState(3);
 
   // Helper to analyze and deduplicate citations
   const analyzeAndDeduplicateCitations = useCallback(async (text: string, currentSources: Source[]) => {
@@ -474,120 +476,219 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     }
   }, []);
 
-  const checkParagraph = async (index: number): Promise<boolean> => {
+  // Check a single paragraph with retry logic for rate limits
+  const checkParagraphWithRetry = async (
+    index: number, 
+    maxRetries = 5, 
+    isBatch = false
+  ): Promise<{ success: boolean; rateLimited: boolean }> => {
     const paragraph = paragraphs[index];
-    if (!paragraph) return false;
+    if (!paragraph) return { success: false, rateLimited: false };
 
     if (sources.length === 0) {
-      toast({ title: "No sources available", description: "Add sources to your library first.", variant: "destructive" });
-      return false;
+      if (!isBatch) {
+        toast({ title: "No sources available", description: "Add sources to your library first.", variant: "destructive" });
+      }
+      return { success: false, rateLimited: false };
     }
 
-    setIsChecking(true);
-    setSelectedIndex(index);
-
-    try {
-      // Load sources with extracted text from IndexedDB
-      const sourcesWithText = await getSourcesWithText();
-      
-      const { data, error } = await supabase.functions.invoke('check-paragraph', {
-        body: {
-          paragraph: paragraph.text,
-          sources: sourcesWithText.map(s => ({
-            id: s.id,
-            in_text_label: s.in_text_label,
-            shorthand_id: s.shorthand_id,
-            title: s.title,
-            authors: s.authors,
-            year: s.year,
-            // Send extracted text (truncate if too long to avoid payload limits)
-            extracted_text: s.extracted_text ? s.extracted_text.substring(0, 50000) : undefined,
-          })),
-        },
-      });
-
-      if (error) {
-        // Check for specific error codes
-        const errorMessage = error.message || '';
-        if (errorMessage.includes('402') || errorMessage.includes('credits')) {
-          toast({ 
-            title: "AI Credits Exhausted", 
-            description: "Please add credits in Settings → Workspace → Usage", 
-            variant: "destructive" 
-          });
-          return false;
-        }
-        if (errorMessage.includes('429') || errorMessage.includes('rate')) {
-          toast({ 
-            title: "Rate Limited", 
-            description: "Too many requests. Please wait a moment and try again.", 
-            variant: "destructive" 
-          });
-          return false;
-        }
-        throw error;
-      }
-
-      if (data.error) {
-        // Check for specific errors in response
-        if (data.error.includes('402') || data.error.toLowerCase().includes('credit')) {
-          toast({ 
-            title: "AI Credits Exhausted", 
-            description: "Please add credits in Settings → Workspace → Usage", 
-            variant: "destructive" 
-          });
-          return false;
-        }
-        if (data.error.includes('429') || data.error.toLowerCase().includes('rate')) {
-          toast({ 
-            title: "Rate Limited", 
-            description: "Too many requests. Please wait a moment and try again.", 
-            variant: "destructive" 
-          });
-          return false;
-        }
-        toast({ title: "AI Check Failed", description: data.error, variant: "destructive" });
-        return false;
-      }
-
-      const result: CheckResultType = data.result;
-
-      // Update paragraph with result using functional update to avoid stale closure
-      let updatedParagraphs: ParagraphData[] = [];
-      setParagraphs(prevParagraphs => {
-        updatedParagraphs = prevParagraphs.map((p, i) => 
-          i === index ? { ...p, checked: true, result } : p
-        );
-        return updatedParagraphs;
-      });
-      
-      // Save session with updated paragraphs
-      if (file && updatedParagraphs.length > 0) {
-        await saveSession(file.name, updatedParagraphs);
-      }
-
-      // Save to history
-      createParagraphCheck({
-        raw_paragraph_text: paragraph.text,
-        result_json: result,
-        overall_color: result.overall_color,
-      });
-
-      return true;
-    } catch (error: any) {
-      console.error('Check error:', error);
-      const msg = error?.message || '';
-      if (msg.includes('402')) {
-        toast({ title: "AI Credits Exhausted", description: "Add credits in Settings → Workspace → Usage", variant: "destructive" });
-      } else if (msg.includes('429')) {
-        toast({ title: "Rate Limited", description: "Please wait and try again", variant: "destructive" });
-      } else {
-        toast({ title: "Failed to run check", description: msg, variant: "destructive" });
-      }
-      return false;
-    } finally {
-      setIsChecking(false);
+    if (!isBatch) {
+      setIsChecking(true);
+      setSelectedIndex(index);
     }
+
+    // Load sources with extracted text from IndexedDB once
+    const sourcesWithText = await getSourcesWithText();
+    const sourcePayload = sourcesWithText.map(s => ({
+      id: s.id,
+      in_text_label: s.in_text_label,
+      shorthand_id: s.shorthand_id,
+      title: s.title,
+      authors: s.authors,
+      year: s.year,
+      extracted_text: s.extracted_text ? s.extracted_text.substring(0, 50000) : undefined,
+    }));
+
+    let lastError: any = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const { data, error } = await supabase.functions.invoke('check-paragraph', {
+          body: {
+            paragraph: paragraph.text,
+            sources: sourcePayload,
+          },
+        });
+
+        if (error) {
+          const errorMessage = error.message || '';
+          
+          // Check for credit errors (non-retryable)
+          if (errorMessage.includes('402') || errorMessage.includes('credits')) {
+            toast({ 
+              title: "AI Credits Exhausted", 
+              description: "Please add credits in Settings → Workspace → Usage", 
+              variant: "destructive" 
+            });
+            if (!isBatch) setIsChecking(false);
+            return { success: false, rateLimited: false };
+          }
+          
+          // Check for rate limit errors (retryable)
+          if (errorMessage.includes('429') || errorMessage.includes('rate') || errorMessage.includes('RESOURCE_EXHAUSTED')) {
+            lastError = error;
+            if (attempt < maxRetries) {
+              // Show retrying indicator only for single checks
+              if (!isBatch) {
+                setRetryingParagraphs(prev => new Set(prev).add(index));
+              }
+              // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+              const delay = Math.pow(2, attempt) * 1000;
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
+            // All retries exhausted
+            if (!isBatch) {
+              setRetryingParagraphs(prev => {
+                const next = new Set(prev);
+                next.delete(index);
+                return next;
+              });
+              setIsChecking(false);
+            }
+            return { success: false, rateLimited: true };
+          }
+          
+          throw error;
+        }
+
+        if (data.error) {
+          const dataError = data.error.toLowerCase();
+          
+          // Check for credit errors in response
+          if (data.error.includes('402') || dataError.includes('credit')) {
+            toast({ 
+              title: "AI Credits Exhausted", 
+              description: "Please add credits in Settings → Workspace → Usage", 
+              variant: "destructive" 
+            });
+            if (!isBatch) setIsChecking(false);
+            return { success: false, rateLimited: false };
+          }
+          
+          // Check for rate limit in response
+          if (data.error.includes('429') || dataError.includes('rate') || dataError.includes('resource_exhausted')) {
+            lastError = new Error(data.error);
+            if (attempt < maxRetries) {
+              if (!isBatch) {
+                setRetryingParagraphs(prev => new Set(prev).add(index));
+              }
+              const delay = Math.pow(2, attempt) * 1000;
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
+            if (!isBatch) {
+              setRetryingParagraphs(prev => {
+                const next = new Set(prev);
+                next.delete(index);
+                return next;
+              });
+              setIsChecking(false);
+            }
+            return { success: false, rateLimited: true };
+          }
+          
+          if (!isBatch) {
+            toast({ title: "AI Check Failed", description: data.error, variant: "destructive" });
+            setIsChecking(false);
+          }
+          return { success: false, rateLimited: false };
+        }
+
+        // Success! Clear retry indicator and process result
+        if (!isBatch) {
+          setRetryingParagraphs(prev => {
+            const next = new Set(prev);
+            next.delete(index);
+            return next;
+          });
+        }
+
+        const result: CheckResultType = data.result;
+
+        // Update paragraph with result
+        let updatedParagraphs: ParagraphData[] = [];
+        setParagraphs(prevParagraphs => {
+          updatedParagraphs = prevParagraphs.map((p, i) => 
+            i === index ? { ...p, checked: true, result } : p
+          );
+          return updatedParagraphs;
+        });
+        
+        // Save session with updated paragraphs
+        if (file && updatedParagraphs.length > 0) {
+          await saveSession(file.name, updatedParagraphs);
+        }
+
+        // Save to history
+        createParagraphCheck({
+          raw_paragraph_text: paragraph.text,
+          result_json: result,
+          overall_color: result.overall_color,
+        });
+
+        if (!isBatch) setIsChecking(false);
+        return { success: true, rateLimited: false };
+
+      } catch (error: any) {
+        console.error('Check error:', error);
+        lastError = error;
+        const msg = error?.message || '';
+        
+        if (msg.includes('402')) {
+          toast({ title: "AI Credits Exhausted", description: "Add credits in Settings → Workspace → Usage", variant: "destructive" });
+          if (!isBatch) setIsChecking(false);
+          return { success: false, rateLimited: false };
+        }
+        
+        // Check if rate limited
+        if (msg.includes('429') || msg.includes('rate') || msg.includes('RESOURCE_EXHAUSTED')) {
+          if (attempt < maxRetries) {
+            if (!isBatch) {
+              setRetryingParagraphs(prev => new Set(prev).add(index));
+            }
+            const delay = Math.pow(2, attempt) * 1000;
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+          if (!isBatch) {
+            setRetryingParagraphs(prev => {
+              const next = new Set(prev);
+              next.delete(index);
+              return next;
+            });
+            setIsChecking(false);
+          }
+          return { success: false, rateLimited: true };
+        }
+        
+        if (!isBatch) {
+          toast({ title: "Failed to run check", description: msg, variant: "destructive" });
+          setIsChecking(false);
+        }
+        return { success: false, rateLimited: false };
+      }
+    }
+
+    // Should not reach here, but handle gracefully
+    if (!isBatch) setIsChecking(false);
+    return { success: false, rateLimited: !!lastError };
+  };
+
+  // Wrapper for single paragraph check (maintains original interface)
+  const checkParagraph = async (index: number): Promise<boolean> => {
+    const result = await checkParagraphWithRetry(index, 5, false);
+    return result.success;
   };
 
   const startBatchCheck = async () => {
@@ -626,32 +727,70 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setIsBatchChecking(true);
     abortRef.current = false;
     setBatchProgress(0);
+    setCurrentBatchSize(3); // Reset batch size
 
     const totalToCheck = uncheckedParagraphs.length;
     let completed = 0;
-    const BATCH_SIZE = 3; // Process 3 paragraphs in parallel
+    let batchSize = 3; // Start with 3 parallel requests
+    let consecutiveRateLimits = 0;
 
-    // Process in batches for faster execution
-    for (let i = 0; i < uncheckedParagraphs.length; i += BATCH_SIZE) {
+    // Process in batches with adaptive sizing
+    let i = 0;
+    while (i < uncheckedParagraphs.length) {
       if (abortRef.current) {
         toast({ title: "Batch check stopped" });
         break;
       }
 
-      const batch = uncheckedParagraphs.slice(i, i + BATCH_SIZE);
+      const batch = uncheckedParagraphs.slice(i, i + batchSize);
+      setCurrentBatchSize(batchSize);
       
-      // Run batch in parallel
-      await Promise.all(batch.map(async (paragraph) => {
-        if (!abortRef.current) {
-          await checkParagraph(paragraph.index);
+      // Run batch in parallel with retry logic
+      const results = await Promise.all(batch.map(async (paragraph) => {
+        if (abortRef.current) return { success: false, rateLimited: false };
+        const result = await checkParagraphWithRetry(paragraph.index, 5, true);
+        if (result.success) {
           completed++;
           setBatchProgress((completed / totalToCheck) * 100);
         }
+        return result;
       }));
+
+      // Check for rate limits in this batch
+      const rateLimitedCount = results.filter(r => r.rateLimited).length;
       
-      // Small delay between batches to avoid rate limiting
-      if (i + BATCH_SIZE < uncheckedParagraphs.length && !abortRef.current) {
-        await new Promise(r => setTimeout(r, 1500));
+      if (rateLimitedCount > 0) {
+        consecutiveRateLimits++;
+        
+        // Reduce batch size on rate limits
+        if (batchSize > 1) {
+          batchSize = Math.max(1, Math.floor(batchSize / 2));
+        }
+        
+        // Add extra delay after rate limits
+        const delayMs = Math.min(30000, Math.pow(2, consecutiveRateLimits + 2) * 1000);
+        console.log(`Rate limited, reducing batch size to ${batchSize}, waiting ${delayMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        
+        // Re-queue rate-limited paragraphs
+        const rateLimitedParagraphs = batch.filter((_, idx) => results[idx].rateLimited);
+        if (rateLimitedParagraphs.length > 0) {
+          // Don't advance i, we'll retry these
+          uncheckedParagraphs.splice(i + batchSize, 0, ...rateLimitedParagraphs);
+        }
+      } else {
+        consecutiveRateLimits = 0;
+        // Gradually increase batch size if no rate limits
+        if (batchSize < 3) {
+          batchSize = Math.min(3, batchSize + 1);
+        }
+      }
+      
+      i += batch.length;
+
+      // Small delay between batches to avoid overwhelming the API
+      if (i < uncheckedParagraphs.length && !abortRef.current) {
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
@@ -1275,7 +1414,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                   </div>
                 </div>
                 {isBatchChecking && (
-                  <Progress value={batchProgress} className="h-2" />
+                  <div className="space-y-1">
+                    <Progress value={batchProgress} className="h-2" />
+                    {retryingParagraphs.size > 0 && (
+                      <p className="text-xs text-muted-foreground animate-pulse">
+                        Waiting for API... ({retryingParagraphs.size} pending)
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -1337,10 +1483,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                             variant={p.checked ? "outline" : "default"}
                             size="sm"
                             onClick={(e) => { e.stopPropagation(); checkParagraph(i); }}
-                            disabled={(isChecking && selectedIndex === i) || isBatchChecking}
-                            className="shrink-0"
+                            disabled={(isChecking && selectedIndex === i) || isBatchChecking || retryingParagraphs.has(i)}
+                            className={cn(
+                              "shrink-0",
+                              retryingParagraphs.has(i) && "animate-pulse opacity-70"
+                            )}
+                            title={retryingParagraphs.has(i) ? "Retrying..." : undefined}
                           >
-                            {isChecking && selectedIndex === i ? (
+                            {(isChecking && selectedIndex === i) || retryingParagraphs.has(i) ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
                             ) : p.checked ? (
                               <CheckCircle2 className="h-4 w-4" />
