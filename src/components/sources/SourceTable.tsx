@@ -300,6 +300,46 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
     toast({ title: "Extraction complete" });
   };
 
+  // Re-extract text for all sources (useful when text is missing)
+  const [isReextractingAll, setIsReextractingAll] = useState(false);
+  
+  const reextractAllSourceText = async () => {
+    const sourcesNeedingText = sources.filter(s => !s.extracted_text || s.extracted_text.length < 100);
+    if (sourcesNeedingText.length === 0) {
+      toast({ title: "All sources have text", description: "No re-extraction needed." });
+      return;
+    }
+
+    setIsReextractingAll(true);
+    toast({ title: "Re-extracting text...", description: `Processing ${sourcesNeedingText.length} sources.` });
+
+    let successCount = 0;
+    for (const source of sourcesNeedingText) {
+      try {
+        const file = await downloadSourceFile(source.file_path);
+        if (file) {
+          const text = await extractTextFromFile(file);
+          if (text && text.length > 50) {
+            updateSource(source.id, { extracted_text: text });
+            successCount++;
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to extract text from ${source.original_filename}:`, error);
+      }
+      // Small delay
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    setIsReextractingAll(false);
+    toast({ title: "Text extraction complete", description: `Extracted text from ${successCount}/${sourcesNeedingText.length} sources.` });
+    onUpdate();
+  };
+
+  // Count sources with/without text
+  const sourcesWithText = sources.filter(s => s.extracted_text && s.extracted_text.length > 100).length;
+  const sourcesWithoutText = sources.length - sourcesWithText;
+
   const getStyleLabel = (style: CitationStyle) => {
     return CITATION_STYLES.find(s => s.value === style)?.label || style;
   };
@@ -316,6 +356,31 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
 
   return (
     <>
+      {/* Warning: sources missing text */}
+      {sourcesWithoutText > 0 && (
+        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-amber-600" />
+            <span className="text-sm text-amber-700">
+              {sourcesWithoutText} source{sourcesWithoutText > 1 ? 's' : ''} missing extracted text — verification may be incomplete
+            </span>
+          </div>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={reextractAllSourceText}
+            disabled={isReextractingAll}
+          >
+            {isReextractingAll ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4 mr-2" />
+            )}
+            Re-extract All Text
+          </Button>
+        </div>
+      )}
+
       {hasSourcesWithoutMetadata && (
         <div className="mb-4 p-3 bg-secondary/50 rounded-lg flex items-center justify-between">
           <span className="text-sm text-muted-foreground">

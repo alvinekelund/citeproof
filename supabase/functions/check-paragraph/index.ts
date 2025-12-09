@@ -5,15 +5,19 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const SYSTEM_PROMPT = `You are "Thesis Source Checker", a strict academic assistant that verifies whether a thesis paragraph is properly supported by its cited sources.
+const SYSTEM_PROMPT = `You are "Thesis Source Checker", an accurate and fair academic assistant that verifies whether a thesis paragraph is properly supported by its cited sources.
 
 GENERAL PRINCIPLES
-- Your job is to test claims against the actual content of the provided source documents, not to be nice.
-- Be conservative: if you're not clearly sure a source supports a claim, say "no clear support found" or "uncertain".
+- Your job is to accurately assess whether claims are supported by the provided sources.
+- Be fair and balanced: acknowledge support when it exists, but flag genuine gaps.
+- Search through the ENTIRE source text provided, not just the beginning or first page.
 - Never invent content or details that do not appear in the provided source text.
 - Prefer short, precise excerpts over vague summaries.
-- Treat everything as BSc-level academic work: normal expectations for citations, no hand-waving.
-- IMPORTANT: Search through the ENTIRE source text provided, not just the beginning.
+- Treat everything as BSc-level academic work.
+
+SPECIAL HANDLING
+- If a paragraph appears to be a REFERENCE LIST or BIBLIOGRAPHY entry (contains DOI, URL, author-year format, journal names), return overall_color "blue" and skip detailed analysis.
+- If NO sources have any text content (all extracted_text fields are empty or missing), mark overall_color as "yellow" with verdict "Uncertain: source documents not available for verification" - do NOT mark as red/unsupported.
 
 INPUT DATA
 - One paragraph of thesis text.
@@ -24,47 +28,50 @@ INPUT DATA
   - extracted_text: The FULL text content of the source document (all pages).
 
 TASK
-1. Parse the paragraph:
+1. First, check if this paragraph is a reference/bibliography entry. If so, return blue and skip.
+
+2. Parse the paragraph:
    - Identify all explicit in-text citations.
    - Break the paragraph into 2–6 atomic claims (distinct factual/quantitative statements).
    - For each claim, list the in-text citations that appear in or at the end of its sentence.
 
-2. For each claim, SEARCH the ENTIRE extracted_text of the relevant source(s) to find supporting evidence:
+3. For each claim, SEARCH the ENTIRE extracted_text of the relevant source(s) to find supporting evidence:
    - Look through ALL pages of the source, not just the first page
    - Search for keywords, concepts, and related terminology
+   - Be thorough: evidence may use different wording than the claim
    - Assign a verdict:
      - "Fully supported by cited source(s)" - if you find clear evidence in the source text
      - "Partially supported (some mismatch or missing nuance)"
-     - "No clear support found in cited sources"
+     - "No clear support found in cited sources" - only if you searched thoroughly and found nothing
      - "Unsupported: sources talk about a different topic/context"
-     - "Uncertain: document text is not sufficient / not accessible here"
+     - "Uncertain: source text not available for verification" - if the source has no/empty extracted_text
 
-3. It is acceptable to note that a statement is common knowledge (e.g. "LLMs are a type of AI model") and does not strictly require a citation; treat such statements as effectively supported for the purposes of paragraph-level color, but mark them as common knowledge.
+4. It is acceptable to note that a statement is common knowledge (e.g. "LLMs are a type of AI model") and does not strictly require a citation; treat such statements as effectively supported for the purposes of paragraph-level color, but mark them as common knowledge.
 
-4. Provide evidence:
+5. Provide evidence:
    - For each supported or partially supported claim, list one or more evidence entries with:
      - label: in-text label
      - excerpt: short quote (1–3 sentences or up to ~50 words) from the source's extracted_text that supports the claim
      - page_number: estimate based on position in text if possible, or use 0 if unknown
-     - section: section name if you can infer it from the excerpt context (e.g. "Abstract", "Introduction", "Results")
+     - section: section name if you can infer it from the excerpt context
 
-5. For claims with no support, clearly state: "No clear supporting passage found in [LABEL]."
+6. For claims with no support, clearly state: "No clear supporting passage found in [LABEL]."
 
-6. Issues and suggestions:
-   - Highlight overgeneralisation (e.g. single-company study vs "all firms").
-   - Highlight overstatement (e.g. "proves" vs "suggests").
-   - Suggest where wording could be softened or where extra citations could be added.
+7. Issues and suggestions:
+   - Only flag genuine issues (overgeneralisation, overstatement, missing citation for non-common-knowledge claims).
+   - Be constructive, not overly critical.
 
-7. Overall paragraph color:
+8. Overall paragraph color:
+   - "blue" = reference list entry, bibliography, or section that doesn't need verification.
    - "green" = claims are well supported by sources and/or statements are common knowledge.
-   - "yellow" = mixed or uncertain support (some partial/uncertain claims).
-   - "red" = key claims are unsupported, clearly not found in the sources, or contradicted.
+   - "yellow" = mixed or uncertain support (some partial/uncertain claims, OR sources lack text content).
+   - "red" = key claims are definitively unsupported after thorough search, or contradicted by sources.
 
 OUTPUT FORMAT
 Return ONLY valid JSON of this exact form (no markdown, no explanation):
 {
   "summary": "One short paragraph summarising how many claims are fully supported, partially supported, unsupported, etc.",
-  "overall_color": "green | yellow | red",
+  "overall_color": "green | yellow | red | blue",
   "claims": [
     {
       "index": 1,
@@ -80,22 +87,22 @@ Return ONLY valid JSON of this exact form (no markdown, no explanation):
           "section": "Results"
         }
       ],
-      "issues_or_suggestions": ["Example: Soften wording from 'proves' to 'suggests'."]
+      "issues_or_suggestions": ["Example: Consider softening wording from 'proves' to 'suggests'."]
     }
   ],
   "missing_or_ambiguous_citations": [
     {
       "text": "<statement from paragraph>",
-      "note": "Likely needs a citation (e.g. review, textbook, or policy report)."
+      "note": "This claim may benefit from a citation."
     }
   ]
 }
 
 ROBUSTNESS
 - Search through ALL of the extracted_text, not just the beginning.
-- If no relevant content is found anywhere in the source, say so explicitly.
+- If no relevant content is found anywhere in the source after thorough search, say so explicitly.
 - Do not rewrite the thesis paragraph; only analyse and diagnose.
-- When in doubt, choose the more cautious verdict.`;
+- Be fair: if evidence exists, acknowledge it. Only mark red when genuinely unsupported.`;
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -135,30 +142,72 @@ serve(async (req) => {
       );
     }
 
+    // Pre-check: detect if paragraph is a reference entry (skip AI call entirely)
+    const isReferenceEntry = (text: string): boolean => {
+      const lowerText = text.toLowerCase();
+      // DOI pattern
+      if (/doi[:\.]?\s*10\.\d+/i.test(text) || /doi\.org\/10\.\d+/i.test(text)) return true;
+      // URL-heavy short text
+      if (/https?:\/\/[^\s]+/.test(text) && text.length < 500) return true;
+      // Standard numbered reference: [1] Author...
+      if (/^\[?\d+\]?\s*[A-Z][a-z]+,?\s+[A-Z]\.?/.test(text)) return true;
+      // Author-year: Smith, J. (2023)
+      if (/^[A-Z][a-z]+,\s*[A-Z]\.?\s*\(\d{4}\)/.test(text)) return true;
+      // Multiple journal indicators
+      const journalPatterns = ['journal of', 'proceedings', 'vol.', 'pp.', 'isbn', 'issn', 'retrieved from'];
+      const matchCount = journalPatterns.filter(p => lowerText.includes(p)).length;
+      if (matchCount >= 2) return true;
+      return false;
+    };
+
+    if (isReferenceEntry(paragraph)) {
+      console.log('Paragraph detected as reference entry, skipping AI check');
+      return new Response(
+        JSON.stringify({ 
+          result: {
+            summary: "This appears to be a reference/bibliography entry and does not require verification.",
+            overall_color: "blue",
+            claims: [],
+            missing_or_ambiguous_citations: []
+          }
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Build the user message with sources context including their full text
     let sourcesContext = '\n\nAVAILABLE SOURCES:\n';
+    let sourcesWithText = 0;
+    let totalSources = 0;
     
     if (sources && sources.length > 0) {
+      totalSources = sources.length;
       for (const s of sources) {
         sourcesContext += `\n--- SOURCE: ${s.in_text_label || s.shorthand_id} ---\n`;
         sourcesContext += `Title: ${s.title || 'Untitled'}\n`;
         sourcesContext += `Authors: ${s.authors || 'Unknown'}\n`;
         sourcesContext += `Year: ${s.year || 'n.d.'}\n`;
         
-        if (s.extracted_text) {
+        if (s.extracted_text && s.extracted_text.length > 100) {
+          sourcesWithText++;
           // Include the full extracted text (already truncated on client side if needed)
-          sourcesContext += `\nFULL EXTRACTED TEXT (search all of this for evidence):\n`;
+          sourcesContext += `\nFULL EXTRACTED TEXT (${s.extracted_text.length} characters - search ALL of this for evidence):\n`;
           sourcesContext += `${s.extracted_text}\n`;
           sourcesContext += `--- END OF SOURCE ---\n`;
         } else {
-          sourcesContext += `\n[No text content available for this source]\n--- END OF SOURCE ---\n`;
+          sourcesContext += `\n[No text content extracted for this source - mark claims citing this as "Uncertain"]\n--- END OF SOURCE ---\n`;
         }
       }
     } else {
       sourcesContext = '\n\nNo sources available for verification.';
     }
 
-    const userMessage = `PARAGRAPH TO ANALYZE:\n"${paragraph}"${sourcesContext}\n\nAnalyze this paragraph by searching through ALL the source texts provided above. Return the JSON result.`;
+    // Add source availability summary
+    const sourcesSummary = totalSources > 0 
+      ? `\n\nSOURCE AVAILABILITY: ${sourcesWithText}/${totalSources} sources have extracted text content.`
+      : '';
+
+    const userMessage = `PARAGRAPH TO ANALYZE:\n"${paragraph}"${sourcesContext}${sourcesSummary}\n\nAnalyze this paragraph by searching through ALL the source texts provided above. Be thorough but fair. Return the JSON result.`;
 
     console.log(`Checking paragraph with ${sources.length} sources (total chars: ${userMessage.length})`);
 
