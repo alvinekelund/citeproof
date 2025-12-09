@@ -17,6 +17,7 @@ import { ThesisDocument, ThesisParagraph } from "@/lib/types";
 import { uploadFile, createThesisDocument, createThesisParagraphs, getThesisParagraph } from "@/lib/supabase-helpers";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
+import { extractTextFromFile, splitIntoParagraphs } from "@/lib/pdf-parser";
 
 interface ThesisSelectorProps {
   documents: ThesisDocument[];
@@ -60,12 +61,11 @@ export function ThesisSelector({
     setUploadStatus('Uploading file...');
     
     try {
-      // Upload file
+      // Upload file to storage
       const filePath = await uploadFile(file, 'thesis');
-      setUploadStatus('File uploaded, parsing PDF...');
+      setUploadStatus('File uploaded, extracting text...');
       
       // Create document record first
-      const ext = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
       const doc = await createThesisDocument({
         filename: filePath.split('/').pop() || file.name,
         file_path: filePath,
@@ -73,53 +73,56 @@ export function ThesisSelector({
         total_paragraphs: 0,
       });
 
-      // Call edge function to parse the PDF
-      const { data, error } = await supabase.functions.invoke('parse-thesis', {
-        body: { file_path: filePath }
-      });
+      // Parse the file client-side using pdf.js
+      try {
+        const text = await extractTextFromFile(file);
+        
+        if (!text || text.length < 100) {
+          setParseError('Could not extract text. The file may be image-based or encrypted.');
+          toast({
+            title: "Text extraction failed",
+            description: "You can still manually enter paragraph text to check.",
+            variant: "destructive",
+          });
+        } else {
+          const paragraphs = splitIntoParagraphs(text);
+          
+          if (paragraphs.length > 0) {
+            setUploadStatus(`Found ${paragraphs.length} paragraphs, saving...`);
+            
+            // Create paragraph records
+            await createThesisParagraphs(
+              paragraphs.map((text: string, index: number) => ({
+                thesis_document_id: doc.id,
+                index,
+                text,
+              }))
+            );
 
-      if (error) {
-        console.error('Parse error:', error);
-        setParseError('Failed to parse PDF. The file may be image-based or encrypted.');
-        // Still keep the document but with 0 paragraphs
+            // Update the document with paragraph count
+            await supabase
+              .from('thesis_documents')
+              .update({ total_paragraphs: paragraphs.length })
+              .eq('id', doc.id);
+
+            toast({
+              title: "Thesis uploaded",
+              description: `Found ${paragraphs.length} paragraphs.`,
+            });
+            
+            onDocumentSelect(doc.id);
+          } else {
+            setParseError('No text paragraphs found in the file.');
+          }
+        }
+      } catch (parseError) {
+        console.error('Parse error:', parseError);
+        setParseError('Failed to parse file. The file may be image-based or encrypted.');
         toast({
-          title: "PDF parsing failed",
+          title: "Parsing failed",
           description: "You can still manually enter paragraph text to check.",
           variant: "destructive",
         });
-      } else if (data.error) {
-        setParseError(data.message || data.error);
-        toast({
-          title: "Could not extract text",
-          description: data.message || "Try a different file or manually enter text.",
-          variant: "destructive",
-        });
-      } else if (data.paragraphs && data.paragraphs.length > 0) {
-        setUploadStatus(`Found ${data.paragraphs.length} paragraphs, saving...`);
-        
-        // Create paragraph records
-        await createThesisParagraphs(
-          data.paragraphs.map((text: string, index: number) => ({
-            thesis_document_id: doc.id,
-            index,
-            text,
-          }))
-        );
-
-        // Update the document with paragraph count
-        await supabase
-          .from('thesis_documents')
-          .update({ total_paragraphs: data.paragraphs.length })
-          .eq('id', doc.id);
-
-        toast({
-          title: "Thesis uploaded",
-          description: `Found ${data.paragraphs.length} paragraphs.`,
-        });
-        
-        onDocumentSelect(doc.id);
-      } else {
-        setParseError('No text paragraphs found in the PDF.');
       }
 
       onDocumentsUpdate();
