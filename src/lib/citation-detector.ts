@@ -487,6 +487,7 @@ function levenshteinDistance(a: string, b: string): number {
 
 /**
  * Try fuzzy matching on author name with sources
+ * Allows ±1 year tolerance and partial author name matching
  */
 function fuzzyMatchAuthor(
   citationKey: string,
@@ -497,22 +498,45 @@ function fuzzyMatchAuthor(
   const [citAuthor, citYear] = citationKey.split('|');
   if (!citAuthor || !citYear) return undefined;
   
+  const citYearNum = parseInt(citYear);
+  
   for (const [sourceKey, sourceId] of sourceKeys) {
     const [srcAuthor, srcYear] = sourceKey.split('|');
     if (!srcAuthor || !srcYear) continue;
     
-    // Year must match exactly
-    if (citYear !== srcYear) continue;
+    const srcYearNum = parseInt(srcYear);
     
-    // Check prefix match (first 4 chars)
-    if (citAuthor.length >= 4 && srcAuthor.length >= 4) {
+    // Allow ±1 year tolerance for fuzzy matching
+    const yearDiff = Math.abs(citYearNum - srcYearNum);
+    if (yearDiff > 1) continue;
+    
+    // Check if citation author is a suffix of source author (e.g., "acqua" in "dellacqua")
+    if (srcAuthor.endsWith(citAuthor) && citAuthor.length >= 4) {
+      return sourceId;
+    }
+    
+    // Check if source author is a suffix of citation author
+    if (citAuthor.endsWith(srcAuthor) && srcAuthor.length >= 4) {
+      return sourceId;
+    }
+    
+    // Check prefix match (first 4 chars) - only if years match exactly
+    if (yearDiff === 0 && citAuthor.length >= 4 && srcAuthor.length >= 4) {
       if (citAuthor.slice(0, 4) === srcAuthor.slice(0, 4)) {
         return sourceId;
       }
     }
     
-    // Check Levenshtein distance
-    if (levenshteinDistance(citAuthor, srcAuthor) <= threshold) {
+    // Check if one contains the other (for compound names)
+    if (srcAuthor.includes(citAuthor) && citAuthor.length >= 4) {
+      return sourceId;
+    }
+    if (citAuthor.includes(srcAuthor) && srcAuthor.length >= 4) {
+      return sourceId;
+    }
+    
+    // Check Levenshtein distance - only if years match exactly
+    if (yearDiff === 0 && levenshteinDistance(citAuthor, srcAuthor) <= threshold) {
       return sourceId;
     }
   }
