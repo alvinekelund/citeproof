@@ -12,6 +12,7 @@ interface SourceLibraryProps {
   unmatchedCitations?: UnmatchedCitation[];
   onSourcesUpdated?: () => void;
   onLinkCitation?: (sourceId: string, citationLabel: string) => void;
+  onToggleSourceStatus?: (sourceId: string, isUsed: boolean) => void;
 }
 
 // Combined type for display - either a real source or an unmatched citation placeholder
@@ -19,7 +20,7 @@ export type LibraryItem =
   | { type: 'source'; data: Source; status: 'used' | 'unused' }
   | { type: 'unmatched'; data: UnmatchedCitation };
 
-export function SourceLibrary({ usedSourceIds, unmatchedCitations = [], onSourcesUpdated, onLinkCitation }: SourceLibraryProps) {
+export function SourceLibrary({ usedSourceIds, unmatchedCitations = [], onSourcesUpdated, onLinkCitation, onToggleSourceStatus }: SourceLibraryProps) {
   const [sources, setSources] = useState<Source[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -122,6 +123,7 @@ export function SourceLibrary({ usedSourceIds, unmatchedCitations = [], onSource
             onUpdate={handleSourcesUpdate} 
             usedSourceIds={usedSourceIds}
             onLinkCitation={onLinkCitation}
+            onToggleStatus={onToggleSourceStatus}
           />
         </div>
       </div>

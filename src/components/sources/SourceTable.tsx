@@ -55,9 +55,10 @@ interface SourceTableProps {
   onUpdate: () => void;
   usedSourceIds?: Set<string>;
   onLinkCitation?: (sourceId: string, citationLabel: string) => void;
+  onToggleStatus?: (sourceId: string, isUsed: boolean) => void;
 }
 
-export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, onLinkCitation }: SourceTableProps) {
+export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, onLinkCitation, onToggleStatus }: SourceTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editData, setEditData] = useState<Partial<Source>>({});
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -438,15 +439,21 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
                   )}
                 >
                   <TableCell>
-                    {isUsed ? (
-                      <span className="text-xs bg-verdict-green-bg text-verdict-green px-1.5 py-0.5 rounded">
-                        Used
-                      </span>
-                    ) : (
-                      <span className="text-xs bg-amber-500/20 text-amber-600 px-1.5 py-0.5 rounded">
-                        Unused
-                      </span>
-                    )}
+                    <button
+                      onClick={() => onToggleStatus?.(source.id, !isUsed)}
+                      className="transition-all hover:scale-105"
+                      title={isUsed ? "Click to mark as unused" : "Click to mark as used"}
+                    >
+                      {isUsed ? (
+                        <span className="text-xs bg-verdict-green-bg text-verdict-green px-1.5 py-0.5 rounded cursor-pointer hover:bg-verdict-green/20">
+                          Used
+                        </span>
+                      ) : (
+                        <span className="text-xs bg-amber-500/20 text-amber-600 px-1.5 py-0.5 rounded cursor-pointer hover:bg-amber-500/30">
+                          Unused
+                        </span>
+                      )}
+                    </button>
                   </TableCell>
                   <TableCell>
                     {editingId === source.id ? (
