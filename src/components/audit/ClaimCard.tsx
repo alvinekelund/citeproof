@@ -25,6 +25,7 @@ interface ClaimCardProps {
   originalText?: string; // If provided, shows this claim was modified
   onRevert?: () => void; // Callback to revert to original text
   highlightColor?: 'green' | 'yellow' | 'red' | 'blue'; // Color for PDF highlights
+  displayId?: string; // Hierarchical ID like "1.1", "1.2"
 }
 
 function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | 'yellow' | 'red' {
@@ -48,7 +49,7 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, showImplementButton, originalText, onRevert, highlightColor }: ClaimCardProps) {
+export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, showImplementButton, originalText, onRevert, highlightColor, displayId }: ClaimCardProps) {
   const verdictColor = highlightColor || getVerdictColor(claim.verdict, claim.common_knowledge);
   const [textViewerOpen, setTextViewerOpen] = useState(false);
   const [textContent, setTextContent] = useState<string>('');
@@ -340,7 +341,7 @@ export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, sh
         <div className="flex items-start justify-between gap-4 mb-3">
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs font-medium text-muted-foreground">Claim {claim.index}</span>
+              <span className="text-xs font-medium text-muted-foreground font-mono">Claim {displayId || claim.index}</span>
               {claim.common_knowledge && (
                 <span className="text-xs px-2 py-0.5 rounded bg-secondary text-secondary-foreground">
                   Common knowledge

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { CheckResult as CheckResultType, Source, Claim } from "@/lib/types";
+import { CheckResult as CheckResultType, Source, Claim, generateClaimDisplayId } from "@/lib/types";
 import { ClaimCard } from "./ClaimCard";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { PdfViewerDialog } from "@/components/sources/PdfViewerDialog";
@@ -19,12 +19,13 @@ import {
   findBestPageForParagraph, 
   extractPageTextRegions, 
   findMatchingRegions, 
-  mergeRegionsIntoBoxes,
+  findClaimRegions,
   getBoundingBox,
+  buildPageTextFromRegions,
   PdfTextMap,
   TextRegion 
 } from "@/lib/pdf-text-map";
-import { normalizeText, getFirstNWords, getLastNWords, createParagraphAnchors, ParagraphAnchor } from "@/lib/text-anchors";
+import { normalizeText, createParagraphAnchors, ParagraphAnchor } from "@/lib/text-anchors";
 
 interface ParagraphData {
   index: number;
@@ -42,7 +43,7 @@ interface ThesisEditorProps {
   sources: Source[];
   onBack: () => void;
   onUpdateParagraph: (index: number, newText: string) => void;
-  thesisFilePath?: string; // Path to original thesis PDF for overlay mode
+  thesisFilePath?: string;
 }
 
 interface FlatClaim {
@@ -52,9 +53,10 @@ interface FlatClaim {
   paragraphText: string;
   color: 'green' | 'yellow' | 'red' | 'blue';
   overallColor: string;
+  displayId: string; // Hierarchical ID like "1.1", "1.2"
+  paragraphDisplayIndex: number; // 1-based paragraph number (only counting paragraphs with claims)
 }
 
-// Blue paragraph (no claims, just info display)
 interface BlueParagraph {
   paragraphIndex: number;
   paragraphText: string;
@@ -62,7 +64,6 @@ interface BlueParagraph {
   skipReason?: string;
 }
 
-// Track version history for rewrites
 interface VersionEntry {
   text: string;
   paragraphText: string;
@@ -73,16 +74,16 @@ interface RewriteHistoryEntry {
   versions: VersionEntry[];
 }
 
-// Clickable region for PDF highlights
 interface ClickableRegion {
   x: number;
   y: number;
   width: number;
   height: number;
   paragraphIndex: number;
-  claimIndex: number | null; // null for blue paragraphs
-  globalClaimIndex: number | null; // index in allClaims array
+  claimIndex: number | null;
+  globalClaimIndex: number | null;
   color: 'green' | 'yellow' | 'red' | 'blue';
+  displayId: string; // For debugging and display
 }
 
 export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, thesisFilePath }: ThesisEditorProps) {
@@ -96,7 +97,8 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const [viewerSearchText, setViewerSearchText] = useState<string | undefined>(undefined);
   const [viewerHighlightColor, setViewerHighlightColor] = useState<'green' | 'yellow' | 'red' | 'blue' | undefined>(undefined);
   const [copied, setCopied] = useState(false);
-  const [viewMode, setViewMode] = useState<'claims' | 'document' | 'pdf'>('claims');
+  // Default to PDF view if available, otherwise claims view
+  const [viewMode, setViewMode] = useState<'claims' | 'document' | 'pdf'>(thesisFilePath ? 'pdf' : 'claims');
   const [historyOpen, setHistoryOpen] = useState(false);
   
   // PDF overlay mode state
@@ -105,7 +107,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const [totalPdfPages, setTotalPdfPages] = useState(0);
   const [pdfScale, setPdfScale] = useState(1.0);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
-  const [pdfTextContent, setPdfTextContent] = useState<Map<number, string>>(new Map());
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   
@@ -120,22 +121,18 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   // Track if we should auto-navigate to claim's page
   const [shouldAutoNavigate, setShouldAutoNavigate] = useState(false);
   
-  // Helper to select a claim and clear blue paragraph selection
-  // Also triggers auto-navigation to claim's page in PDF view
   const selectClaim = useCallback((idx: number) => {
     setSelectedClaimIndex(idx);
     setSelectedBlueParagraph(null);
     setShouldAutoNavigate(true);
   }, []);
   
-  // Helper to select a blue paragraph and clear claim selection
   const selectBlueParagraph = useCallback((bp: BlueParagraph) => {
     setSelectedBlueParagraph(bp);
     setSelectedClaimIndex(null);
   }, []);
 
   const getClaimColor = useCallback((claim: Claim, overallColor: string, paragraphIndex: number, claimIndex: number): 'green' | 'yellow' | 'red' | 'blue' => {
-    // Check if this claim has been implemented (rewritten) - show as green
     const key = `${paragraphIndex}-${claimIndex}`;
     if (implementedClaims.has(key)) return 'green';
     
@@ -152,7 +149,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       return 'red';
     }
     
-    // Blue for unchecked paragraphs with citations that need verification
     if (overallColor === 'blue') {
       return 'blue';
     }
@@ -160,13 +156,25 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     return overallColor as 'green' | 'yellow' | 'red' | 'blue';
   }, [implementedClaims]);
 
-  // Flatten all claims from all checked paragraphs into a single list
+  // Build allClaims with hierarchical display IDs
   const allClaims: FlatClaim[] = useMemo(() => {
     const claims: FlatClaim[] = [];
     
+    // First, find all paragraphs that have claims and assign display indices
+    const paragraphsWithClaims: number[] = [];
+    paragraphs.forEach((p) => {
+      if (p.checked && p.result?.claims && p.result.claims.length > 0) {
+        paragraphsWithClaims.push(p.index);
+      }
+    });
+    
+    // Now build flat claims with proper display IDs
     paragraphs.forEach((p) => {
       if (p.checked && p.result?.claims) {
+        const paragraphDisplayIndex = paragraphsWithClaims.indexOf(p.index) + 1; // 1-based
+        
         p.result.claims.forEach((claim, claimIdx) => {
+          const displayId = generateClaimDisplayId(paragraphDisplayIndex, claimIdx + 1);
           claims.push({
             claim,
             paragraphIndex: p.index,
@@ -174,15 +182,16 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
             paragraphText: p.text,
             color: getClaimColor(claim, p.result!.overall_color, p.index, claimIdx),
             overallColor: p.result!.overall_color,
+            displayId,
+            paragraphDisplayIndex,
           });
         });
       }
     });
     
     return claims;
-  }, [paragraphs, getClaimColor, implementedClaims]);
+  }, [paragraphs, getClaimColor]);
 
-  // Get list of blue paragraphs (sections that don't need AI verification)
   const blueParagraphs: BlueParagraph[] = useMemo(() => {
     return paragraphs
       .filter(p => p.result?.overall_color === 'blue' && (!p.result?.claims || p.result.claims.length === 0))
@@ -194,7 +203,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       }));
   }, [paragraphs]);
 
-  // Build paragraph anchors for text positioning
   useEffect(() => {
     const texts = paragraphs.map(p => p.text);
     const anchors = createParagraphAnchors(texts);
@@ -203,11 +211,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
 
   const currentClaim = selectedClaimIndex !== null ? allClaims[selectedClaimIndex] : null;
   
-  // Check if current claim has been modified
   const currentClaimKey = currentClaim ? `${currentClaim.paragraphIndex}-${currentClaim.claimIndex}` : null;
   const currentClaimHistory = currentClaimKey ? rewriteHistory.get(currentClaimKey) : null;
   
-  // Count claims by color (and also count blue paragraphs that have no claims)
   const claimCounts = useMemo(() => {
     const counts = { green: 0, yellow: 0, red: 0, blue: 0, total: allClaims.length };
     allClaims.forEach(c => {
@@ -217,14 +223,19 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     return counts;
   }, [allClaims, blueParagraphs.length]);
 
-  // Load PDF immediately when available (preload for faster tab switching)
+  // Update viewMode when thesisFilePath becomes available
+  useEffect(() => {
+    if (thesisFilePath && viewMode === 'claims') {
+      setViewMode('pdf');
+    }
+  }, [thesisFilePath]);
+
   useEffect(() => {
     if (thesisFilePath && !pdfDoc && !isPdfLoading) {
       loadThesisPdf();
     }
   }, [thesisFilePath]);
 
-  // Render PDF page when it changes
   useEffect(() => {
     if (pdfDoc && viewMode === 'pdf') {
       renderPdfPage(currentPdfPage);
@@ -238,13 +249,10 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     try {
       let arrayBuffer: ArrayBuffer;
       
-      // Check if it's a blob URL (from direct file upload) or a storage path
       if (thesisFilePath.startsWith('blob:')) {
-        // Fetch the blob URL directly
         const response = await fetch(thesisFilePath);
         arrayBuffer = await response.arrayBuffer();
       } else {
-        // It's a storage path, use getFile
         const file = await getFile(thesisFilePath);
         if (!file) {
           toast({ title: "PDF not found", variant: "destructive" });
@@ -257,7 +265,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       setPdfDoc(pdf);
       setTotalPdfPages(pdf.numPages);
       
-      // Build text map for page navigation
       console.log('[PDF] Building text map...');
       const textMap = await buildPdfTextMap(pdf);
       setPdfTextMap(textMap);
@@ -278,7 +285,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     const targetPage = findBestPageForParagraph(pdfTextMap, paragraphText);
     
     if (targetPage !== currentPdfPage) {
-      console.log('[PDF] Auto-navigating to page', targetPage, 'for claim in paragraph', currentClaim.paragraphIndex);
+      console.log('[PDF] Auto-navigating to page', targetPage, 'for claim', currentClaim.displayId);
       setCurrentPdfPage(targetPage);
     }
     
@@ -300,248 +307,133 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       
-      // Render the PDF page first
       await page.render({
         canvasContext: context,
         viewport: viewport,
       }).promise;
       
-      // Extract text content with positions
-      const textContent = await page.getTextContent();
-      
-      // Draw colored overlays based on text matching
-      await drawTextOverlays(context, viewport, textContent);
+      // Draw overlays after rendering
+      await drawTextOverlays(context, viewport, pdfDoc);
     } catch (err) {
       console.error("Error rendering PDF page:", err);
     }
   };
 
-  // Draw text overlays on the PDF using improved matching
+  // Draw text overlays on the PDF using improved character-level matching
   const drawTextOverlays = async (
     ctx: CanvasRenderingContext2D, 
     viewport: pdfjsLib.PageViewport,
-    textContent: { items: any[] }
+    pdf: pdfjsLib.PDFDocumentProxy
   ) => {
     const colorMap: Record<string, string> = {
-      green: 'rgba(34, 197, 94, 0.3)',
-      yellow: 'rgba(250, 204, 21, 0.35)',
-      red: 'rgba(239, 68, 68, 0.3)',
-      blue: 'rgba(59, 130, 246, 0.25)',
+      green: 'rgba(34, 197, 94, 0.25)',
+      yellow: 'rgba(250, 204, 21, 0.30)',
+      red: 'rgba(239, 68, 68, 0.25)',
+      blue: 'rgba(59, 130, 246, 0.20)',
     };
 
     const regions: ClickableRegion[] = [];
-
-    // Build full page text from all items to find paragraph positions
-    const textItems = textContent.items.filter((item: any) => item.str && item.str.trim());
     
-    // Build text regions for better matching
-    const pageTextRegions: TextRegion[] = textItems.map((item: any) => {
-      const transform = item.transform;
-      const x = transform[4];
-      const y = transform[5];
-      const fontSize = transform[0] || 12;
-      const width = item.width || (item.str.length * fontSize * 0.5);
-      const height = fontSize * 1.2;
-      
-      // Convert PDF coordinates to canvas coordinates
-      const [a, b, c, d, e, f] = viewport.transform;
-      const canvasX = a * x + c * y + e;
-      const canvasY = b * x + d * y + f;
-      
-      return {
-        x: canvasX,
-        y: canvasY - height,
-        width,
-        height: height + 2,
-        text: item.str,
-      };
-    });
+    // Extract text regions with positions from current page
+    const pageTextRegions = await extractPageTextRegions(pdf, currentPdfPage, viewport);
+    
+    if (pageTextRegions.length === 0) {
+      console.log('[PDF] No text regions found on page', currentPdfPage);
+      setPdfClickableRegions([]);
+      return;
+    }
 
-    // For each checked paragraph, find its text in the PDF using improved matching
+    // For each checked paragraph, try to find it on this page
     for (const p of paragraphs) {
       if (!p.checked || !p.result) continue;
       
-      const color = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
-      const fillColor = colorMap[color] || colorMap.blue;
+      const overallColor = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
       
-      // Find the correct global claim index for THIS paragraph
-      const globalClaimIdx = allClaims.findIndex(c => c.paragraphIndex === p.index);
+      // Try to find the paragraph text in this page's regions
+      const matchedRegions = findMatchingRegions(pageTextRegions, p.text);
       
-      // Use the new matching system
-      const matchingRegions = findMatchingRegions(pageTextRegions, p.text, 6, 4);
+      if (matchedRegions.length === 0) continue; // Paragraph not on this page
       
-      if (matchingRegions.length > 0) {
-        // Draw highlights for matched regions
-        for (const region of matchingRegions) {
-          ctx.fillStyle = fillColor;
-          ctx.fillRect(region.x, region.y, region.width, region.height);
-        }
-        
-        // Get bounding box for the clickable region
-        const boundingBox = getBoundingBox(matchingRegions);
-        
-        if (boundingBox) {
-          // Add individual claim regions if the paragraph has claims
-          if (p.result.claims && p.result.claims.length > 0) {
-            // For each claim, try to find its specific position
-            p.result.claims.forEach((claim, claimIdx) => {
-              const claimGlobalIdx = allClaims.findIndex(
-                c => c.paragraphIndex === p.index && c.claimIndex === claimIdx
-              );
-              
-              // Find claim text within the matched regions
-              const claimRegions = findMatchingRegions(matchingRegions, claim.text, 4, 3);
-              
-              if (claimRegions.length > 0) {
-                const claimBox = getBoundingBox(claimRegions);
-                if (claimBox) {
-                  regions.push({
-                    x: claimBox.x - 3,
-                    y: claimBox.y - 3,
-                    width: claimBox.width + 6,
-                    height: claimBox.height + 6,
-                    paragraphIndex: p.index,
-                    claimIndex: claimIdx,
-                    globalClaimIndex: claimGlobalIdx >= 0 ? claimGlobalIdx : null,
-                    color: getClaimColor(claim, p.result!.overall_color, p.index, claimIdx),
-                  });
-                }
-              } else {
-                // Fallback: use paragraph bounding box for this claim
-                regions.push({
-                  x: boundingBox.x - 5,
-                  y: boundingBox.y - 5,
-                  width: boundingBox.width + 10,
-                  height: boundingBox.height + 10,
-                  paragraphIndex: p.index,
-                  claimIndex: claimIdx,
-                  globalClaimIndex: claimGlobalIdx >= 0 ? claimGlobalIdx : null,
-                  color: getClaimColor(claim, p.result!.overall_color, p.index, claimIdx),
-                });
-              }
-            });
+      // Get bounding box for the paragraph
+      const paragraphBox = getBoundingBox(matchedRegions);
+      if (!paragraphBox) continue;
+      
+      // If paragraph has claims, highlight each claim individually
+      if (p.result.claims && p.result.claims.length > 0) {
+        for (let claimIdx = 0; claimIdx < p.result.claims.length; claimIdx++) {
+          const claim = p.result.claims[claimIdx];
+          const claimColor = getClaimColor(claim, overallColor, p.index, claimIdx);
+          const fillColor = colorMap[claimColor];
+          
+          // Find the global claim index for this claim
+          const globalClaimIdx = allClaims.findIndex(
+            c => c.paragraphIndex === p.index && c.claimIndex === claimIdx
+          );
+          const displayId = globalClaimIdx >= 0 ? allClaims[globalClaimIdx].displayId : `${p.index}.${claimIdx}`;
+          
+          // Find claim-specific regions within the paragraph
+          const claimRegions = findClaimRegions(matchedRegions, claim.text);
+          
+          if (claimRegions.length > 0) {
+            // Draw highlight for each claim region
+            for (const region of claimRegions) {
+              ctx.fillStyle = fillColor;
+              ctx.fillRect(region.x, region.y, region.width, region.height);
+            }
+            
+            // Create clickable region for the claim
+            const claimBox = getBoundingBox(claimRegions);
+            if (claimBox) {
+              regions.push({
+                x: claimBox.x - 2,
+                y: claimBox.y - 2,
+                width: claimBox.width + 4,
+                height: claimBox.height + 4,
+                paragraphIndex: p.index,
+                claimIndex: claimIdx,
+                globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
+                color: claimColor,
+                displayId,
+              });
+            }
           } else {
-            // No claims, create one region for the whole paragraph
+            // Fallback: use paragraph box for this claim (shouldn't happen often)
+            ctx.fillStyle = fillColor;
+            ctx.fillRect(paragraphBox.x, paragraphBox.y, paragraphBox.width, paragraphBox.height);
+            
             regions.push({
-              x: boundingBox.x - 5,
-              y: boundingBox.y - 5,
-              width: boundingBox.width + 10,
-              height: boundingBox.height + 10,
+              x: paragraphBox.x - 2,
+              y: paragraphBox.y - 2,
+              width: paragraphBox.width + 4,
+              height: paragraphBox.height + 4,
               paragraphIndex: p.index,
-              claimIndex: null,
+              claimIndex: claimIdx,
               globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
-              color,
+              color: claimColor,
+              displayId,
             });
           }
         }
       } else {
-        // Fallback to old word-based matching if new system finds nothing
-        const paragraphStart = getFirstNWords(p.text, 8);
-        const paragraphEnd = getLastNWords(p.text, 5);
+        // No claims - highlight whole paragraph as blue
+        const fillColor = colorMap[overallColor] || colorMap.blue;
         
-        let inParagraph = false;
-        let matchedItems: any[] = [];
-        let runningText = '';
-        
-        for (let i = 0; i < textItems.length; i++) {
-          const item = textItems[i];
-          const itemText = normalizeText(item.str);
-          runningText += ' ' + itemText;
-          
-          if (!inParagraph && runningText.includes(paragraphStart)) {
-            inParagraph = true;
-            matchedItems = [item];
-            runningText = itemText;
-          } else if (inParagraph) {
-            matchedItems.push(item);
-            
-            if (runningText.includes(paragraphEnd) || matchedItems.length > 50) {
-              let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
-              
-              for (const matchedItem of matchedItems) {
-                const transform = matchedItem.transform;
-                const x = transform[4];
-                const y = transform[5];
-                const fontSize = transform[0] || 12;
-                const width = matchedItem.width || (matchedItem.str.length * fontSize * 0.5);
-                const height = fontSize * 1.2;
-                
-                const [a, b, c, d, e, f] = viewport.transform;
-                const canvasX = a * x + c * y + e;
-                const canvasY = b * x + d * y + f;
-                
-                ctx.fillStyle = fillColor;
-                ctx.fillRect(canvasX, canvasY - height, width, height + 2);
-                
-                minX = Math.min(minX, canvasX);
-                maxX = Math.max(maxX, canvasX + width);
-                minY = Math.min(minY, canvasY - height);
-                maxY = Math.max(maxY, canvasY + 2);
-              }
-              
-              if (minX !== Infinity) {
-                regions.push({
-                  x: minX - 5,
-                  y: minY - 5,
-                  width: maxX - minX + 10,
-                  height: maxY - minY + 10,
-                  paragraphIndex: p.index,
-                  claimIndex: p.result?.claims?.[0] ? 0 : null,
-                  globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
-                  color,
-                });
-              }
-              
-              inParagraph = false;
-              matchedItems = [];
-              runningText = '';
-              break;
-            }
-          }
-          
-          if (runningText.length > 500) {
-            runningText = runningText.slice(-250);
-          }
+        for (const region of matchedRegions) {
+          ctx.fillStyle = fillColor;
+          ctx.fillRect(region.x, region.y, region.width, region.height);
         }
         
-        // Handle case where we found start but not end
-        if (inParagraph && matchedItems.length > 0) {
-          let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
-          
-          for (const matchedItem of matchedItems) {
-            const transform = matchedItem.transform;
-            const x = transform[4];
-            const y = transform[5];
-            const fontSize = transform[0] || 12;
-            const width = matchedItem.width || (matchedItem.str.length * fontSize * 0.5);
-            const height = fontSize * 1.2;
-            
-            const [a, b, c, d, e, f] = viewport.transform;
-            const canvasX = a * x + c * y + e;
-            const canvasY = b * x + d * y + f;
-            
-            ctx.fillStyle = fillColor;
-            ctx.fillRect(canvasX, canvasY - height, width, height + 2);
-            
-            minX = Math.min(minX, canvasX);
-            maxX = Math.max(maxX, canvasX + width);
-            minY = Math.min(minY, canvasY - height);
-            maxY = Math.max(maxY, canvasY + 2);
-          }
-          
-          if (minX !== Infinity) {
-            regions.push({
-              x: minX - 5,
-              y: minY - 5,
-              width: maxX - minX + 10,
-              height: maxY - minY + 10,
-              paragraphIndex: p.index,
-              claimIndex: p.result?.claims?.[0] ? 0 : null,
-              globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
-              color,
-            });
-          }
-        }
+        regions.push({
+          x: paragraphBox.x - 2,
+          y: paragraphBox.y - 2,
+          width: paragraphBox.width + 4,
+          height: paragraphBox.height + 4,
+          paragraphIndex: p.index,
+          claimIndex: null,
+          globalClaimIndex: null,
+          color: overallColor,
+          displayId: `P${p.index + 1}`,
+        });
       }
     }
     
@@ -549,25 +441,21 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     setPdfClickableRegions(regions);
   };
 
-  // Get scaled coordinates for canvas (accounting for CSS scaling)
   const getCanvasCoordinates = useCallback((e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } | null => {
     if (!pdfCanvasRef.current) return null;
     
     const canvas = pdfCanvasRef.current;
     const rect = canvas.getBoundingClientRect();
     
-    // Calculate the scale factor between CSS size and actual canvas size
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     
-    // Get mouse position relative to canvas, scaled to canvas coordinates
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
     
     return { x, y };
   }, []);
 
-  // Find region at coordinates with tolerance for easier clicking
   const findRegionAtPoint = useCallback((x: number, y: number, tolerance: number = 5): ClickableRegion | null => {
     // Sort regions by area (smaller first) to prefer more specific matches
     const sortedRegions = [...pdfClickableRegions].sort((a, b) => 
@@ -585,17 +473,16 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     return null;
   }, [pdfClickableRegions]);
 
-  // Handle PDF canvas click
   const handlePdfCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const coords = getCanvasCoordinates(e);
     if (!coords) return;
     
-    console.log('[PDF Click] at', coords.x.toFixed(0), coords.y.toFixed(0), '- checking', pdfClickableRegions.length, 'regions');
+    console.log('[PDF Click] at', coords.x.toFixed(0), coords.y.toFixed(0));
     
-    const region = findRegionAtPoint(coords.x, coords.y, 15); // Increased tolerance
+    const region = findRegionAtPoint(coords.x, coords.y, 15);
     
     if (region) {
-      console.log('[PDF Click] Hit region for paragraph', region.paragraphIndex, 'claim', region.globalClaimIndex);
+      console.log('[PDF Click] Hit region', region.displayId, 'claim idx', region.globalClaimIndex);
       if (region.globalClaimIndex !== null) {
         selectClaim(region.globalClaimIndex);
       } else {
@@ -604,12 +491,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
           selectBlueParagraph(bluePara);
         }
       }
-    } else {
-      console.log('[PDF Click] No region found at this position');
     }
-  }, [getCanvasCoordinates, findRegionAtPoint, selectClaim, selectBlueParagraph, blueParagraphs, pdfClickableRegions.length]);
+  }, [getCanvasCoordinates, findRegionAtPoint, selectClaim, selectBlueParagraph, blueParagraphs]);
 
-  // Handle PDF canvas hover
   const handlePdfCanvasMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const coords = getCanvasCoordinates(e);
     if (!coords) {
@@ -617,13 +501,11 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       return;
     }
     
-    const region = findRegionAtPoint(coords.x, coords.y, 3); // Smaller tolerance for hover
+    const region = findRegionAtPoint(coords.x, coords.y, 3);
     
     if (region) {
-      if (!hoveredRegion || hoveredRegion.paragraphIndex !== region.paragraphIndex || 
-          hoveredRegion.y !== region.y) {
+      if (!hoveredRegion || hoveredRegion.displayId !== region.displayId) {
         setHoveredRegion(region);
-        // Change cursor to pointer
         if (pdfCanvasRef.current) {
           pdfCanvasRef.current.style.cursor = 'pointer';
         }
@@ -645,7 +527,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     }
   }, []);
 
-  // Navigation
   const goToPrevClaim = useCallback(() => {
     if (selectedClaimIndex === null || selectedClaimIndex === 0) return;
     selectClaim(selectedClaimIndex - 1);
@@ -658,14 +539,12 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
 
   const goToNextProblem = useCallback(() => {
     const startIdx = selectedClaimIndex ?? -1;
-    // Find next red or yellow claim after current
     for (let i = startIdx + 1; i < allClaims.length; i++) {
       if (allClaims[i].color === 'red' || allClaims[i].color === 'yellow') {
         selectClaim(i);
         return;
       }
     }
-    // Wrap around
     for (let i = 0; i < startIdx; i++) {
       if (allClaims[i].color === 'red' || allClaims[i].color === 'yellow') {
         selectClaim(i);
@@ -675,13 +554,11 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     toast({ title: "No more issues", description: "All claims are verified." });
   }, [selectedClaimIndex, allClaims, selectClaim]);
 
-  // Handle implementing a rewrite
   const handleImplementRewrite = useCallback((newClaimText: string) => {
     if (!currentClaim) return;
     
     const key = `${currentClaim.paragraphIndex}-${currentClaim.claimIndex}`;
     
-    // Add current state to version history
     setRewriteHistory(prev => {
       const newMap = new Map(prev);
       const existing = prev.get(key);
@@ -699,10 +576,8 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       return newMap;
     });
     
-    // Mark claim as implemented (green)
     setImplementedClaims(prev => new Set(prev).add(key));
     
-    // Replace the claim text in the paragraph
     const newParagraphText = currentClaim.paragraphText.replace(
       currentClaim.claim.text,
       newClaimText
@@ -712,7 +587,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     toast({ title: "Rewrite implemented", description: "The text has been updated and marked as resolved." });
   }, [currentClaim, onUpdateParagraph]);
 
-  // Handle reverting to a specific version
   const handleRevertToVersion = useCallback((versionIndex: number) => {
     if (!currentClaim || !currentClaimKey) return;
     
@@ -721,10 +595,8 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     
     const version = historyEntry.versions[versionIndex];
     
-    // Restore that version's paragraph text
     onUpdateParagraph(currentClaim.paragraphIndex, version.paragraphText);
     
-    // Keep only versions up to (but not including) the one we reverted to
     setRewriteHistory(prev => {
       const newMap = new Map(prev);
       if (versionIndex === 0) {
@@ -735,7 +607,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       return newMap;
     });
     
-    // If reverting to original (index 0), remove from implemented
     if (versionIndex === 0) {
       setImplementedClaims(prev => {
         const newSet = new Set(prev);
@@ -748,22 +619,18 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     toast({ title: "Reverted", description: `Restored to version from ${version.timestamp.toLocaleTimeString()}` });
   }, [currentClaim, currentClaimKey, rewriteHistory, onUpdateParagraph]);
 
-  // Handle reverting to original (convenience wrapper)
   const handleRevert = useCallback(() => {
     handleRevertToVersion(0);
   }, [handleRevertToVersion]);
 
-  // Open source PDF with color
   const handleOpenSource = useCallback((source: Source, page?: number, searchText?: string) => {
     setViewerSource(source);
     setViewerPage(page || 1);
     setViewerSearchText(searchText);
-    // Pass the current claim's color to the PDF viewer
     setViewerHighlightColor(currentClaim?.color);
     setViewerOpen(true);
   }, [currentClaim?.color]);
 
-  // Copy full document
   const copyFullDocument = useCallback(async () => {
     const fullText = paragraphs.map(p => p.text).join('\n\n');
     try {
@@ -797,21 +664,13 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
           </Button>
           <div className="flex items-center gap-2">
             <span className="font-medium text-sm">
-              Claim {selectedClaimIndex + 1} of {allClaims.length}
+              Claim {currentClaim?.displayId || '-'} ({(selectedClaimIndex ?? 0) + 1} of {allClaims.length})
             </span>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as 'claims' | 'document' | 'pdf')}>
             <TabsList className="h-8">
-              <TabsTrigger value="claims" className="h-7 px-2 text-xs">
-                <List className="h-3.5 w-3.5 mr-1" />
-                Claims
-              </TabsTrigger>
-              <TabsTrigger value="document" className="h-7 px-2 text-xs">
-                <FileText className="h-3.5 w-3.5 mr-1" />
-                Full Text
-              </TabsTrigger>
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -829,6 +688,14 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                   )}
                 </Tooltip>
               </TooltipProvider>
+              <TabsTrigger value="document" className="h-7 px-2 text-xs">
+                <FileText className="h-3.5 w-3.5 mr-1" />
+                Full Text
+              </TabsTrigger>
+              <TabsTrigger value="claims" className="h-7 px-2 text-xs">
+                <List className="h-3.5 w-3.5 mr-1" />
+                Claims
+              </TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex gap-1">
@@ -863,464 +730,8 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
         </div>
       </div>
 
-      {viewMode === 'claims' ? (
-        <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-          {/* Claims List - Left Panel */}
-          <Card className="overflow-hidden">
-            <div className="p-3 border-b bg-muted/50">
-              <h3 className="font-medium text-sm">All Claims</h3>
-            </div>
-            <ScrollArea className="h-[calc(100vh-280px)]">
-              <div className="p-2 space-y-1">
-                {allClaims.map((item, idx) => {
-                  const key = `${item.paragraphIndex}-${item.claimIndex}`;
-                  const isModified = rewriteHistory.has(key);
-                  
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => selectClaim(idx)}
-                      className={cn(
-                        "w-full text-left p-3 rounded-lg transition-colors",
-                        "hover:bg-accent/50",
-                        selectedClaimIndex === idx 
-                          ? "bg-accent border border-primary/30" 
-                          : "bg-card border border-transparent"
-                      )}
-                    >
-                      <div className="flex items-start gap-2">
-                        <div 
-                          className={cn(
-                            "w-2 h-2 rounded-full mt-1.5 flex-shrink-0",
-                            item.color === 'green' && "bg-green-500",
-                            item.color === 'yellow' && "bg-yellow-500",
-                            item.color === 'red' && "bg-red-500",
-                            item.color === 'blue' && "bg-blue-500"
-                          )}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-xs text-muted-foreground">
-                              Claim {idx + 1}
-                            </span>
-                            {isModified && (
-                              <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 bg-orange-500/10 text-orange-600 border-orange-500/30">
-                                Modified
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="text-sm line-clamp-2">
-                            {item.claim.text.slice(0, 80)}
-                            {item.claim.text.length > 80 ? '...' : ''}
-                          </p>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </Card>
-
-          {/* Claim Detail - Right Panel */}
-          <div className="space-y-4">
-            {/* Navigation */}
-            <Card className="p-3">
-              <div className="flex items-center justify-between">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={goToPrevClaim}
-                  disabled={selectedClaimIndex === 0}
-                >
-                  <ChevronLeft className="h-4 w-4 mr-1" />
-                  Previous
-                </Button>
-                
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">
-                    Claim {(selectedClaimIndex ?? 0) + 1} of {allClaims.length}
-                  </span>
-                  <VerdictBadge color={currentClaim.color} />
-                  {currentClaimHistory && currentClaimHistory.versions.length > 0 && (
-                    <div className="flex items-center gap-1">
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        onClick={() => setHistoryOpen(!historyOpen)}
-                        className="text-blue-600 border-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950"
-                      >
-                        <History className="h-4 w-4 mr-1" />
-                        History ({currentClaimHistory.versions.length})
-                      </Button>
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        onClick={handleRevert}
-                        className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950"
-                      >
-                        <Undo2 className="h-4 w-4 mr-1" />
-                        Revert
-                      </Button>
-                    </div>
-                  )}
-                </div>
-                
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={goToNextClaim}
-                  disabled={selectedClaimIndex === allClaims.length - 1}
-                >
-                  Next
-                  <ChevronRight className="h-4 w-4 ml-1" />
-                </Button>
-              </div>
-            </Card>
-
-            {/* Version History Panel */}
-            {historyOpen && currentClaimHistory && currentClaimHistory.versions.length > 0 && (
-              <Card className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300 flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    Version History
-                  </h4>
-                  <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(false)} className="h-6 text-xs">
-                    Close
-                  </Button>
-                </div>
-                <div className="space-y-2">
-                  {currentClaimHistory.versions.map((version, idx) => (
-                    <div 
-                      key={idx} 
-                      className="flex items-start justify-between gap-2 p-2 bg-background rounded border"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Badge variant="outline" className="text-[10px]">
-                            v{idx + 1}
-                          </Badge>
-                          <span className="text-[10px] text-muted-foreground">
-                            {version.timestamp.toLocaleTimeString()}
-                          </span>
-                        </div>
-                        <p className="text-xs text-muted-foreground line-clamp-2">
-                          {version.text.slice(0, 100)}...
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleRevertToVersion(idx)}
-                        className="h-7 text-xs flex-shrink-0"
-                      >
-                        Restore
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
-
-            {/* Paragraph Context */}
-            <Card className="p-4 bg-muted/30">
-              <div className="text-xs text-muted-foreground mb-2 font-medium uppercase tracking-wide">
-                Paragraph Context
-              </div>
-              <p className="text-sm text-muted-foreground leading-relaxed line-clamp-4">
-                {currentClaim.paragraphText}
-              </p>
-            </Card>
-
-            {/* Claim Card */}
-            <ClaimCard
-              claim={currentClaim.claim}
-              sources={sources}
-              onOpenSource={handleOpenSource}
-              onImplementRewrite={handleImplementRewrite}
-              showImplementButton={true}
-              originalText={currentClaimHistory?.versions[0]?.text}
-              onRevert={handleRevert}
-              highlightColor={currentClaim.color}
-            />
-          </div>
-        </div>
-      ) : viewMode === 'document' ? (
-        /* Full Document View with inline highlights */
-        <div className="grid gap-4 lg:grid-cols-[1fr_400px]">
-          {/* Document with inline highlights - Left Panel */}
-          <Card className="overflow-hidden">
-            <div className="p-3 border-b bg-muted/50 flex items-center justify-between">
-              <h3 className="font-medium text-sm">Full Document</h3>
-              <span className="text-xs text-muted-foreground">{paragraphs.length} paragraphs</span>
-            </div>
-            <ScrollArea className="h-[calc(100vh-280px)]">
-              <div className="p-6 space-y-1 text-left">
-                {paragraphs.map((p, idx) => {
-                  const paragraphClaims = allClaims.filter(c => c.paragraphIndex === p.index);
-                  
-                  // Render paragraph with inline highlighted claims
-                  const renderTextWithHighlights = () => {
-                    if (paragraphClaims.length === 0) {
-                      // Show blue background for:
-                      // 1. Unchecked paragraphs with citations
-                      // 2. Checked paragraphs with blue status (sections that don't need AI verification)
-                      const hasCitationPattern = /\([^)]*\d{4}[^)]*\)/.test(p.text);
-                      const isBlueStatus = p.result?.overall_color === 'blue';
-                      if ((!p.checked && hasCitationPattern) || isBlueStatus) {
-                        const bp: BlueParagraph = {
-                          paragraphIndex: p.index,
-                          paragraphText: p.text,
-                          sectionTitle: p.sectionTitle,
-                          skipReason: p.skipReason || p.result?.summary,
-                        };
-                        const isSelected = selectedBlueParagraph?.paragraphIndex === p.index;
-                        return (
-                          <button
-                            onClick={() => selectBlueParagraph(bp)}
-                            className={cn(
-                              "bg-blue-500/10 rounded px-0.5 text-left transition-all cursor-pointer hover:ring-2 hover:ring-blue-500/50",
-                              isSelected && "ring-2 ring-blue-500"
-                            )}
-                          >
-                            {p.text}
-                          </button>
-                        );
-                      }
-                      return <span>{p.text}</span>;
-                    }
-
-                    // Sort claims by their position in the text
-                    const sortedClaims = [...paragraphClaims].sort((a, b) => {
-                      const posA = p.text.indexOf(a.claim.text);
-                      const posB = p.text.indexOf(b.claim.text);
-                      return posA - posB;
-                    });
-
-                    const elements: React.ReactNode[] = [];
-                    let lastEnd = 0;
-
-                    sortedClaims.forEach((c, cIdx) => {
-                      const start = p.text.indexOf(c.claim.text, lastEnd);
-                      if (start === -1) return;
-
-                      // Add text before this claim
-                      if (start > lastEnd) {
-                        elements.push(
-                          <span key={`text-${cIdx}`}>{p.text.slice(lastEnd, start)}</span>
-                        );
-                      }
-
-                      const globalIdx = allClaims.findIndex(
-                        ac => ac.paragraphIndex === c.paragraphIndex && ac.claimIndex === c.claimIndex
-                      );
-                      const isSelected = selectedClaimIndex === globalIdx;
-                      const claimKey = `${c.paragraphIndex}-${c.claimIndex}`;
-                      const isModified = rewriteHistory.has(claimKey);
-
-                      // Add highlighted claim
-                      elements.push(
-                        <button
-                          key={`claim-${cIdx}`}
-                          onClick={() => selectClaim(globalIdx)}
-                          className={cn(
-                            "rounded px-0.5 -mx-0.5 transition-all cursor-pointer hover:ring-2 hover:ring-primary/50",
-                            c.color === 'green' && "bg-green-500/20 hover:bg-green-500/30",
-                            c.color === 'yellow' && "bg-yellow-500/30 hover:bg-yellow-500/40",
-                            c.color === 'red' && "bg-red-500/30 hover:bg-red-500/40",
-                            c.color === 'blue' && "bg-blue-500/20 hover:bg-blue-500/30",
-                            isSelected && "ring-2 ring-primary",
-                            isModified && "underline decoration-orange-500 decoration-2"
-                          )}
-                        >
-                          {c.claim.text}
-                        </button>
-                      );
-
-                      lastEnd = start + c.claim.text.length;
-                    });
-
-                    // Add remaining text
-                    if (lastEnd < p.text.length) {
-                      elements.push(
-                        <span key="text-end">{p.text.slice(lastEnd)}</span>
-                      );
-                    }
-
-                    return elements;
-                  };
-
-                  return (
-                    <div key={idx} className="mb-4">
-                      {p.sectionTitle && (
-                        <div className="font-semibold text-base mb-2">{p.sectionTitle}</div>
-                      )}
-                      <p className="text-sm leading-relaxed">
-                        {renderTextWithHighlights()}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </Card>
-
-          {/* Claim Detail - Right Panel */}
-          <div className="space-y-4">
-            {currentClaim ? (
-              <>
-                {/* Navigation */}
-                <Card className="p-3">
-                  <div className="flex items-center justify-between">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={goToPrevClaim}
-                      disabled={selectedClaimIndex === null || selectedClaimIndex === 0}
-                    >
-                      <ChevronLeft className="h-4 w-4 mr-1" />
-                      Prev
-                    </Button>
-                    
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        ¶{currentClaim.paragraphIndex + 1}
-                      </span>
-                      <VerdictBadge color={currentClaim.color} />
-                      {currentClaimHistory && currentClaimHistory.versions.length > 0 && (
-                        <div className="flex items-center gap-1">
-                          <Button 
-                            variant="outline" 
-                            size="sm" 
-                            onClick={() => setHistoryOpen(!historyOpen)}
-                            className="text-blue-600 border-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950 h-7 text-xs"
-                          >
-                            <History className="h-3 w-3 mr-1" />
-                            {currentClaimHistory.versions.length}
-                          </Button>
-                          <Button 
-                            variant="outline" 
-                            size="sm" 
-                            onClick={handleRevert}
-                            className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950 h-7 text-xs"
-                          >
-                            <Undo2 className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={goToNextClaim}
-                      disabled={selectedClaimIndex === null || selectedClaimIndex === allClaims.length - 1}
-                    >
-                      Next
-                      <ChevronRight className="h-4 w-4 ml-1" />
-                    </Button>
-                  </div>
-                </Card>
-
-                {/* Version History Panel */}
-                {historyOpen && currentClaimHistory && currentClaimHistory.versions.length > 0 && (
-                  <Card className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300 flex items-center gap-1">
-                        <Clock className="h-3 w-3" />
-                        Version History
-                      </h4>
-                      <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(false)} className="h-6 text-xs">
-                        Close
-                      </Button>
-                    </div>
-                    <div className="space-y-2 max-h-48 overflow-y-auto">
-                      {currentClaimHistory.versions.map((version, idx) => (
-                        <div 
-                          key={idx} 
-                          className="flex items-start justify-between gap-2 p-2 bg-background rounded border"
-                        >
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1">
-                              <Badge variant="outline" className="text-[10px]">
-                                v{idx + 1}
-                              </Badge>
-                              <span className="text-[10px] text-muted-foreground">
-                                {version.timestamp.toLocaleTimeString()}
-                              </span>
-                            </div>
-                            <p className="text-xs text-muted-foreground line-clamp-2">
-                              {version.text.slice(0, 80)}...
-                            </p>
-                          </div>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleRevertToVersion(idx)}
-                            className="h-6 text-xs flex-shrink-0"
-                          >
-                            Restore
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  </Card>
-                )}
-
-                {/* Claim Card */}
-                <ClaimCard
-                  claim={currentClaim.claim}
-                  sources={sources}
-                  onOpenSource={handleOpenSource}
-                  onImplementRewrite={handleImplementRewrite}
-                  showImplementButton={true}
-                  originalText={currentClaimHistory?.versions[0]?.text}
-                  onRevert={handleRevert}
-                  highlightColor={currentClaim.color}
-                />
-              </>
-            ) : selectedBlueParagraph ? (
-              /* Blue Paragraph Info Panel */
-              <Card className="p-4 bg-blue-500/5 border-blue-500/20">
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <VerdictBadge color="blue" />
-                    <span className="text-sm font-medium">
-                      Paragraph {selectedBlueParagraph.paragraphIndex + 1}
-                    </span>
-                  </div>
-                  
-                  {selectedBlueParagraph.sectionTitle && (
-                    <div>
-                      <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Section</div>
-                      <p className="text-sm font-medium">{selectedBlueParagraph.sectionTitle}</p>
-                    </div>
-                  )}
-                  
-                  <div>
-                    <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Status</div>
-                    <p className="text-sm">{selectedBlueParagraph.skipReason || 'This section does not require citation verification.'}</p>
-                  </div>
-                  
-                  <div>
-                    <div className="text-xs text-muted-foreground mb-2 uppercase tracking-wide">Content Preview</div>
-                    <div className="text-sm text-muted-foreground bg-muted/50 rounded p-3 max-h-48 overflow-y-auto">
-                      {selectedBlueParagraph.paragraphText.slice(0, 500)}
-                      {selectedBlueParagraph.paragraphText.length > 500 && '...'}
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            ) : (
-              <Card className="p-6 text-center text-muted-foreground">
-                <p className="text-sm">Click on a highlighted section to view details</p>
-              </Card>
-            )}
-          </div>
-        </div>
-      ) : (
-        /* PDF Overlay View */
+      {viewMode === 'pdf' ? (
+        /* PDF Overlay View - Now the default */
         <div className="grid gap-4 lg:grid-cols-[1fr_400px]">
           {/* PDF Viewer - Left Panel */}
           <Card className="overflow-hidden">
@@ -1378,7 +789,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                     <div className="text-center">
                       <p className="font-medium">PDF not available</p>
                       <p className="text-sm mt-1">Upload a PDF thesis file to use this view.</p>
-                      <p className="text-xs mt-2 opacity-70">Sessions created before PDF storage was enabled won't have the PDF available.</p>
                     </div>
                   </div>
                 ) : !pdfDoc ? (
@@ -1395,7 +805,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                       onMouseMove={handlePdfCanvasMove}
                       onMouseLeave={handlePdfCanvasLeave}
                     />
-                    {/* Hover overlay - positioned using percentage-based positioning for scaling consistency */}
                     {hoveredRegion && pdfCanvasRef.current && (
                       <div
                         className="absolute pointer-events-none border-2 rounded-sm"
@@ -1422,11 +831,10 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
             </ScrollArea>
           </Card>
 
-          {/* Claim Detail - Right Panel (same as document view) */}
+          {/* Claim Detail - Right Panel */}
           <div className="space-y-4">
             {currentClaim ? (
               <>
-                {/* Navigation */}
                 <Card className="p-3">
                   <div className="flex items-center justify-between">
                     <Button 
@@ -1440,8 +848,8 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                     </Button>
                     
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        Claim {(selectedClaimIndex ?? 0) + 1} of {allClaims.length}
+                      <span className="text-xs font-mono text-muted-foreground">
+                        {currentClaim.displayId}
                       </span>
                       <VerdictBadge color={currentClaim.color} />
                     </div>
@@ -1458,7 +866,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                   </div>
                 </Card>
 
-                {/* Claim Card */}
                 <ClaimCard
                   claim={currentClaim.claim}
                   sources={sources}
@@ -1468,10 +875,10 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                   originalText={currentClaimHistory?.versions[0]?.text}
                   onRevert={handleRevert}
                   highlightColor={currentClaim.color}
+                  displayId={currentClaim.displayId}
                 />
               </>
             ) : selectedBlueParagraph ? (
-              /* Blue Paragraph Info Panel */
               <Card className="p-4 bg-blue-500/5 border-blue-500/20">
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
@@ -1509,9 +916,452 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
             )}
           </div>
         </div>
+      ) : viewMode === 'claims' ? (
+        <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+          {/* Claims List - Left Panel */}
+          <Card className="overflow-hidden">
+            <div className="p-3 border-b bg-muted/50">
+              <h3 className="font-medium text-sm">All Claims</h3>
+            </div>
+            <ScrollArea className="h-[calc(100vh-280px)]">
+              <div className="p-2 space-y-1">
+                {allClaims.map((item, idx) => {
+                  const key = `${item.paragraphIndex}-${item.claimIndex}`;
+                  const isModified = rewriteHistory.has(key);
+                  
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => selectClaim(idx)}
+                      className={cn(
+                        "w-full text-left p-3 rounded-lg transition-colors",
+                        "hover:bg-accent/50",
+                        selectedClaimIndex === idx 
+                          ? "bg-accent border border-primary/30" 
+                          : "bg-card border border-transparent"
+                      )}
+                    >
+                      <div className="flex items-start gap-2">
+                        <div 
+                          className={cn(
+                            "w-2 h-2 rounded-full mt-1.5 flex-shrink-0",
+                            item.color === 'green' && "bg-green-500",
+                            item.color === 'yellow' && "bg-yellow-500",
+                            item.color === 'red' && "bg-red-500",
+                            item.color === 'blue' && "bg-blue-500"
+                          )}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-mono text-muted-foreground">
+                              {item.displayId}
+                            </span>
+                            {isModified && (
+                              <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 bg-orange-500/10 text-orange-600 border-orange-500/30">
+                                Modified
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="text-sm line-clamp-2">
+                            {item.claim.text.slice(0, 80)}
+                            {item.claim.text.length > 80 ? '...' : ''}
+                          </p>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </Card>
+
+          {/* Claim Detail - Right Panel */}
+          <div className="space-y-4">
+            <Card className="p-3">
+              <div className="flex items-center justify-between">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={goToPrevClaim}
+                  disabled={selectedClaimIndex === 0}
+                >
+                  <ChevronLeft className="h-4 w-4 mr-1" />
+                  Previous
+                </Button>
+                
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-mono text-muted-foreground">
+                    {currentClaim?.displayId}
+                  </span>
+                  <VerdictBadge color={currentClaim?.color || 'blue'} />
+                  {currentClaimHistory && currentClaimHistory.versions.length > 0 && (
+                    <div className="flex items-center gap-1">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setHistoryOpen(!historyOpen)}
+                        className="text-blue-600 border-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950"
+                      >
+                        <History className="h-4 w-4 mr-1" />
+                        History ({currentClaimHistory.versions.length})
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={handleRevert}
+                        className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950"
+                      >
+                        <Undo2 className="h-4 w-4 mr-1" />
+                        Revert
+                      </Button>
+                    </div>
+                  )}
+                </div>
+                
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={goToNextClaim}
+                  disabled={selectedClaimIndex === allClaims.length - 1}
+                >
+                  Next
+                  <ChevronRight className="h-4 w-4 ml-1" />
+                </Button>
+              </div>
+            </Card>
+
+            {historyOpen && currentClaimHistory && currentClaimHistory.versions.length > 0 && (
+              <Card className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300 flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Version History
+                  </h4>
+                  <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(false)} className="h-6 text-xs">
+                    Close
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {currentClaimHistory.versions.map((version, idx) => (
+                    <div 
+                      key={idx} 
+                      className="flex items-start justify-between gap-2 p-2 bg-background rounded border"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="outline" className="text-[10px]">
+                            v{idx + 1}
+                          </Badge>
+                          <span className="text-[10px] text-muted-foreground">
+                            {version.timestamp.toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground line-clamp-2">
+                          {version.text.slice(0, 100)}...
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleRevertToVersion(idx)}
+                        className="h-7 text-xs flex-shrink-0"
+                      >
+                        Restore
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            <Card className="p-4 bg-muted/30">
+              <div className="text-xs text-muted-foreground mb-2 font-medium uppercase tracking-wide">
+                Paragraph Context
+              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed line-clamp-4">
+                {currentClaim?.paragraphText}
+              </p>
+            </Card>
+
+            {currentClaim && (
+              <ClaimCard
+                claim={currentClaim.claim}
+                sources={sources}
+                onOpenSource={handleOpenSource}
+                onImplementRewrite={handleImplementRewrite}
+                showImplementButton={true}
+                originalText={currentClaimHistory?.versions[0]?.text}
+                onRevert={handleRevert}
+                highlightColor={currentClaim.color}
+                displayId={currentClaim.displayId}
+              />
+            )}
+          </div>
+        </div>
+      ) : (
+        /* Full Document View with inline highlights */
+        <div className="grid gap-4 lg:grid-cols-[1fr_400px]">
+          <Card className="overflow-hidden">
+            <div className="p-3 border-b bg-muted/50 flex items-center justify-between">
+              <h3 className="font-medium text-sm">Full Document</h3>
+              <span className="text-xs text-muted-foreground">{paragraphs.length} paragraphs</span>
+            </div>
+            <ScrollArea className="h-[calc(100vh-280px)]">
+              <div className="p-6 space-y-1 text-left">
+                {paragraphs.map((p, idx) => {
+                  const paragraphClaims = allClaims.filter(c => c.paragraphIndex === p.index);
+                  
+                  const renderTextWithHighlights = () => {
+                    if (paragraphClaims.length === 0) {
+                      const hasCitationPattern = /\([^)]*\d{4}[^)]*\)/.test(p.text);
+                      const isBlueStatus = p.result?.overall_color === 'blue';
+                      if ((!p.checked && hasCitationPattern) || isBlueStatus) {
+                        const bp: BlueParagraph = {
+                          paragraphIndex: p.index,
+                          paragraphText: p.text,
+                          sectionTitle: p.sectionTitle,
+                          skipReason: p.skipReason || p.result?.summary,
+                        };
+                        const isSelected = selectedBlueParagraph?.paragraphIndex === p.index;
+                        return (
+                          <button
+                            onClick={() => selectBlueParagraph(bp)}
+                            className={cn(
+                              "bg-blue-500/10 rounded px-0.5 text-left transition-all cursor-pointer hover:ring-2 hover:ring-blue-500/50",
+                              isSelected && "ring-2 ring-blue-500"
+                            )}
+                          >
+                            {p.text}
+                          </button>
+                        );
+                      }
+                      return <span>{p.text}</span>;
+                    }
+
+                    const sortedClaims = [...paragraphClaims].sort((a, b) => {
+                      const posA = p.text.indexOf(a.claim.text);
+                      const posB = p.text.indexOf(b.claim.text);
+                      return posA - posB;
+                    });
+
+                    const elements: React.ReactNode[] = [];
+                    let lastEnd = 0;
+
+                    sortedClaims.forEach((c, cIdx) => {
+                      const start = p.text.indexOf(c.claim.text, lastEnd);
+                      if (start === -1) return;
+
+                      if (start > lastEnd) {
+                        elements.push(
+                          <span key={`text-${cIdx}`}>{p.text.slice(lastEnd, start)}</span>
+                        );
+                      }
+
+                      const globalIdx = allClaims.findIndex(
+                        ac => ac.paragraphIndex === c.paragraphIndex && ac.claimIndex === c.claimIndex
+                      );
+                      const isSelected = selectedClaimIndex === globalIdx;
+                      const claimKey = `${c.paragraphIndex}-${c.claimIndex}`;
+                      const isModified = rewriteHistory.has(claimKey);
+
+                      elements.push(
+                        <button
+                          key={`claim-${cIdx}`}
+                          onClick={() => selectClaim(globalIdx)}
+                          className={cn(
+                            "rounded px-0.5 -mx-0.5 transition-all cursor-pointer hover:ring-2 hover:ring-primary/50",
+                            c.color === 'green' && "bg-green-500/20 hover:bg-green-500/30",
+                            c.color === 'yellow' && "bg-yellow-500/30 hover:bg-yellow-500/40",
+                            c.color === 'red' && "bg-red-500/30 hover:bg-red-500/40",
+                            c.color === 'blue' && "bg-blue-500/20 hover:bg-blue-500/30",
+                            isSelected && "ring-2 ring-primary",
+                            isModified && "underline decoration-orange-500 decoration-2"
+                          )}
+                          title={`Claim ${c.displayId}`}
+                        >
+                          {c.claim.text}
+                        </button>
+                      );
+
+                      lastEnd = start + c.claim.text.length;
+                    });
+
+                    if (lastEnd < p.text.length) {
+                      elements.push(
+                        <span key="text-end">{p.text.slice(lastEnd)}</span>
+                      );
+                    }
+
+                    return elements;
+                  };
+
+                  return (
+                    <div key={idx} className="mb-4">
+                      {p.sectionTitle && (
+                        <div className="font-semibold text-base mb-2">{p.sectionTitle}</div>
+                      )}
+                      <p className="text-sm leading-relaxed">
+                        {renderTextWithHighlights()}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </Card>
+
+          {/* Claim Detail - Right Panel */}
+          <div className="space-y-4">
+            {currentClaim ? (
+              <>
+                <Card className="p-3">
+                  <div className="flex items-center justify-between">
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={goToPrevClaim}
+                      disabled={selectedClaimIndex === null || selectedClaimIndex === 0}
+                    >
+                      <ChevronLeft className="h-4 w-4 mr-1" />
+                      Prev
+                    </Button>
+                    
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-muted-foreground">
+                        {currentClaim.displayId}
+                      </span>
+                      <VerdictBadge color={currentClaim.color} />
+                      {currentClaimHistory && currentClaimHistory.versions.length > 0 && (
+                        <div className="flex items-center gap-1">
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onClick={() => setHistoryOpen(!historyOpen)}
+                            className="text-blue-600 border-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950 h-7 text-xs"
+                          >
+                            <History className="h-3 w-3 mr-1" />
+                            {currentClaimHistory.versions.length}
+                          </Button>
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onClick={handleRevert}
+                            className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950 h-7 text-xs"
+                          >
+                            <Undo2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={goToNextClaim}
+                      disabled={selectedClaimIndex === null || selectedClaimIndex === allClaims.length - 1}
+                    >
+                      Next
+                      <ChevronRight className="h-4 w-4 ml-1" />
+                    </Button>
+                  </div>
+                </Card>
+
+                {historyOpen && currentClaimHistory && currentClaimHistory.versions.length > 0 && (
+                  <Card className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300 flex items-center gap-1">
+                        <Clock className="h-3 w-3" />
+                        Version History
+                      </h4>
+                      <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(false)} className="h-6 text-xs">
+                        Close
+                      </Button>
+                    </div>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {currentClaimHistory.versions.map((version, idx) => (
+                        <div 
+                          key={idx} 
+                          className="flex items-start justify-between gap-2 p-2 bg-background rounded border"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge variant="outline" className="text-[10px]">
+                                v{idx + 1}
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground">
+                                {version.timestamp.toLocaleTimeString()}
+                              </span>
+                            </div>
+                            <p className="text-xs text-muted-foreground line-clamp-2">
+                              {version.text.slice(0, 80)}...
+                            </p>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleRevertToVersion(idx)}
+                            className="h-6 text-xs flex-shrink-0"
+                          >
+                            Restore
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+
+                <ClaimCard
+                  claim={currentClaim.claim}
+                  sources={sources}
+                  onOpenSource={handleOpenSource}
+                  onImplementRewrite={handleImplementRewrite}
+                  showImplementButton={true}
+                  originalText={currentClaimHistory?.versions[0]?.text}
+                  onRevert={handleRevert}
+                  highlightColor={currentClaim.color}
+                  displayId={currentClaim.displayId}
+                />
+              </>
+            ) : selectedBlueParagraph ? (
+              <Card className="p-4 bg-blue-500/5 border-blue-500/20">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <VerdictBadge color="blue" />
+                    <span className="text-sm font-medium">
+                      Paragraph {selectedBlueParagraph.paragraphIndex + 1}
+                    </span>
+                  </div>
+                  
+                  {selectedBlueParagraph.sectionTitle && (
+                    <div>
+                      <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Section</div>
+                      <p className="text-sm font-medium">{selectedBlueParagraph.sectionTitle}</p>
+                    </div>
+                  )}
+                  
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Status</div>
+                    <p className="text-sm">{selectedBlueParagraph.skipReason || 'This section does not require citation verification.'}</p>
+                  </div>
+                  
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-2 uppercase tracking-wide">Content Preview</div>
+                    <div className="text-sm text-muted-foreground bg-muted/50 rounded p-3 max-h-48 overflow-y-auto">
+                      {selectedBlueParagraph.paragraphText.slice(0, 500)}
+                      {selectedBlueParagraph.paragraphText.length > 500 && '...'}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            ) : (
+              <Card className="p-6 text-center text-muted-foreground">
+                <p className="text-sm">Click on a highlighted section to view details</p>
+              </Card>
+            )}
+          </div>
+        </div>
       )}
 
-      {/* PDF Viewer Dialog */}
       <PdfViewerDialog
         open={viewerOpen}
         onOpenChange={setViewerOpen}
