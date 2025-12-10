@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2, RotateCcw, Check, AlertTriangle, XCircle, FileEdit } from "lucide-react";
+import { useVisibilityReload } from "@/hooks/use-visibility-reload";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -157,6 +158,18 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
 
   // Flag to track if we've already auto-loaded a session
   const hasAutoLoadedRef = useRef(false);
+
+  // Reload data when tab becomes visible after being hidden (handles browser memory cleanup)
+  const handleVisibilityReload = useCallback(() => {
+    console.log('[CopilotMode] Visibility reload triggered - refreshing sources');
+    setSources(getSources());
+    // Re-analyze citations if we have data
+    if (fullText) {
+      refreshSourcesAndCitations();
+    }
+  }, [fullText, refreshSourcesAndCitations]);
+  
+  useVisibilityReload(handleVisibilityReload);
   
   // Load sources and sessions on mount and when user changes
   useEffect(() => {

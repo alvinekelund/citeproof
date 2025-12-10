@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { Library, RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SourceDropzone } from "./SourceDropzone";
@@ -6,6 +6,7 @@ import { SourceTable } from "./SourceTable";
 import { Source } from "@/lib/types";
 import { getSources } from "@/lib/client-storage";
 import { UnmatchedCitation } from "@/components/audit/CopilotMode";
+import { useVisibilityReload } from "@/hooks/use-visibility-reload";
 
 interface SourceLibraryProps {
   usedSourceIds?: Set<string>;
@@ -24,17 +25,21 @@ export function SourceLibrary({ usedSourceIds, unmatchedCitations = [], onSource
   const [sources, setSources] = useState<Source[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadSources = () => {
+  const loadSources = useCallback(() => {
     setIsLoading(true);
     try {
       const data = getSources();
+      console.log('[SourceLibrary] Loaded', data.length, 'sources');
       setSources(data);
     } catch (error) {
       console.error('Failed to load sources:', error);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  // Reload sources when tab becomes visible after being hidden
+  useVisibilityReload(loadSources);
 
   // Called when sources are modified (linked, edited, etc.)
   const handleSourcesUpdate = () => {
@@ -45,7 +50,7 @@ export function SourceLibrary({ usedSourceIds, unmatchedCitations = [], onSource
 
   useEffect(() => {
     loadSources();
-  }, []);
+  }, [loadSources]);
 
   // Create combined list of sources and unmatched citations
   const libraryItems = useMemo((): LibraryItem[] => {
