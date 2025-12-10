@@ -279,6 +279,15 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
             ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
           }
         }
+        
+        // Scroll to first highlight
+        if (rects.length > 0 && containerRef.current) {
+          const firstRect = rects[0];
+          const scrollTop = Math.max(0, firstRect.y - 100); // 100px padding from top
+          setTimeout(() => {
+            containerRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' });
+          }, 100);
+        }
       }
     } catch (err) {
       console.error('Error highlighting text:', err);

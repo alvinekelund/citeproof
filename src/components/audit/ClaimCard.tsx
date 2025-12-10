@@ -53,6 +53,11 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
     suggested_source?: string;
     strategy?: string;
     explanation: string;
+    evidence?: {
+      excerpt: string;
+      page_number: number;
+      section?: string;
+    };
   } | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -180,17 +185,30 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
     setRewriteResult(null);
     
     try {
-      const { data, error } = await supabase.functions.invoke('rewrite-claim', {
-        body: {
-          claim: claim.text,
-          sources: sources.map(s => ({
+      // For find_source mode, include extracted text for evidence finding
+      const sourcesPayload = mode === 'find_source' 
+        ? sources.map(s => ({
             id: s.id,
             in_text_label: s.in_text_label,
             shorthand_id: s.shorthand_id,
             title: s.title,
             authors: s.authors,
             year: s.year,
-          })),
+            extracted_text: s.extracted_text?.substring(0, 3000), // Include first 3000 chars for evidence
+          }))
+        : sources.map(s => ({
+            id: s.id,
+            in_text_label: s.in_text_label,
+            shorthand_id: s.shorthand_id,
+            title: s.title,
+            authors: s.authors,
+            year: s.year,
+          }));
+      
+      const { data, error } = await supabase.functions.invoke('rewrite-claim', {
+        body: {
+          claim: claim.text,
+          sources: sourcesPayload,
           mode,
         },
       });
@@ -400,8 +418,39 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
                     <strong>Source:</strong> {rewriteResult.suggested_source}
                   </p>
                 )}
+                
+                {/* Evidence excerpt - similar to regular evidence display */}
+                {rewriteResult.evidence && rewriteResult.suggested_source && (
+                  <div className="mt-2 bg-secondary/50 rounded-lg p-3 text-sm">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-mono text-xs text-primary">{rewriteResult.suggested_source}</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleOpenSource(
+                          rewriteResult.suggested_source!, 
+                          rewriteResult.evidence?.page_number || 1, 
+                          rewriteResult.evidence?.excerpt
+                        )}
+                        className="h-7 text-xs gap-1"
+                      >
+                        <Eye className="h-3 w-3" />
+                        {rewriteResult.evidence.page_number > 0 ? `Page ${rewriteResult.evidence.page_number}` : 'View'}
+                      </Button>
+                    </div>
+                    <blockquote className="text-muted-foreground italic border-l-2 border-primary/30 pl-3">
+                      "{rewriteResult.evidence.excerpt}"
+                    </blockquote>
+                    {rewriteResult.evidence.section && (
+                      <span className="text-xs text-muted-foreground mt-1 block">
+                        Section: {rewriteResult.evidence.section}
+                      </span>
+                    )}
+                  </div>
+                )}
+                
                 {rewriteResult.strategy && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-xs text-muted-foreground mt-2">
                     <strong>Strategy:</strong> {rewriteResult.strategy}
                   </p>
                 )}
