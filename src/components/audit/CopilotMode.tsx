@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, forwardRef, useImperativeHandle, useMemo } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2, RotateCcw, Check, AlertTriangle, XCircle, FileEdit } from "lucide-react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2, RotateCcw, Check, AlertTriangle, XCircle, FileEdit, Maximize2, Minimize2, Eye } from "lucide-react";
 import { useVisibilityReload } from "@/hooks/use-visibility-reload";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -102,6 +102,8 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [currentBatchSize, setCurrentBatchSize] = useState(3);
   const [tokenUsage, setTokenUsage] = useState({ input: 0, output: 0 });
   const [showClaimsView, setShowClaimsView] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [thesisPdfPath, setThesisPdfPath] = useState<string | null>(null);
   
   // PDF viewer for source checkup
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
@@ -109,6 +111,10 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [pdfViewerPage, setPdfViewerPage] = useState(1);
   const [pdfViewerSearchText, setPdfViewerSearchText] = useState<string | undefined>();
   const [pdfViewerHighlightColor, setPdfViewerHighlightColor] = useState<'green' | 'yellow' | 'red' | 'blue' | undefined>();
+  
+  // Thesis PDF viewer (for viewing paragraph context in thesis)
+  const [thesisViewerOpen, setThesisViewerOpen] = useState(false);
+  const [thesisViewerSearchText, setThesisViewerSearchText] = useState<string | undefined>();
 
   // Helper to analyze and deduplicate citations
   const analyzeAndDeduplicateCitations = useCallback(async (text: string, currentSources: Source[]) => {
@@ -235,10 +241,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setFile({ name: session.thesis_name } as File);
     setSelectedIndex(null);
     
-    // Restore PDF file from IndexedDB if available (for source checkup)
+    // Restore PDF file from IndexedDB if available (for thesis viewer)
     const pdfFile = await getSessionPdf(session.id);
     if (pdfFile) {
+      const blobUrl = URL.createObjectURL(pdfFile);
+      setThesisPdfPath(blobUrl);
       console.log('[CopilotMode] Restored PDF from IndexedDB');
+    } else {
+      setThesisPdfPath(null);
     }
     
     // Restore fullText from IndexedDB and re-analyze citations against current library
@@ -424,7 +434,13 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setSelectedIndex(null);
     setCurrentSessionId(null);
     
-    // PDF files will be stored for source checkup
+    // Store PDF path for thesis viewer
+    if (ext === '.pdf') {
+      const blobUrl = URL.createObjectURL(uploadedFile);
+      setThesisPdfPath(blobUrl);
+    } else {
+      setThesisPdfPath(null);
+    }
 
     try {
       const text = await extractTextFromFile(uploadedFile);
@@ -2026,16 +2042,50 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           <div className="space-y-4">
             {selectedParagraph && (
               <>
-                <div className="flex items-center justify-between">
-                  <div>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
                     <span className="font-medium">
                       {selectedParagraph.sectionType === 'chapter' || selectedParagraph.sectionType === 'section' 
                         ? `${selectedParagraph.sectionType.charAt(0).toUpperCase() + selectedParagraph.sectionType.slice(1)}: `
                         : `Paragraph ${selectedIndex! + 1} of ${paragraphs.length}`
                       }
                     </span>
+                    {/* View toggle - Paragraphs vs Claims */}
+                    {checkedCount > blueCount && (
+                      <Button
+                        variant={showClaimsView ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setShowClaimsView(!showClaimsView)}
+                      >
+                        {showClaimsView ? 'Paragraphs' : 'Claims'}
+                      </Button>
+                    )}
                   </div>
                   <div className="flex gap-2">
+                    {/* View in thesis button */}
+                    {thesisPdfPath && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          // Take first ~50 chars of paragraph for search
+                          const searchText = selectedParagraph.text.substring(0, 80).trim();
+                          setThesisViewerSearchText(searchText);
+                          setThesisViewerOpen(true);
+                        }}
+                      >
+                        <Eye className="h-4 w-4 mr-1" />
+                        View in Thesis
+                      </Button>
+                    )}
+                    {/* Fullscreen toggle */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsFullscreen(!isFullscreen)}
+                    >
+                      {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
@@ -2057,111 +2107,144 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                   </div>
                 </div>
 
-                {/* Full paragraph text */}
-                <Card className="p-4 bg-secondary/30 max-h-[200px] overflow-y-auto">
-                  <p className="text-sm whitespace-pre-wrap">{selectedParagraph.text}</p>
-                </Card>
-
-                {/* Result or prompt to check */}
-                {selectedParagraph.checked && selectedParagraph.result ? (
-                  <>
-                    <CheckResult 
-                      result={selectedParagraph.result} 
-                      paragraphText={selectedParagraph.text}
-                      sources={sources}
-                    />
-                    {/* Manual validation buttons after result */}
-                    <Card className="p-4">
-                      <p className="text-sm text-muted-foreground mb-3">Override with manual validation:</p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => selectedIndex !== null && markAsGreen(selectedIndex)}
-                          className="text-verdict-green hover:bg-verdict-green-bg"
-                        >
-                          <Check className="h-4 w-4 mr-1" />
-                          Mark Valid
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => selectedIndex !== null && markAsYellow(selectedIndex)}
-                          className="text-verdict-yellow hover:bg-verdict-yellow-bg"
-                        >
-                          <AlertTriangle className="h-4 w-4 mr-1" />
-                          Mark Uncertain
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => selectedIndex !== null && markAsRed(selectedIndex)}
-                          className="text-verdict-red hover:bg-verdict-red-bg"
-                        >
-                          <XCircle className="h-4 w-4 mr-1" />
-                          Mark Unsupported
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => selectedIndex !== null && markAsBlue(selectedIndex)}
-                          className="text-verdict-blue hover:bg-verdict-blue-bg"
-                        >
-                          <CircleSlash className="h-4 w-4 mr-1" />
-                          No Source Needed
-                        </Button>
-                      </div>
-                    </Card>
-                  </>
-                ) : selectedParagraph.shouldCheck !== false ? (
-                  <Card className="p-8 text-center space-y-4">
-                    <Sparkles className="h-8 w-8 mx-auto text-primary" />
-                    <p className="text-muted-foreground">Click "Check" to analyze this paragraph</p>
-                    <div className="flex flex-wrap justify-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => selectedIndex !== null && markAsGreen(selectedIndex)}
-                        className="text-verdict-green hover:bg-verdict-green-bg"
-                      >
-                        <Check className="h-4 w-4 mr-1" />
-                        Mark Valid
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => selectedIndex !== null && markAsYellow(selectedIndex)}
-                        className="text-verdict-yellow hover:bg-verdict-yellow-bg"
-                      >
-                        <AlertTriangle className="h-4 w-4 mr-1" />
-                        Mark Uncertain
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => selectedIndex !== null && markAsRed(selectedIndex)}
-                        className="text-verdict-red hover:bg-verdict-red-bg"
-                      >
-                        <XCircle className="h-4 w-4 mr-1" />
-                        Mark Unsupported
-                      </Button>
-                      <Button 
-                        variant="outline" 
-                        size="sm"
-                        onClick={() => selectedIndex !== null && markAsBlue(selectedIndex)}
-                        className="text-verdict-blue hover:bg-verdict-blue-bg"
-                      >
-                        <CircleSlash className="h-4 w-4 mr-1" />
-                        No Source Needed
-                      </Button>
+                {/* Fullscreen mode: Show thesis PDF alongside results */}
+                {isFullscreen && thesisPdfPath ? (
+                  <div className="grid grid-cols-2 gap-4 h-[calc(100vh-200px)]">
+                    {/* Left: Thesis PDF */}
+                    <div className="border rounded-lg overflow-hidden">
+                      <iframe 
+                        src={`${thesisPdfPath}#search=${encodeURIComponent(selectedParagraph.text.substring(0, 50))}`}
+                        className="w-full h-full"
+                        title="Thesis Document"
+                      />
                     </div>
-                  </Card>
+                    {/* Right: Results */}
+                    <ScrollArea className="h-full">
+                      <div className="space-y-4 pr-4">
+                        {/* Full paragraph text */}
+                        <Card className="p-4 bg-secondary/30">
+                          <p className="text-sm whitespace-pre-wrap">{selectedParagraph.text}</p>
+                        </Card>
+                        
+                        {selectedParagraph.checked && selectedParagraph.result && (
+                          <CheckResult 
+                            result={selectedParagraph.result} 
+                            paragraphText={selectedParagraph.text}
+                            sources={sources}
+                          />
+                        )}
+                      </div>
+                    </ScrollArea>
+                  </div>
                 ) : (
-                  <Card className="p-8 text-center">
-                    <p className="text-muted-foreground">
-                      {selectedParagraph.skipReason || 'This section does not require verification'}
-                    </p>
-                  </Card>
+                  <>
+                    {/* Full paragraph text */}
+                    <Card className="p-4 bg-secondary/30 max-h-[200px] overflow-y-auto">
+                      <p className="text-sm whitespace-pre-wrap">{selectedParagraph.text}</p>
+                    </Card>
+
+                    {/* Result or prompt to check */}
+                    {selectedParagraph.checked && selectedParagraph.result ? (
+                      <>
+                        <CheckResult 
+                          result={selectedParagraph.result} 
+                          paragraphText={selectedParagraph.text}
+                          sources={sources}
+                        />
+                        {/* Manual validation buttons after result */}
+                        <Card className="p-4">
+                          <p className="text-sm text-muted-foreground mb-3">Override with manual validation:</p>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => selectedIndex !== null && markAsGreen(selectedIndex)}
+                              className="text-verdict-green hover:bg-verdict-green-bg"
+                            >
+                              <Check className="h-4 w-4 mr-1" />
+                              Mark Valid
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => selectedIndex !== null && markAsYellow(selectedIndex)}
+                              className="text-verdict-yellow hover:bg-verdict-yellow-bg"
+                            >
+                              <AlertTriangle className="h-4 w-4 mr-1" />
+                              Mark Uncertain
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => selectedIndex !== null && markAsRed(selectedIndex)}
+                              className="text-verdict-red hover:bg-verdict-red-bg"
+                            >
+                              <XCircle className="h-4 w-4 mr-1" />
+                              Mark Unsupported
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => selectedIndex !== null && markAsBlue(selectedIndex)}
+                              className="text-verdict-blue hover:bg-verdict-blue-bg"
+                            >
+                              <CircleSlash className="h-4 w-4 mr-1" />
+                              No Source Needed
+                            </Button>
+                          </div>
+                        </Card>
+                      </>
+                    ) : selectedParagraph.shouldCheck !== false ? (
+                      <Card className="p-8 text-center space-y-4">
+                        <Sparkles className="h-8 w-8 mx-auto text-primary" />
+                        <p className="text-muted-foreground">Click "Check" to analyze this paragraph</p>
+                        <div className="flex flex-wrap justify-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => selectedIndex !== null && markAsGreen(selectedIndex)}
+                            className="text-verdict-green hover:bg-verdict-green-bg"
+                          >
+                            <Check className="h-4 w-4 mr-1" />
+                            Mark Valid
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => selectedIndex !== null && markAsYellow(selectedIndex)}
+                            className="text-verdict-yellow hover:bg-verdict-yellow-bg"
+                          >
+                            <AlertTriangle className="h-4 w-4 mr-1" />
+                            Mark Uncertain
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => selectedIndex !== null && markAsRed(selectedIndex)}
+                            className="text-verdict-red hover:bg-verdict-red-bg"
+                          >
+                            <XCircle className="h-4 w-4 mr-1" />
+                            Mark Unsupported
+                          </Button>
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            onClick={() => selectedIndex !== null && markAsBlue(selectedIndex)}
+                            className="text-verdict-blue hover:bg-verdict-blue-bg"
+                          >
+                            <CircleSlash className="h-4 w-4 mr-1" />
+                            No Source Needed
+                          </Button>
+                        </div>
+                      </Card>
+                    ) : (
+                      <Card className="p-8 text-center">
+                        <p className="text-muted-foreground">
+                          {selectedParagraph.skipReason || 'This section does not require verification'}
+                        </p>
+                      </Card>
+                    )}
+                  </>
                 )}
               </>
             )}
@@ -2186,6 +2269,18 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         searchText={pdfViewerSearchText}
         highlightColor={pdfViewerHighlightColor}
       />
+      
+      {/* Thesis PDF Viewer Dialog */}
+      {thesisPdfPath && (
+        <PdfViewerDialog
+          open={thesisViewerOpen}
+          onOpenChange={setThesisViewerOpen}
+          filePath={thesisPdfPath}
+          fileName={file?.name || "Thesis"}
+          initialPage={1}
+          searchText={thesisViewerSearchText}
+        />
+      )}
     </div>
   );
 });
