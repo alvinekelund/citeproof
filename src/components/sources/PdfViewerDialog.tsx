@@ -419,170 +419,136 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
     }
   };
   
+  // SIMPLE HIGHLIGHT: Use text layer spans directly, just like browser Ctrl+F
   const highlightSearchText = async (
     page: pdfjsLib.PDFPageProxy, 
     viewport: pdfjsLib.PageViewport,
     text: string
   ): Promise<boolean> => {
-    try {
-      const textContent = await page.getTextContent();
-      const textItems = textContent.items as Array<{
-        str: string;
-        transform: number[];
-        width: number;
-        height: number;
-      }>;
-      
-      if (!text || textItems.length === 0) {
-        setHighlightRects([]);
-        return false;
-      }
-      
-      const normalizedSearch = normalizePdfText(text).toLowerCase();
-      const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 0);
-      
-      // Get first and last distinctive phrases for matching
-      const firstPhrase = searchWords.slice(0, Math.min(6, searchWords.length)).join(' ');
-      const lastPhrase = searchWords.slice(-Math.min(4, searchWords.length)).join(' ');
-      
-      // Build normalized text for each item
-      const itemData = textItems.map((item, idx) => ({
-        item,
-        idx,
-        normalizedText: normalizePdfText(item.str).toLowerCase(),
-      }));
-      
-      // Find start item: the item that contains the beginning of our search phrase
-      let startItemIdx = -1;
-      let endItemIdx = -1;
-      
-      // Try to find an item whose text overlaps with the first phrase
-      for (let i = 0; i < itemData.length; i++) {
-        // Build running text from this position
-        let runningText = '';
-        for (let j = i; j < Math.min(i + 15, itemData.length); j++) {
-          runningText += (runningText ? ' ' : '') + itemData[j].normalizedText;
-          if (runningText.length > firstPhrase.length + 20) break;
-        }
-        
-        if (runningText.includes(firstPhrase)) {
-          startItemIdx = i;
-          break;
-        }
-      }
-      
-      // If no start found, try shorter prefix
-      if (startItemIdx === -1 && firstPhrase.length > 15) {
-        const shortPrefix = searchWords.slice(0, 3).join(' ');
-        for (let i = 0; i < itemData.length; i++) {
-          let runningText = '';
-          for (let j = i; j < Math.min(i + 10, itemData.length); j++) {
-            runningText += (runningText ? ' ' : '') + itemData[j].normalizedText;
-          }
-          if (runningText.includes(shortPrefix)) {
-            startItemIdx = i;
-            break;
-          }
-        }
-      }
-      
-      if (startItemIdx === -1) {
-        setHighlightRects([]);
-        setHighlightNotFound(true);
-        return false;
-      }
-      
-      // Find end item by searching for the last phrase
-      // Start from startItemIdx and look forward
-      const expectedItemCount = Math.ceil(searchWords.length / 3); // Rough estimate
-      const maxEndIdx = Math.min(startItemIdx + expectedItemCount + 20, itemData.length);
-      
-      for (let i = maxEndIdx - 1; i >= startItemIdx; i--) {
-        // Build running text backwards from this position
-        let runningText = '';
-        for (let j = i; j >= Math.max(i - 10, startItemIdx); j--) {
-          runningText = itemData[j].normalizedText + (runningText ? ' ' : '') + runningText;
-          if (runningText.length > lastPhrase.length + 20) break;
-        }
-        
-        if (runningText.includes(lastPhrase)) {
-          endItemIdx = i;
-          break;
-        }
-      }
-      
-      // Fallback: estimate end based on character count
-      if (endItemIdx === -1 || endItemIdx < startItemIdx) {
-        let charCount = 0;
-        const targetChars = normalizedSearch.length;
-        for (let i = startItemIdx; i < itemData.length; i++) {
-          charCount += itemData[i].normalizedText.length + 1;
-          if (charCount >= targetChars) {
-            endItemIdx = i;
-            break;
-          }
-        }
-        if (endItemIdx === -1) endItemIdx = Math.min(startItemIdx + 15, itemData.length - 1);
-      }
-      
-      setHighlightNotFound(false);
-      
-      // Collect rects for items between start and end (inclusive)
-      const rects: { x: number; y: number; width: number; height: number }[] = [];
-      
-      for (let i = startItemIdx; i <= endItemIdx && i < textItems.length; i++) {
-        const item = textItems[i];
-        if (!item || !item.str.trim()) continue;
-        
-        const transform = item.transform;
-        const x = transform[4];
-        const y = transform[5];
-        const fontSize = transform[0] || 12;
-        const width = item.width || (item.str.length * fontSize * 0.5);
-        const height = fontSize * 1.2;
-        
-        // Use viewport transform for accurate PDF-to-canvas conversion
-        const [a, b, c, d, e, f] = viewport.transform;
-        const canvasX = a * x + c * y + e;
-        const canvasY = b * x + d * y + f;
-        
-        rects.push({ 
-          x: canvasX, 
-          y: canvasY - height, 
-          width: width * viewport.scale, 
-          height: height + 2 
-        });
-      }
-      
-      setHighlightRects(rects);
-      
-      // Draw highlights with the specified color
-      if (highlightCanvasRef.current && rects.length > 0) {
-        const ctx = highlightCanvasRef.current.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, highlightCanvasRef.current.width, highlightCanvasRef.current.height);
-          ctx.fillStyle = getHighlightColorRgba(highlightColor);
-          for (const rect of rects) {
-            ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-          }
-        }
-        
-        // Scroll to highlight
-        if (rects.length > 0 && containerRef.current) {
-          const firstRect = rects[0];
-          const scrollTop = Math.max(0, firstRect.y - 100);
-          setTimeout(() => {
-            containerRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' });
-          }, 100);
-        }
-      }
-      
-      return true;
-    } catch (err) {
-      console.error('Error highlighting text:', err);
+    if (!textLayerRef.current || !text) {
       setHighlightRects([]);
       return false;
     }
+    
+    // Wait for text layer to be fully rendered
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
+    // Get all text spans from the text layer
+    const spans = textLayerRef.current.querySelectorAll('span');
+    if (spans.length === 0) {
+      setHighlightRects([]);
+      return false;
+    }
+    
+    // Build full page text from spans (keeping track of each span's text position)
+    const spanData: { span: HTMLSpanElement; text: string; start: number; end: number }[] = [];
+    let fullText = '';
+    
+    spans.forEach(span => {
+      const spanText = span.textContent || '';
+      if (spanText.trim()) {
+        const start = fullText.length;
+        fullText += spanText + ' ';
+        spanData.push({ span, text: spanText, start, end: fullText.length - 1 });
+      }
+    });
+    
+    // Normalize for comparison
+    const normalizedPage = normalizePdfText(fullText).toLowerCase();
+    const normalizedSearch = normalizePdfText(text).toLowerCase();
+    
+    // Simple indexOf to find the text (like Ctrl+F)
+    let matchStart = normalizedPage.indexOf(normalizedSearch);
+    
+    // If exact match not found, try with first 50 chars
+    if (matchStart === -1 && normalizedSearch.length > 50) {
+      matchStart = normalizedPage.indexOf(normalizedSearch.slice(0, 50));
+    }
+    
+    // Still not found? Try first 30 chars
+    if (matchStart === -1 && normalizedSearch.length > 30) {
+      matchStart = normalizedPage.indexOf(normalizedSearch.slice(0, 30));
+    }
+    
+    if (matchStart === -1) {
+      setHighlightRects([]);
+      setHighlightNotFound(true);
+      return false;
+    }
+    
+    const matchEnd = matchStart + normalizedSearch.length;
+    
+    // Find which spans overlap with the match range
+    // Build a mapping from normalized position to original position
+    const normToOrig: number[] = [];
+    let normIdx = 0;
+    for (let i = 0; i < fullText.length; i++) {
+      const char = fullText[i];
+      const normChar = normalizePdfText(char).toLowerCase();
+      for (let j = 0; j < normChar.length; j++) {
+        normToOrig[normIdx++] = i;
+      }
+    }
+    
+    // Convert normalized match positions to original positions
+    const origStart = normToOrig[matchStart] ?? 0;
+    const origEnd = normToOrig[Math.min(matchEnd, normToOrig.length - 1)] ?? fullText.length;
+    
+    // Find spans that overlap with the match
+    const matchedSpans: HTMLSpanElement[] = [];
+    for (const sd of spanData) {
+      // Check if this span overlaps with the match range
+      if (sd.end >= origStart && sd.start <= origEnd) {
+        matchedSpans.push(sd.span);
+      }
+    }
+    
+    if (matchedSpans.length === 0) {
+      setHighlightRects([]);
+      setHighlightNotFound(true);
+      return false;
+    }
+    
+    setHighlightNotFound(false);
+    
+    // Get bounding rects from the matched spans (they're already positioned correctly!)
+    const containerRect = textLayerRef.current.getBoundingClientRect();
+    const rects: { x: number; y: number; width: number; height: number }[] = [];
+    
+    for (const span of matchedSpans) {
+      const rect = span.getBoundingClientRect();
+      rects.push({
+        x: rect.left - containerRect.left,
+        y: rect.top - containerRect.top,
+        width: rect.width,
+        height: rect.height,
+      });
+    }
+    
+    setHighlightRects(rects);
+    
+    // Draw highlights on canvas
+    if (highlightCanvasRef.current && rects.length > 0) {
+      const ctx = highlightCanvasRef.current.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, highlightCanvasRef.current.width, highlightCanvasRef.current.height);
+        ctx.fillStyle = getHighlightColorRgba(highlightColor);
+        for (const rect of rects) {
+          ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+        }
+      }
+      
+      // Scroll to highlight
+      if (rects.length > 0 && containerRef.current) {
+        const firstRect = rects[0];
+        const scrollTop = Math.max(0, firstRect.y - 100);
+        setTimeout(() => {
+          containerRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' });
+        }, 100);
+      }
+    }
+    
+    return true;
   };
 
   const searchAllPages = async (text?: string) => {
