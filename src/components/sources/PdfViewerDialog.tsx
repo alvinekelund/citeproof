@@ -425,53 +425,101 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         return false;
       }
       
-      // Build page text with position tracking
-      const pageText: { char: string; itemIdx: number; charIdx: number }[] = [];
-      for (let itemIdx = 0; itemIdx < textItems.length; itemIdx++) {
-        const item = textItems[itemIdx];
-        for (let charIdx = 0; charIdx < item.str.length; charIdx++) {
-          pageText.push({ char: item.str[charIdx], itemIdx, charIdx });
+      const normalizedSearch = normalizePdfText(text).toLowerCase();
+      const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 0);
+      
+      // Get first and last distinctive phrases for matching
+      const firstPhrase = searchWords.slice(0, Math.min(6, searchWords.length)).join(' ');
+      const lastPhrase = searchWords.slice(-Math.min(4, searchWords.length)).join(' ');
+      
+      // Build normalized text for each item
+      const itemData = textItems.map((item, idx) => ({
+        item,
+        idx,
+        normalizedText: normalizePdfText(item.str).toLowerCase(),
+      }));
+      
+      // Find start item: the item that contains the beginning of our search phrase
+      let startItemIdx = -1;
+      let endItemIdx = -1;
+      
+      // Try to find an item whose text overlaps with the first phrase
+      for (let i = 0; i < itemData.length; i++) {
+        // Build running text from this position
+        let runningText = '';
+        for (let j = i; j < Math.min(i + 15, itemData.length); j++) {
+          runningText += (runningText ? ' ' : '') + itemData[j].normalizedText;
+          if (runningText.length > firstPhrase.length + 20) break;
         }
-        pageText.push({ char: ' ', itemIdx, charIdx: item.str.length });
+        
+        if (runningText.includes(firstPhrase)) {
+          startItemIdx = i;
+          break;
+        }
       }
       
-      const fullText = pageText.map(p => p.char).join('');
+      // If no start found, try shorter prefix
+      if (startItemIdx === -1 && firstPhrase.length > 15) {
+        const shortPrefix = searchWords.slice(0, 3).join(' ');
+        for (let i = 0; i < itemData.length; i++) {
+          let runningText = '';
+          for (let j = i; j < Math.min(i + 10, itemData.length); j++) {
+            runningText += (runningText ? ' ' : '') + itemData[j].normalizedText;
+          }
+          if (runningText.includes(shortPrefix)) {
+            startItemIdx = i;
+            break;
+          }
+        }
+      }
       
-      // Use fuzzy matching
-      const match = fuzzyMatch(fullText, text);
-      
-      if (!match) {
+      if (startItemIdx === -1) {
         setHighlightRects([]);
         setHighlightNotFound(true);
         return false;
       }
       
+      // Find end item by searching for the last phrase
+      // Start from startItemIdx and look forward
+      const expectedItemCount = Math.ceil(searchWords.length / 3); // Rough estimate
+      const maxEndIdx = Math.min(startItemIdx + expectedItemCount + 20, itemData.length);
+      
+      for (let i = maxEndIdx - 1; i >= startItemIdx; i--) {
+        // Build running text backwards from this position
+        let runningText = '';
+        for (let j = i; j >= Math.max(i - 10, startItemIdx); j--) {
+          runningText = itemData[j].normalizedText + (runningText ? ' ' : '') + runningText;
+          if (runningText.length > lastPhrase.length + 20) break;
+        }
+        
+        if (runningText.includes(lastPhrase)) {
+          endItemIdx = i;
+          break;
+        }
+      }
+      
+      // Fallback: estimate end based on character count
+      if (endItemIdx === -1 || endItemIdx < startItemIdx) {
+        let charCount = 0;
+        const targetChars = normalizedSearch.length;
+        for (let i = startItemIdx; i < itemData.length; i++) {
+          charCount += itemData[i].normalizedText.length + 1;
+          if (charCount >= targetChars) {
+            endItemIdx = i;
+            break;
+          }
+        }
+        if (endItemIdx === -1) endItemIdx = Math.min(startItemIdx + 15, itemData.length - 1);
+      }
+      
       setHighlightNotFound(false);
       
-      // Get the matched character range - STRICT boundaries
-      const origStart = match.start;
-      const origEnd = match.end;
-      const searchLen = normalizePdfText(text).length;
-      
-      // Collect rects ONLY for items that are actually within the matched text
+      // Collect rects for items between start and end (inclusive)
       const rects: { x: number; y: number; width: number; height: number }[] = [];
-      let totalHighlightedChars = 0;
-      const maxChars = searchLen * 1.2; // Allow 20% extra max
       
-      // Build a map of which items are in the matched range
-      for (let charPos = origStart; charPos < origEnd && charPos < pageText.length; charPos++) {
-        const charInfo = pageText[charPos];
-        if (!charInfo) continue;
-        
-        const item = textItems[charInfo.itemIdx];
+      for (let i = startItemIdx; i <= endItemIdx && i < textItems.length; i++) {
+        const item = textItems[i];
         if (!item || !item.str.trim()) continue;
-        
-        // Check if we already added this item
-        const existingRect = rects.find(r => (r as any).itemIdx === charInfo.itemIdx);
-        if (existingRect) continue;
-        
-        // Stop if we've highlighted enough characters
-        if (totalHighlightedChars >= maxChars) break;
         
         const [a, b, c, d, tx, ty] = item.transform;
         const x = tx * viewport.scale;
@@ -479,9 +527,7 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         const width = item.width * viewport.scale;
         const height = Math.abs(d) * viewport.scale * 1.2;
         
-        const rect = { x, y: y - height, width, height, itemIdx: charInfo.itemIdx } as any;
-        rects.push(rect);
-        totalHighlightedChars += item.str.length;
+        rects.push({ x, y: y - height, width, height });
       }
       
       setHighlightRects(rects);
