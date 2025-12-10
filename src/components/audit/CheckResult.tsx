@@ -10,6 +10,7 @@ interface CheckResultProps {
   paragraphText: string;
   sources: Source[];
   onClaimClick?: (claimIndex: number) => void;
+  paragraphIndex?: number;
 }
 
 // Determine highlight color based on claim verdict
@@ -29,7 +30,7 @@ function getClaimHighlightColor(claim: Claim): 'green' | 'yellow' | 'red' | 'blu
   return 'yellow';
 }
 
-export function CheckResult({ result, paragraphText, sources, onClaimClick }: CheckResultProps) {
+export function CheckResult({ result, paragraphText, sources, onClaimClick, paragraphIndex }: CheckResultProps) {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerSource, setViewerSource] = useState<Source | null>(null);
   const [viewerPage, setViewerPage] = useState(1);
@@ -92,6 +93,7 @@ export function CheckResult({ result, paragraphText, sources, onClaimClick }: Ch
               sources={sources} 
               onOpenSource={(source, pageNumber, excerpt) => handleOpenSource(source, pageNumber, excerpt, idx)}
               highlightColor={getClaimHighlightColor(claim)}
+              displayId={paragraphIndex !== undefined ? `${paragraphIndex + 1}.${idx + 1}` : undefined}
             />
           </div>
         ))}

@@ -2455,6 +2455,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                           result={selectedParagraph.result} 
                           paragraphText={selectedParagraph.text}
                           sources={sources}
+                          paragraphIndex={selectedIndex}
                           onClaimClick={(claimIndex) => {
                             const claimIdx = allClaims.findIndex(
                               c => c.paragraphIndex === selectedIndex && c.claimIndex === claimIndex

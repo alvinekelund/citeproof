@@ -366,7 +366,7 @@ export function InlinePdfViewer({ filePath, blobUrl, searchText, onClose, highli
             />
             <div 
               ref={textLayerRef} 
-              className="absolute top-0 left-0 overflow-hidden opacity-20 select-text"
+              className="absolute top-0 left-0 overflow-hidden opacity-0 pointer-events-none"
               style={{ lineHeight: 1 }}
             />
           </div>
