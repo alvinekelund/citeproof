@@ -1759,7 +1759,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           {isFullscreen && thesisPdfPath ? (
             <div className="h-[calc(100vh-48px)]">
               <InlinePdfViewer
-                filePath={thesisPdfPath}
+                blobUrl={thesisPdfPath}
                 searchText={selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
                   ? allClaims[selectedClaimIdx].paragraphText.substring(0, 80) 
                   : undefined}
@@ -1997,7 +1997,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           {isFullscreen && thesisPdfPath ? (
             <div className="h-[calc(100vh-48px)]">
               <InlinePdfViewer
-                filePath={thesisPdfPath}
+                blobUrl={thesisPdfPath}
                 searchText={selectedParagraph?.text.substring(0, 80)}
                 onClose={() => setIsFullscreen(false)}
               />
