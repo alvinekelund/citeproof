@@ -444,59 +444,95 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     setPdfClickableRegions(regions);
   };
 
-  // Handle PDF canvas click
-  const handlePdfCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!pdfCanvasRef.current) return;
+  // Get scaled coordinates for canvas (accounting for CSS scaling)
+  const getCanvasCoordinates = useCallback((e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } | null => {
+    if (!pdfCanvasRef.current) return null;
     
-    const rect = pdfCanvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const canvas = pdfCanvasRef.current;
+    const rect = canvas.getBoundingClientRect();
     
-    // Find which region was clicked
-    for (const region of pdfClickableRegions) {
-      if (x >= region.x && x <= region.x + region.width &&
-          y >= region.y && y <= region.y + region.height) {
-        
-        if (region.globalClaimIndex !== null) {
-          // Select the claim using global index
-          selectClaim(region.globalClaimIndex);
-        } else {
-          // It's a blue paragraph - find and select it
-          const bluePara = blueParagraphs.find(bp => bp.paragraphIndex === region.paragraphIndex);
-          if (bluePara) {
-            selectBlueParagraph(bluePara);
-          }
-        }
-        return;
+    // Calculate the scale factor between CSS size and actual canvas size
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // Get mouse position relative to canvas, scaled to canvas coordinates
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    
+    return { x, y };
+  }, []);
+
+  // Find region at coordinates with tolerance for easier clicking
+  const findRegionAtPoint = useCallback((x: number, y: number, tolerance: number = 5): ClickableRegion | null => {
+    // Sort regions by area (smaller first) to prefer more specific matches
+    const sortedRegions = [...pdfClickableRegions].sort((a, b) => 
+      (a.width * a.height) - (b.width * b.height)
+    );
+    
+    for (const region of sortedRegions) {
+      const inX = x >= (region.x - tolerance) && x <= (region.x + region.width + tolerance);
+      const inY = y >= (region.y - tolerance) && y <= (region.y + region.height + tolerance);
+      
+      if (inX && inY) {
+        return region;
       }
     }
-  }, [pdfClickableRegions, selectClaim, selectBlueParagraph, blueParagraphs]);
+    return null;
+  }, [pdfClickableRegions]);
+
+  // Handle PDF canvas click
+  const handlePdfCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const coords = getCanvasCoordinates(e);
+    if (!coords) return;
+    
+    const region = findRegionAtPoint(coords.x, coords.y, 8); // 8px tolerance for easier clicking
+    
+    if (region) {
+      if (region.globalClaimIndex !== null) {
+        selectClaim(region.globalClaimIndex);
+      } else {
+        const bluePara = blueParagraphs.find(bp => bp.paragraphIndex === region.paragraphIndex);
+        if (bluePara) {
+          selectBlueParagraph(bluePara);
+        }
+      }
+    }
+  }, [getCanvasCoordinates, findRegionAtPoint, selectClaim, selectBlueParagraph, blueParagraphs]);
 
   // Handle PDF canvas hover
   const handlePdfCanvasMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!pdfCanvasRef.current) return;
+    const coords = getCanvasCoordinates(e);
+    if (!coords) {
+      if (hoveredRegion) setHoveredRegion(null);
+      return;
+    }
     
-    const rect = pdfCanvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const region = findRegionAtPoint(coords.x, coords.y, 3); // Smaller tolerance for hover
     
-    // Find which region is being hovered
-    for (const region of pdfClickableRegions) {
-      if (x >= region.x && x <= region.x + region.width &&
-          y >= region.y && y <= region.y + region.height) {
-        if (hoveredRegion?.paragraphIndex !== region.paragraphIndex) {
-          setHoveredRegion(region);
+    if (region) {
+      if (!hoveredRegion || hoveredRegion.paragraphIndex !== region.paragraphIndex || 
+          hoveredRegion.y !== region.y) {
+        setHoveredRegion(region);
+        // Change cursor to pointer
+        if (pdfCanvasRef.current) {
+          pdfCanvasRef.current.style.cursor = 'pointer';
         }
-        return;
+      }
+    } else {
+      if (hoveredRegion) {
+        setHoveredRegion(null);
+        if (pdfCanvasRef.current) {
+          pdfCanvasRef.current.style.cursor = 'default';
+        }
       }
     }
-    if (hoveredRegion) {
-      setHoveredRegion(null);
-    }
-  }, [pdfClickableRegions, hoveredRegion]);
+  }, [getCanvasCoordinates, findRegionAtPoint, hoveredRegion]);
 
   const handlePdfCanvasLeave = useCallback(() => {
     setHoveredRegion(null);
+    if (pdfCanvasRef.current) {
+      pdfCanvasRef.current.style.cursor = 'default';
+    }
   }, []);
 
   // Navigation
@@ -1241,32 +1277,32 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                     <span>Preparing PDF...</span>
                   </div>
                 ) : (
-                  <div className="relative">
+                  <div className="relative inline-block">
                     <canvas 
                       ref={pdfCanvasRef} 
-                      className="shadow-lg bg-background cursor-pointer"
-                      style={{ maxWidth: '100%', height: 'auto' }}
+                      className="shadow-lg bg-background block"
                       onClick={handlePdfCanvasClick}
                       onMouseMove={handlePdfCanvasMove}
                       onMouseLeave={handlePdfCanvasLeave}
                     />
-                    {/* Hover overlay */}
-                    {hoveredRegion && (
+                    {/* Hover overlay - positioned using percentage-based positioning for scaling consistency */}
+                    {hoveredRegion && pdfCanvasRef.current && (
                       <div
-                        className="absolute pointer-events-none border-2 rounded-sm transition-all duration-75"
+                        className="absolute pointer-events-none border-2 rounded-sm"
                         style={{
-                          left: hoveredRegion.x,
-                          top: hoveredRegion.y,
-                          width: hoveredRegion.width,
-                          height: hoveredRegion.height,
+                          left: `${(hoveredRegion.x / pdfCanvasRef.current.width) * 100}%`,
+                          top: `${(hoveredRegion.y / pdfCanvasRef.current.height) * 100}%`,
+                          width: `${(hoveredRegion.width / pdfCanvasRef.current.width) * 100}%`,
+                          height: `${(hoveredRegion.height / pdfCanvasRef.current.height) * 100}%`,
                           borderColor: hoveredRegion.color === 'green' ? 'rgb(34, 197, 94)' :
                                        hoveredRegion.color === 'yellow' ? 'rgb(250, 204, 21)' :
                                        hoveredRegion.color === 'red' ? 'rgb(239, 68, 68)' :
                                        'rgb(59, 130, 246)',
-                          backgroundColor: hoveredRegion.color === 'green' ? 'rgba(34, 197, 94, 0.15)' :
-                                           hoveredRegion.color === 'yellow' ? 'rgba(250, 204, 21, 0.2)' :
-                                           hoveredRegion.color === 'red' ? 'rgba(239, 68, 68, 0.15)' :
-                                           'rgba(59, 130, 246, 0.1)',
+                          backgroundColor: hoveredRegion.color === 'green' ? 'rgba(34, 197, 94, 0.2)' :
+                                           hoveredRegion.color === 'yellow' ? 'rgba(250, 204, 21, 0.25)' :
+                                           hoveredRegion.color === 'red' ? 'rgba(239, 68, 68, 0.2)' :
+                                           'rgba(59, 130, 246, 0.15)',
+                          boxShadow: '0 0 8px 2px currentColor',
                         }}
                       />
                     )}
