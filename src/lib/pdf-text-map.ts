@@ -274,8 +274,8 @@ export function findTextRange(
 }
 
 /**
- * Find text regions that match a search string using precise character-level matching
- * Returns ONLY the regions that actually contain the matched text
+ * Find text regions that match a search string using word-level matching
+ * Uses first/last words to find precise start and end regions
  */
 export function findMatchingRegions(
   regions: TextRegion[],
@@ -285,109 +285,184 @@ export function findMatchingRegions(
 ): TextRegion[] {
   if (regions.length === 0 || !searchText || searchText.length < 20) return [];
 
-  // Build page text with character tracking
-  const pageText = buildPageTextFromRegions(regions);
+  const normalizedSearch = normalizeText(searchText).toLowerCase();
+  const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 0);
   
-  // Find the character range where the search text matches
-  const range = findTextRange(pageText, searchText, 0.4);
-  if (!range) return [];
+  if (searchWords.length < 3) return [];
   
-  // Calculate expected character count for the search text
-  const expectedCharCount = normalizeText(searchText).length;
+  // Get first and last distinctive phrases
+  const firstPhrase = searchWords.slice(0, Math.min(5, searchWords.length)).join(' ');
+  const lastPhrase = searchWords.slice(-Math.min(4, searchWords.length)).join(' ');
   
-  // Limit the range to approximately the search text length
-  const constrainedEnd = Math.min(range.end, range.start + expectedCharCount + 50);
+  // Build normalized text for each region
+  const regionData = regions.map((region, idx) => ({
+    region,
+    idx,
+    normalizedText: normalizeText(region.text).toLowerCase(),
+  }));
   
-  // Map character range back to regions - be precise about boundaries
-  const matchedRegions: TextRegion[] = [];
-  let charPos = 0;
-  let totalMatchedChars = 0;
-  
-  for (const region of regions) {
-    const regionStart = charPos;
-    const regionEnd = charPos + region.text.length;
+  // Find start region: look for first phrase
+  let startIdx = -1;
+  for (let i = 0; i < regionData.length; i++) {
+    // Build running text from this position
+    let runningText = '';
+    for (let j = i; j < Math.min(i + 12, regionData.length); j++) {
+      runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
+      if (runningText.length > firstPhrase.length + 30) break;
+    }
     
-    // Check if region overlaps with the constrained match range
-    const overlapStart = Math.max(regionStart, range.start);
-    const overlapEnd = Math.min(regionEnd, constrainedEnd);
-    const overlapLength = Math.max(0, overlapEnd - overlapStart);
-    
-    if (overlapLength > 0) {
-      matchedRegions.push(region);
-      totalMatchedChars += region.text.length;
-      
-      // Stop if we've matched enough characters (with 30% buffer)
-      if (totalMatchedChars > expectedCharCount * 1.3) {
+    if (runningText.includes(firstPhrase)) {
+      startIdx = i;
+      break;
+    }
+  }
+  
+  // Try shorter prefix if not found
+  if (startIdx === -1) {
+    const shortPrefix = searchWords.slice(0, 3).join(' ');
+    for (let i = 0; i < regionData.length; i++) {
+      let runningText = '';
+      for (let j = i; j < Math.min(i + 8, regionData.length); j++) {
+        runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
+      }
+      if (runningText.includes(shortPrefix)) {
+        startIdx = i;
         break;
       }
     }
-    
-    charPos = regionEnd + 1; // +1 for space
   }
   
-  return matchedRegions;
+  if (startIdx === -1) return [];
+  
+  // Find end region by searching for last phrase
+  // Estimate how many regions we need based on word count
+  const estimatedRegionCount = Math.ceil(searchWords.length / 2);
+  const maxEndIdx = Math.min(startIdx + estimatedRegionCount + 15, regionData.length);
+  
+  let endIdx = -1;
+  for (let i = maxEndIdx - 1; i >= startIdx; i--) {
+    // Build running text backwards
+    let runningText = '';
+    for (let j = i; j >= Math.max(i - 8, startIdx); j--) {
+      runningText = regionData[j].normalizedText + (runningText ? ' ' : '') + runningText;
+      if (runningText.length > lastPhrase.length + 30) break;
+    }
+    
+    if (runningText.includes(lastPhrase)) {
+      endIdx = i;
+      break;
+    }
+  }
+  
+  // Fallback: estimate end based on character/word count
+  if (endIdx === -1 || endIdx < startIdx) {
+    let wordCount = 0;
+    for (let i = startIdx; i < regionData.length; i++) {
+      wordCount += regionData[i].normalizedText.split(/\s+/).length;
+      if (wordCount >= searchWords.length) {
+        endIdx = i;
+        break;
+      }
+    }
+    if (endIdx === -1) endIdx = Math.min(startIdx + 10, regionData.length - 1);
+  }
+  
+  // Return regions from start to end (inclusive)
+  return regions.slice(startIdx, endIdx + 1);
 }
 
 /**
  * Find regions matching a specific claim within already-matched paragraph regions
- * Returns empty array if claim not found (no fallback to paragraph)
+ * Uses word-level matching for precise highlighting
  */
 export function findClaimRegions(
   paragraphRegions: TextRegion[],
   claimText: string
 ): TextRegion[] {
   if (paragraphRegions.length === 0 || !claimText || claimText.length < 10) {
-    return []; // Don't return paragraph as fallback
+    return [];
   }
   
-  const pageText = buildPageTextFromRegions(paragraphRegions);
   const normalizedClaim = normalizeText(claimText).toLowerCase();
-  const normalizedPage = normalizeText(pageText).toLowerCase();
+  const claimWords = normalizedClaim.split(/\s+/).filter(w => w.length > 0);
   
-  // Try direct substring match first
-  let startIdx = normalizedPage.indexOf(normalizedClaim);
-  let endIdx = startIdx !== -1 ? startIdx + normalizedClaim.length : -1;
+  if (claimWords.length < 2) return [];
   
-  // If not found, try first 30 chars
-  if (startIdx === -1 && normalizedClaim.length > 30) {
-    const prefix = normalizedClaim.slice(0, 30);
-    startIdx = normalizedPage.indexOf(prefix);
-    if (startIdx !== -1) {
-      endIdx = Math.min(normalizedPage.length, startIdx + normalizedClaim.length + 20);
+  // Get first and last phrases of the claim
+  const firstPhrase = claimWords.slice(0, Math.min(4, claimWords.length)).join(' ');
+  const lastPhrase = claimWords.slice(-Math.min(3, claimWords.length)).join(' ');
+  
+  // Build normalized text for each region
+  const regionData = paragraphRegions.map((region, idx) => ({
+    region,
+    idx,
+    normalizedText: normalizeText(region.text).toLowerCase(),
+  }));
+  
+  // Find start region
+  let startIdx = -1;
+  for (let i = 0; i < regionData.length; i++) {
+    let runningText = '';
+    for (let j = i; j < Math.min(i + 8, regionData.length); j++) {
+      runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
+      if (runningText.length > firstPhrase.length + 20) break;
+    }
+    
+    if (runningText.includes(firstPhrase)) {
+      startIdx = i;
+      break;
     }
   }
   
-  if (startIdx === -1) return []; // No match found
-  
-  // Constrain to claim length
-  const expectedLen = normalizedClaim.length;
-  const constrainedEnd = Math.min(endIdx, startIdx + expectedLen + 30);
-  
-  // Map to regions with strict boundaries
-  const matchedRegions: TextRegion[] = [];
-  let charPos = 0;
-  let totalChars = 0;
-  
-  for (const region of paragraphRegions) {
-    const regionStart = charPos;
-    const regionEnd = charPos + region.text.length;
-    
-    const overlapStart = Math.max(regionStart, startIdx);
-    const overlapEnd = Math.min(regionEnd, constrainedEnd);
-    const overlapLength = Math.max(0, overlapEnd - overlapStart);
-    
-    if (overlapLength > 0) {
-      matchedRegions.push(region);
-      totalChars += region.text.length;
-      
-      // Stop once we have enough
-      if (totalChars > expectedLen * 1.2) break;
+  // Try shorter prefix
+  if (startIdx === -1 && claimWords.length > 2) {
+    const shortPrefix = claimWords.slice(0, 2).join(' ');
+    for (let i = 0; i < regionData.length; i++) {
+      let runningText = '';
+      for (let j = i; j < Math.min(i + 6, regionData.length); j++) {
+        runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
+      }
+      if (runningText.includes(shortPrefix)) {
+        startIdx = i;
+        break;
+      }
     }
-    
-    charPos = regionEnd + 1;
   }
   
-  return matchedRegions;
+  if (startIdx === -1) return [];
+  
+  // Find end region
+  const estimatedRegionCount = Math.ceil(claimWords.length / 2);
+  const maxEndIdx = Math.min(startIdx + estimatedRegionCount + 10, regionData.length);
+  
+  let endIdx = -1;
+  for (let i = maxEndIdx - 1; i >= startIdx; i--) {
+    let runningText = '';
+    for (let j = i; j >= Math.max(i - 6, startIdx); j--) {
+      runningText = regionData[j].normalizedText + (runningText ? ' ' : '') + runningText;
+      if (runningText.length > lastPhrase.length + 20) break;
+    }
+    
+    if (runningText.includes(lastPhrase)) {
+      endIdx = i;
+      break;
+    }
+  }
+  
+  // Fallback based on word count
+  if (endIdx === -1 || endIdx < startIdx) {
+    let wordCount = 0;
+    for (let i = startIdx; i < regionData.length; i++) {
+      wordCount += regionData[i].normalizedText.split(/\s+/).length;
+      if (wordCount >= claimWords.length) {
+        endIdx = i;
+        break;
+      }
+    }
+    if (endIdx === -1) endIdx = Math.min(startIdx + 6, regionData.length - 1);
+  }
+  
+  return paragraphRegions.slice(startIdx, endIdx + 1);
 }
 
 /**
