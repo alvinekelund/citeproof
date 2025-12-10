@@ -370,26 +370,41 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
     <>
       {/* Warning: sources missing text */}
       {sourcesWithoutText > 0 && (
-        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="h-4 w-4 text-amber-600" />
-            <span className="text-sm text-amber-700">
-              {sourcesWithoutText} source{sourcesWithoutText > 1 ? 's' : ''} missing extracted text — verification may be incomplete
-            </span>
+        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+              <span className="text-sm text-amber-700">
+                {sourcesWithoutText} source{sourcesWithoutText > 1 ? 's' : ''} missing extracted text — verification may be incomplete
+              </span>
+            </div>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={reextractAllSourceText}
+              disabled={isReextractingAll}
+            >
+              {isReextractingAll ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Re-extract All Text
+            </Button>
           </div>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={reextractAllSourceText}
-            disabled={isReextractingAll}
-          >
-            {isReextractingAll ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4 mr-2" />
-            )}
-            Re-extract All Text
-          </Button>
+          {/* List sources missing text */}
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {sources
+              .filter(s => !textStatus.get(s.id))
+              .map(s => (
+                <span 
+                  key={s.id} 
+                  className="text-xs bg-amber-500/20 text-amber-700 px-2 py-0.5 rounded-full"
+                >
+                  {s.in_text_label || s.original_filename}
+                </span>
+              ))}
+          </div>
         </div>
       )}
 
