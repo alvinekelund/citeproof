@@ -70,17 +70,7 @@ interface RewriteHistoryEntry {
   versions: VersionEntry[];
 }
 
-interface ClickableRegion {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  paragraphIndex: number;
-  claimIndex: number | null;
-  globalClaimIndex: number | null;
-  color: 'green' | 'yellow' | 'red' | 'blue';
-  displayId: string; // For debugging and display
-}
+// ClickableRegion interface removed - now using HighlightRect from ThesisPageOverlay
 
 export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, thesisFilePath }: ThesisEditorProps) {
   const [selectedClaimIndex, setSelectedClaimIndex] = useState<number | null>(0);
@@ -267,10 +257,18 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       setPdfDoc(pdf);
       setTotalPdfPages(pdf.numPages);
       
+      // Build legacy text map for page navigation
       console.log('[PDF] Building text map...');
       const textMap = await buildPdfTextMap(pdf);
       setPdfTextMap(textMap);
       console.log('[PDF] Text map built:', textMap.totalPages, 'pages,', textMap.fullText.length, 'chars');
+      
+      // Build new token-based document map for precise highlighting
+      console.log('[PDF] Building token-based document map...');
+      const docMap = new PdfDocumentMap();
+      await docMap.indexPdf(pdf);
+      setDocumentMap(docMap);
+      console.log('[PDF] Document map indexed:', docMap.totalPages, 'pages');
     } catch (err) {
       console.error("Error loading thesis PDF:", err);
       toast({ title: "Failed to load PDF", variant: "destructive" });
