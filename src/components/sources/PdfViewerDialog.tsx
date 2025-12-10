@@ -57,7 +57,6 @@ function normalizePdfText(s: string): string {
 // Levenshtein distance for fuzzy matching
 function levenshtein(a: string, b: string): number {
   if (a.length > 200 || b.length > 200) {
-    // For long strings, use a simplified approach
     return Math.abs(a.length - b.length);
   }
   const matrix: number[][] = [];
@@ -73,7 +72,19 @@ function levenshtein(a: string, b: string): number {
   return matrix[b.length][a.length];
 }
 
-// Get n-grams (overlapping word sequences) for matching - filter out common words
+// Fuzzy word match - returns true if two words are similar enough
+function fuzzyWordMatch(word1: string, word2: string, threshold: number = 0.7): boolean {
+  if (word1 === word2) return true;
+  if (Math.abs(word1.length - word2.length) > 3) return false;
+  
+  const maxLen = Math.max(word1.length, word2.length);
+  if (maxLen === 0) return true;
+  
+  const dist = levenshtein(word1, word2);
+  return (1 - dist / maxLen) >= threshold;
+}
+
+// Get n-grams for matching - filter out common words
 const STOP_WORDS = new Set(['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'were', 'they', 'this', 'that', 'with', 'from', 'will', 'would', 'there', 'their', 'what', 'about', 'which', 'when', 'make', 'like', 'time', 'just', 'know', 'take', 'into', 'year', 'your', 'some', 'them', 'than', 'then', 'look', 'only', 'come', 'over', 'such', 'also', 'back', 'after', 'use', 'two', 'how', 'way', 'could', 'people', 'other', 'more', 'these', 'being', 'new']);
 
 function getDistinctiveWords(text: string, minLength: number = 5): string[] {
@@ -82,27 +93,29 @@ function getDistinctiveWords(text: string, minLength: number = 5): string[] {
     .filter(w => w.length >= minLength && !STOP_WORDS.has(w.toLowerCase()));
 }
 
-// Calculate actual string similarity (0-1) using word overlap
+// Calculate actual string similarity (0-1) using word overlap with fuzzy matching
 function calculateSimilarity(text1: string, text2: string): number {
   const norm1 = normalizePdfText(text1).toLowerCase();
   const norm2 = normalizePdfText(text2).toLowerCase();
   
-  // Exact match
   if (norm1 === norm2) return 1.0;
   
-  // Word-based Jaccard similarity
-  const words1 = new Set(norm1.split(/\s+/).filter(w => w.length > 2));
-  const words2 = new Set(norm2.split(/\s+/).filter(w => w.length > 2));
+  // Word-based similarity with fuzzy matching
+  const words1 = norm1.split(/\s+/).filter(w => w.length > 2);
+  const words2 = norm2.split(/\s+/).filter(w => w.length > 2);
   
-  if (words1.size === 0 || words2.size === 0) return 0;
+  if (words1.length === 0 || words2.length === 0) return 0;
   
-  let intersection = 0;
-  for (const word of words1) {
-    if (words2.has(word)) intersection++;
+  let matchCount = 0;
+  for (const word1 of words1) {
+    // Check for exact match or fuzzy match
+    if (words2.some(w2 => w2 === word1 || fuzzyWordMatch(word1, w2, 0.75))) {
+      matchCount++;
+    }
   }
   
-  const union = words1.size + words2.size - intersection;
-  return union > 0 ? intersection / union : 0;
+  // Return ratio of matched words
+  return matchCount / Math.max(words1.length, words2.length);
 }
 
 // Fuzzy match with REAL similarity scoring
@@ -521,13 +534,24 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         const item = textItems[i];
         if (!item || !item.str.trim()) continue;
         
-        const [a, b, c, d, tx, ty] = item.transform;
-        const x = tx * viewport.scale;
-        const y = viewport.height - (ty * viewport.scale);
-        const width = item.width * viewport.scale;
-        const height = Math.abs(d) * viewport.scale * 1.2;
+        const transform = item.transform;
+        const x = transform[4];
+        const y = transform[5];
+        const fontSize = transform[0] || 12;
+        const width = item.width || (item.str.length * fontSize * 0.5);
+        const height = fontSize * 1.2;
         
-        rects.push({ x, y: y - height, width, height });
+        // Use viewport transform for accurate PDF-to-canvas conversion
+        const [a, b, c, d, e, f] = viewport.transform;
+        const canvasX = a * x + c * y + e;
+        const canvasY = b * x + d * y + f;
+        
+        rects.push({ 
+          x: canvasX, 
+          y: canvasY - height, 
+          width: width * viewport.scale, 
+          height: height + 2 
+        });
       }
       
       setHighlightRects(rects);

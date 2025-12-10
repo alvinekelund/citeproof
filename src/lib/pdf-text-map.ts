@@ -273,9 +273,61 @@ export function findTextRange(
   return null;
 }
 
+// Fuzzy word match for OCR tolerance
+function fuzzyWordMatch(word1: string, word2: string, threshold: number = 0.7): boolean {
+  if (word1 === word2) return true;
+  if (Math.abs(word1.length - word2.length) > 3) return false;
+  
+  const maxLen = Math.max(word1.length, word2.length);
+  if (maxLen === 0) return true;
+  
+  // Simple Levenshtein for short words
+  if (maxLen <= 10) {
+    const matrix: number[][] = [];
+    for (let i = 0; i <= word2.length; i++) matrix[i] = [i];
+    for (let j = 0; j <= word1.length; j++) matrix[0][j] = j;
+    for (let i = 1; i <= word2.length; i++) {
+      for (let j = 1; j <= word1.length; j++) {
+        matrix[i][j] = word2[i - 1] === word1[j - 1]
+          ? matrix[i - 1][j - 1]
+          : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
+      }
+    }
+    const dist = matrix[word2.length][word1.length];
+    return (1 - dist / maxLen) >= threshold;
+  }
+  
+  // For longer words, check prefix/suffix
+  const prefixLen = Math.min(5, Math.floor(maxLen * 0.4));
+  return word1.slice(0, prefixLen) === word2.slice(0, prefixLen) ||
+         word1.slice(-prefixLen) === word2.slice(-prefixLen);
+}
+
+// Check if phrase matches in text with fuzzy word matching
+function fuzzyPhraseMatch(text: string, phrase: string, tolerance: number = 0.7): boolean {
+  const textWords = text.split(/\s+/);
+  const phraseWords = phrase.split(/\s+/);
+  
+  if (phraseWords.length === 0) return false;
+  if (textWords.length < phraseWords.length) return false;
+  
+  // Try to find the phrase in the text with fuzzy word matching
+  for (let i = 0; i <= textWords.length - phraseWords.length; i++) {
+    let matches = 0;
+    for (let j = 0; j < phraseWords.length; j++) {
+      if (fuzzyWordMatch(textWords[i + j], phraseWords[j], tolerance)) {
+        matches++;
+      }
+    }
+    // Require 70% of words to match
+    if (matches >= phraseWords.length * 0.7) return true;
+  }
+  return false;
+}
+
 /**
  * Find text regions that match a search string using word-level matching
- * Uses first/last words to find precise start and end regions
+ * Uses first/last words with fuzzy matching for OCR tolerance
  */
 export function findMatchingRegions(
   regions: TextRegion[],
@@ -301,7 +353,7 @@ export function findMatchingRegions(
     normalizedText: normalizeText(region.text).toLowerCase(),
   }));
   
-  // Find start region: look for first phrase
+  // Find start region: look for first phrase with fuzzy matching
   let startIdx = -1;
   for (let i = 0; i < regionData.length; i++) {
     // Build running text from this position
@@ -311,7 +363,8 @@ export function findMatchingRegions(
       if (runningText.length > firstPhrase.length + 30) break;
     }
     
-    if (runningText.includes(firstPhrase)) {
+    // Try exact match first, then fuzzy
+    if (runningText.includes(firstPhrase) || fuzzyPhraseMatch(runningText, firstPhrase)) {
       startIdx = i;
       break;
     }
@@ -325,7 +378,7 @@ export function findMatchingRegions(
       for (let j = i; j < Math.min(i + 8, regionData.length); j++) {
         runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
       }
-      if (runningText.includes(shortPrefix)) {
+      if (runningText.includes(shortPrefix) || fuzzyPhraseMatch(runningText, shortPrefix)) {
         startIdx = i;
         break;
       }
@@ -335,7 +388,6 @@ export function findMatchingRegions(
   if (startIdx === -1) return [];
   
   // Find end region by searching for last phrase
-  // Estimate how many regions we need based on word count
   const estimatedRegionCount = Math.ceil(searchWords.length / 2);
   const maxEndIdx = Math.min(startIdx + estimatedRegionCount + 15, regionData.length);
   
@@ -348,7 +400,7 @@ export function findMatchingRegions(
       if (runningText.length > lastPhrase.length + 30) break;
     }
     
-    if (runningText.includes(lastPhrase)) {
+    if (runningText.includes(lastPhrase) || fuzzyPhraseMatch(runningText, lastPhrase)) {
       endIdx = i;
       break;
     }
@@ -399,7 +451,7 @@ export function findClaimRegions(
     normalizedText: normalizeText(region.text).toLowerCase(),
   }));
   
-  // Find start region
+  // Find start region with fuzzy matching
   let startIdx = -1;
   for (let i = 0; i < regionData.length; i++) {
     let runningText = '';
@@ -408,13 +460,13 @@ export function findClaimRegions(
       if (runningText.length > firstPhrase.length + 20) break;
     }
     
-    if (runningText.includes(firstPhrase)) {
+    if (runningText.includes(firstPhrase) || fuzzyPhraseMatch(runningText, firstPhrase)) {
       startIdx = i;
       break;
     }
   }
   
-  // Try shorter prefix
+  // Try shorter prefix with fuzzy matching
   if (startIdx === -1 && claimWords.length > 2) {
     const shortPrefix = claimWords.slice(0, 2).join(' ');
     for (let i = 0; i < regionData.length; i++) {
@@ -422,7 +474,7 @@ export function findClaimRegions(
       for (let j = i; j < Math.min(i + 6, regionData.length); j++) {
         runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
       }
-      if (runningText.includes(shortPrefix)) {
+      if (runningText.includes(shortPrefix) || fuzzyPhraseMatch(runningText, shortPrefix, 0.8)) {
         startIdx = i;
         break;
       }
@@ -431,7 +483,7 @@ export function findClaimRegions(
   
   if (startIdx === -1) return [];
   
-  // Find end region
+  // Find end region with fuzzy matching
   const estimatedRegionCount = Math.ceil(claimWords.length / 2);
   const maxEndIdx = Math.min(startIdx + estimatedRegionCount + 10, regionData.length);
   
@@ -443,7 +495,7 @@ export function findClaimRegions(
       if (runningText.length > lastPhrase.length + 20) break;
     }
     
-    if (runningText.includes(lastPhrase)) {
+    if (runningText.includes(lastPhrase) || fuzzyPhraseMatch(runningText, lastPhrase)) {
       endIdx = i;
       break;
     }

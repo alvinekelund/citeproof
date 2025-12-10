@@ -390,11 +390,37 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
           const displayId = globalClaimIdx >= 0 ? allClaims[globalClaimIdx].displayId : `${p.index}.${claimIdx}`;
           
           // Find claim-specific regions within the paragraph
-          const claimRegions = findClaimRegions(matchedRegions, claim.text);
+          let claimRegions = findClaimRegions(matchedRegions, claim.text);
+          
+          // FALLBACK: If precise claim not found, estimate position within paragraph
+          if (claimRegions.length === 0 && matchedRegions.length > 0) {
+            // Use word count ratio to estimate which portion of paragraph contains the claim
+            const claimWordCount = claim.text.split(/\s+/).length;
+            const paragraphWordCount = matchedRegions.reduce(
+              (sum, r) => sum + r.text.split(/\s+/).length, 0
+            );
+            
+            // Estimate how many regions the claim spans
+            const regionRatio = claimWordCount / Math.max(paragraphWordCount, 1);
+            const estimatedRegionCount = Math.max(1, Math.ceil(matchedRegions.length * regionRatio));
+            
+            // Find approximate start by looking for any word overlap
+            let startIdx = 0;
+            const claimFirstWords = claim.text.toLowerCase().split(/\s+/).slice(0, 3);
+            for (let i = 0; i < matchedRegions.length; i++) {
+              const regionWords = matchedRegions[i].text.toLowerCase().split(/\s+/);
+              if (claimFirstWords.some(w => regionWords.some(rw => rw.includes(w) || w.includes(rw)))) {
+                startIdx = i;
+                break;
+              }
+            }
+            
+            const endIdx = Math.min(startIdx + estimatedRegionCount, matchedRegions.length);
+            claimRegions = matchedRegions.slice(startIdx, endIdx);
+          }
           
           if (claimRegions.length > 0) {
             // Draw highlight for EACH individual text region (not bounding box)
-            // This gives line-level precision
             for (const region of claimRegions) {
               ctx.fillStyle = fillColor;
               ctx.fillRect(region.x, region.y, region.width, region.height);
@@ -416,7 +442,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
               });
             }
           }
-          // No fallback - if claim not found precisely, don't highlight it
         }
       } else {
         // No claims - highlight individual regions (not full bounding box)
