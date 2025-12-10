@@ -9,6 +9,7 @@ interface CheckResultProps {
   result: CheckResultType;
   paragraphText: string;
   sources: Source[];
+  onClaimClick?: (claimIndex: number) => void;
 }
 
 // Determine highlight color based on claim verdict
@@ -28,7 +29,7 @@ function getClaimHighlightColor(claim: Claim): 'green' | 'yellow' | 'red' | 'blu
   return 'yellow';
 }
 
-export function CheckResult({ result, paragraphText, sources }: CheckResultProps) {
+export function CheckResult({ result, paragraphText, sources, onClaimClick }: CheckResultProps) {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerSource, setViewerSource] = useState<Source | null>(null);
   const [viewerPage, setViewerPage] = useState(1);
@@ -69,15 +70,30 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
 
       {/* Claims breakdown */}
       <div className="space-y-4">
-        <h3 className="font-semibold">Claims Analysis ({result.claims.length})</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold">Claims Analysis ({result.claims.length})</h3>
+          {onClaimClick && result.claims.length > 0 && (
+            <button 
+              className="text-xs text-primary hover:underline"
+              onClick={() => onClaimClick(0)}
+            >
+              View all claims →
+            </button>
+          )}
+        </div>
         {result.claims.map((claim, idx) => (
-          <ClaimCard 
+          <div 
             key={claim.index} 
-            claim={claim} 
-            sources={sources} 
-            onOpenSource={(source, pageNumber, excerpt) => handleOpenSource(source, pageNumber, excerpt, idx)}
-            highlightColor={getClaimHighlightColor(claim)}
-          />
+            className={onClaimClick ? "cursor-pointer hover:opacity-90" : ""}
+            onClick={() => onClaimClick?.(idx)}
+          >
+            <ClaimCard 
+              claim={claim} 
+              sources={sources} 
+              onOpenSource={(source, pageNumber, excerpt) => handleOpenSource(source, pageNumber, excerpt, idx)}
+              highlightColor={getClaimHighlightColor(claim)}
+            />
+          </div>
         ))}
       </div>
 

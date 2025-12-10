@@ -1754,9 +1754,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             ? "fixed inset-0 z-50 bg-background p-6 overflow-hidden grid gap-6 grid-cols-2"
             : "grid gap-6 lg:grid-cols-2"
         )}>
-          {/* Left side: In fullscreen = PDF, otherwise = Claims List */}
+          {/* Left side: In fullscreen = placeholder (PDF opens in dialog), otherwise = Claims List */}
           {isFullscreen && thesisPdfPath ? (
-            <div className="h-full overflow-hidden rounded-lg border">
+            <div className="h-full overflow-hidden rounded-lg border bg-secondary/10 flex flex-col">
               <div className="flex items-center justify-between p-2 border-b bg-secondary/30">
                 <span className="text-sm font-medium">Thesis Document</span>
                 <Button
@@ -1767,15 +1767,25 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                   <Minimize2 className="h-4 w-4" />
                 </Button>
               </div>
-              <iframe 
-                src={`${thesisPdfPath}#search=${encodeURIComponent(
-                  selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
-                    ? allClaims[selectedClaimIdx].paragraphText.substring(0, 50) 
-                    : ''
-                )}`}
-                className="w-full h-[calc(100%-48px)]"
-                title="Thesis Document"
-              />
+              <div className="flex-1 flex items-center justify-center p-4">
+                <div className="text-center space-y-4">
+                  <FileText className="h-16 w-16 mx-auto text-muted-foreground" />
+                  <p className="text-muted-foreground">PDF viewing in panel not supported by browser.</p>
+                  <Button
+                    variant="default"
+                    onClick={() => {
+                      const searchText = selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
+                        ? allClaims[selectedClaimIdx].paragraphText.substring(0, 80) 
+                        : '';
+                      setThesisViewerSearchText(searchText);
+                      setThesisViewerOpen(true);
+                    }}
+                  >
+                    <Eye className="h-4 w-4 mr-2" />
+                    Open PDF Viewer
+                  </Button>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
@@ -2004,9 +2014,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             ? "fixed inset-0 z-50 bg-background p-6 overflow-hidden grid gap-6 grid-cols-2" 
             : "grid gap-6 lg:grid-cols-2"
         )}>
-          {/* Left side: In fullscreen = PDF, otherwise = Paragraph List */}
+          {/* Left side: In fullscreen = placeholder (PDF opens in dialog), otherwise = Paragraph List */}
           {isFullscreen && thesisPdfPath ? (
-            <div className="h-full overflow-hidden rounded-lg border">
+            <div className="h-full overflow-hidden rounded-lg border bg-secondary/10 flex flex-col">
               <div className="flex items-center justify-between p-2 border-b bg-secondary/30">
                 <span className="text-sm font-medium">Thesis Document</span>
                 <Button
@@ -2017,11 +2027,23 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                   <Minimize2 className="h-4 w-4" />
                 </Button>
               </div>
-              <iframe 
-                src={`${thesisPdfPath}#search=${encodeURIComponent(selectedParagraph?.text.substring(0, 50) || '')}`}
-                className="w-full h-[calc(100%-48px)]"
-                title="Thesis Document"
-              />
+              <div className="flex-1 flex items-center justify-center p-4">
+                <div className="text-center space-y-4">
+                  <FileText className="h-16 w-16 mx-auto text-muted-foreground" />
+                  <p className="text-muted-foreground">PDF viewing in panel not supported by browser.</p>
+                  <Button
+                    variant="default"
+                    onClick={() => {
+                      const searchText = selectedParagraph?.text.substring(0, 80) || '';
+                      setThesisViewerSearchText(searchText);
+                      setThesisViewerOpen(true);
+                    }}
+                  >
+                    <Eye className="h-4 w-4 mr-2" />
+                    Open PDF Viewer
+                  </Button>
+                </div>
+              </div>
             </div>
           ) : (
           <div className="space-y-4">
@@ -2303,6 +2325,16 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                           result={selectedParagraph.result} 
                           paragraphText={selectedParagraph.text}
                           sources={sources}
+                          onClaimClick={(claimIndex) => {
+                            // Find this claim in allClaims and navigate to claims view
+                            const claimIdx = allClaims.findIndex(
+                              c => c.paragraphIndex === selectedIndex && c.claimIndex === claimIndex
+                            );
+                            if (claimIdx !== -1) {
+                              setSelectedClaimIdx(claimIdx);
+                              setShowClaimsView(true);
+                            }
+                          }}
                         />
                         {/* Manual validation buttons after result */}
                         <Card className="p-4">
