@@ -101,6 +101,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [currentBatchSize, setCurrentBatchSize] = useState(3);
   const [tokenUsage, setTokenUsage] = useState({ input: 0, output: 0 });
   const [showEditor, setShowEditor] = useState(false);
+  const [thesisFilePath, setThesisFilePath] = useState<string | null>(null); // Store PDF path for overlay mode
 
   // Helper to analyze and deduplicate citations
   const analyzeAndDeduplicateCitations = useCallback(async (text: string, currentSources: Source[]) => {
@@ -387,6 +388,15 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setParagraphs([]);
     setSelectedIndex(null);
     setCurrentSessionId(null);
+    
+    // Store file path for PDF files (for PDF overlay mode in editor)
+    if (ext === '.pdf') {
+      // Create a blob URL for the PDF
+      const blobUrl = URL.createObjectURL(uploadedFile);
+      setThesisFilePath(blobUrl);
+    } else {
+      setThesisFilePath(null);
+    }
 
     try {
       const text = await extractTextFromFile(uploadedFile);
@@ -1296,6 +1306,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         sources={sources}
         onBack={() => setShowEditor(false)}
         onUpdateParagraph={updateParagraphText}
+        thesisFilePath={thesisFilePath || undefined}
       />
     );
   }
