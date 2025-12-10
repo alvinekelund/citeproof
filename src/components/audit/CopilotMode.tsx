@@ -9,8 +9,9 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, ThesisSection, hasCitations } from "@/lib/pdf-parser";
-import { CheckResult as CheckResultType, Source } from "@/lib/types";
+import { CheckResult as CheckResultType, Source, Claim } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
+import { ClaimCard } from "./ClaimCard";
 import { PdfViewerDialog } from "@/components/sources/PdfViewerDialog";
 import { InlinePdfViewer } from "@/components/sources/InlinePdfViewer";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
@@ -18,6 +19,7 @@ import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitatio
 import { supabase } from "@/integrations/supabase/client";
 import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder, deduplicateCitations } from "@/lib/citation-detector";
 import { useAuth } from "@/contexts/AuthContext";
+import { findSourceByLabel } from "@/lib/source-matching";
 import {
   Select,
   SelectContent,
@@ -242,16 +244,19 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     console.log('[CopilotMode] Loading session:', session.thesis_name);
     setCurrentSessionId(session.id);
     setParagraphs(session.paragraphs_data);
-    setFile({ name: session.thesis_name } as File);
     setSelectedIndex(null);
     
     // Restore PDF file from IndexedDB if available (for thesis viewer)
     const pdfFile = await getSessionPdf(session.id);
     if (pdfFile) {
+      // CRITICAL: Store the actual File object in file state, not a placeholder
+      setFile(pdfFile);
       const blobUrl = URL.createObjectURL(pdfFile);
       setThesisPdfPath(blobUrl);
-      console.log('[CopilotMode] Restored PDF from IndexedDB');
+      console.log('[CopilotMode] Restored PDF from IndexedDB - stored as File object');
     } else {
+      // Only use placeholder if no PDF available
+      setFile({ name: session.thesis_name } as File);
       setThesisPdfPath(null);
     }
     
@@ -1373,15 +1378,97 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setPdfViewerOpen(true);
   };
 
+  // State for tracking claim modifications (original text before AI rewrite)
+  const [claimModifications, setClaimModifications] = useState<Map<string, string>>(new Map());
+  
+  // Handler for implementing AI rewrites - updates claim text and saves to session
+  const handleImplementRewrite = async (paragraphIndex: number, claimIndex: number, newText: string) => {
+    const paragraph = paragraphs[paragraphIndex];
+    if (!paragraph?.result?.claims?.[claimIndex]) return;
+    
+    const originalText = paragraph.result.claims[claimIndex].text;
+    const modKey = `${paragraphIndex}-${claimIndex}`;
+    
+    // Store original text for potential revert
+    setClaimModifications(prev => {
+      const next = new Map(prev);
+      if (!next.has(modKey)) {
+        next.set(modKey, originalText);
+      }
+      return next;
+    });
+    
+    // Update the claim text in paragraphs
+    const newParagraphs = paragraphs.map((p, pIdx) => {
+      if (pIdx !== paragraphIndex || !p.result) return p;
+      return {
+        ...p,
+        result: {
+          ...p.result,
+          claims: p.result.claims.map((c, cIdx) => 
+            cIdx === claimIndex ? { ...c, text: newText } : c
+          ),
+        },
+      };
+    });
+    
+    setParagraphs(newParagraphs);
+    
+    // Save to session
+    if (file) {
+      await saveSession(file.name, newParagraphs);
+    }
+    
+    toast({ title: "Rewrite implemented", description: "Claim text has been updated and saved." });
+  };
+  
+  // Handler for reverting a claim to its original text
+  const handleRevertClaim = async (paragraphIndex: number, claimIndex: number) => {
+    const modKey = `${paragraphIndex}-${claimIndex}`;
+    const originalText = claimModifications.get(modKey);
+    if (!originalText) return;
+    
+    // Revert the claim text
+    const newParagraphs = paragraphs.map((p, pIdx) => {
+      if (pIdx !== paragraphIndex || !p.result) return p;
+      return {
+        ...p,
+        result: {
+          ...p.result,
+          claims: p.result.claims.map((c, cIdx) => 
+            cIdx === claimIndex ? { ...c, text: originalText } : c
+          ),
+        },
+      };
+    });
+    
+    setParagraphs(newParagraphs);
+    
+    // Remove from modifications map
+    setClaimModifications(prev => {
+      const next = new Map(prev);
+      next.delete(modKey);
+      return next;
+    });
+    
+    // Save to session
+    if (file) {
+      await saveSession(file.name, newParagraphs);
+    }
+    
+    toast({ title: "Reverted to original", description: "Claim text has been restored." });
+  };
+
   // Build flat claims list for claims view
   const allClaims = useMemo(() => {
     const claims: Array<{
-      claim: CheckResultType['claims'][0];
+      claim: Claim;
       paragraphIndex: number;
       claimIndex: number;
       paragraphText: string;
       color: 'green' | 'yellow' | 'red' | 'blue';
       displayId: string;
+      originalText?: string;
     }> = [];
     
     let paragraphDisplayIndex = 0;
@@ -1402,6 +1489,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             }
           }
           
+          const modKey = `${pIdx}-${claimIdx}`;
           claims.push({
             claim,
             paragraphIndex: pIdx,
@@ -1409,13 +1497,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             paragraphText: p.text,
             color,
             displayId: `${paragraphDisplayIndex}.${claimIdx + 1}`,
+            originalText: claimModifications.get(modKey),
           });
         });
       }
     });
     
     return claims;
-  }, [paragraphs]);
+  }, [paragraphs, claimModifications]);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -1967,89 +2056,22 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                           <p className="text-sm whitespace-pre-wrap">{selectedClaim.paragraphText}</p>
                         </Card>
                         
-                        {/* Claim details */}
-                        <Card className={cn(
-                          "p-4 border-l-4",
-                          selectedClaim.color === 'green' && "border-l-verdict-green bg-verdict-green-bg/20",
-                          selectedClaim.color === 'yellow' && "border-l-verdict-yellow bg-verdict-yellow-bg/20",
-                          selectedClaim.color === 'red' && "border-l-verdict-red bg-verdict-red-bg/20"
-                        )}>
-                          <div className="flex items-start justify-between gap-4 mb-3">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-2">
-                                <span className="text-xs font-medium text-muted-foreground font-mono">
-                                  Claim {selectedClaim.displayId}
-                                </span>
-                                {selectedClaim.claim.common_knowledge && (
-                                  <span className="text-xs px-2 py-0.5 rounded bg-secondary text-secondary-foreground">
-                                    Common knowledge
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-sm leading-relaxed">{selectedClaim.claim.text}</p>
-                            </div>
-                            <VerdictBadge color={selectedClaim.color} />
-                          </div>
-                          
-                          {selectedClaim.claim.intended_citations && selectedClaim.claim.intended_citations.length > 0 && (
-                            <div className="mb-3">
-                              <span className="text-xs font-medium text-muted-foreground">Citations: </span>
-                              <span className="text-xs font-mono">{selectedClaim.claim.intended_citations.join(', ')}</span>
-                            </div>
-                          )}
-                          
-                          <p className="text-sm text-muted-foreground mb-3">{selectedClaim.claim.verdict}</p>
-                          
-                          {/* Evidence with View Source buttons */}
-                          {selectedClaim.claim.evidence && selectedClaim.claim.evidence.length > 0 && (
-                            <div className="space-y-2">
-                              <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Evidence</h4>
-                              {selectedClaim.claim.evidence.map((ev, i) => {
-                                const source = sources.find(s => 
-                                  s.in_text_label?.toLowerCase().includes(ev.label.toLowerCase().replace(/[()]/g, '')) ||
-                                  (s.authors?.toLowerCase().includes(ev.label.toLowerCase().split(/[,(&]/)[0].trim()) && 
-                                   s.year?.toString() === ev.label.match(/\d{4}/)?.[0])
-                                );
-                                return (
-                                  <div key={i} className="bg-secondary/50 rounded-lg p-3 text-sm">
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="font-mono text-xs text-primary">{ev.label}</span>
-                                      {source && (
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={() => handleOpenSource(source, ev.page_number, ev.excerpt, selectedClaim.color)}
-                                          className="h-7 text-xs gap-1"
-                                        >
-                                          <Eye className="h-4 w-4 mr-1" />
-                                          View Source
-                                        </Button>
-                                      )}
-                                    </div>
-                                    <blockquote className="text-muted-foreground italic border-l-2 border-primary/30 pl-3">
-                                      "{ev.excerpt}"
-                                    </blockquote>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          
-                          {/* Issues and suggestions */}
-                          {selectedClaim.claim.issues_or_suggestions && selectedClaim.claim.issues_or_suggestions.length > 0 && (
-                            <div className="mt-3 space-y-1">
-                              <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Suggestions</h4>
-                              <ul className="text-sm text-muted-foreground space-y-1">
-                                {selectedClaim.claim.issues_or_suggestions.map((issue, i) => (
-                                  <li key={i} className="flex items-start gap-2">
-                                    <AlertTriangle className="h-3 w-3 mt-1 flex-shrink-0 text-verdict-yellow" />
-                                    {issue}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </Card>
+                        {/* Use ClaimCard component for full feature parity including AI rewrites */}
+                        <ClaimCard
+                          claim={selectedClaim.claim}
+                          sources={sources}
+                          onOpenSource={(source, pageNumber, excerpt) => 
+                            handleOpenSource(source, pageNumber, excerpt, selectedClaim.color)
+                          }
+                          onImplementRewrite={(newText) => 
+                            handleImplementRewrite(selectedClaim.paragraphIndex, selectedClaim.claimIndex, newText)
+                          }
+                          showImplementButton={true}
+                          originalText={selectedClaim.originalText}
+                          onRevert={() => handleRevertClaim(selectedClaim.paragraphIndex, selectedClaim.claimIndex)}
+                          highlightColor={selectedClaim.color}
+                          displayId={selectedClaim.displayId}
+                        />
                       </>
                     );
                   })()}
