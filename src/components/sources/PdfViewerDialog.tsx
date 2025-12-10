@@ -73,38 +73,36 @@ function levenshtein(a: string, b: string): number {
   return matrix[b.length][a.length];
 }
 
-// Get n-grams (overlapping word sequences) for matching
-function getNgrams(text: string, n: number = 3): string[] {
-  const words = text.split(/\s+/).filter(w => w.length > 0);
-  if (words.length < n) return [words.join(' ')];
-  const ngrams: string[] = [];
-  for (let i = 0; i <= words.length - n; i++) {
-    ngrams.push(words.slice(i, i + n).join(' '));
-  }
-  return ngrams;
+// Get n-grams (overlapping word sequences) for matching - filter out common words
+const STOP_WORDS = new Set(['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'were', 'they', 'this', 'that', 'with', 'from', 'will', 'would', 'there', 'their', 'what', 'about', 'which', 'when', 'make', 'like', 'time', 'just', 'know', 'take', 'into', 'year', 'your', 'some', 'them', 'than', 'then', 'look', 'only', 'come', 'over', 'such', 'also', 'back', 'after', 'use', 'two', 'how', 'way', 'could', 'people', 'other', 'more', 'these', 'being', 'new']);
+
+function getDistinctiveWords(text: string, minLength: number = 5): string[] {
+  return text
+    .split(/\s+/)
+    .filter(w => w.length >= minLength && !STOP_WORDS.has(w.toLowerCase()));
 }
 
-// Fuzzy match with tolerance - multiple strategies for robustness
+// Fuzzy match with tolerance - STRICT matching to avoid false positives
 function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: number; end: number; confidence: number } | null {
   // Apply PDF-specific normalization
   const normalizedText = normalizePdfText(text).toLowerCase();
   const normalizedSearch = normalizePdfText(search).toLowerCase();
   
-  // Strategy 1: For short searches, do exact match
-  if (normalizedSearch.length < 10) {
+  // For very short searches, require exact match
+  if (normalizedSearch.length < 15) {
     const idx = normalizedText.indexOf(normalizedSearch);
     if (idx !== -1) return { start: idx, end: idx + normalizedSearch.length, confidence: 1.0 };
     return null;
   }
   
-  // Strategy 2: Try exact match first
+  // Strategy 1: Try exact match first (highest confidence)
   const exactIdx = normalizedText.indexOf(normalizedSearch);
   if (exactIdx !== -1) {
     return { start: exactIdx, end: exactIdx + normalizedSearch.length, confidence: 1.0 };
   }
   
-  // Strategy 3: Try matching progressively shorter prefixes (80, 60, 40, 20 chars)
-  for (const prefixLen of [80, 60, 40, 20]) {
+  // Strategy 2: Try matching long prefixes ONLY (at least 50 chars for reliability)
+  for (const prefixLen of [100, 80, 60, 50]) {
     if (normalizedSearch.length >= prefixLen) {
       const prefix = normalizedSearch.slice(0, prefixLen);
       const prefixIdx = normalizedText.indexOf(prefix);
@@ -112,78 +110,61 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
         return { 
           start: prefixIdx, 
           end: Math.min(prefixIdx + normalizedSearch.length, normalizedText.length),
-          confidence: 0.9 
+          confidence: 0.95 
         };
       }
     }
   }
   
-  // Strategy 4: N-gram matching - find sequences of words
-  const searchNgrams = getNgrams(normalizedSearch, 4);
-  for (const ngram of searchNgrams.slice(0, 5)) { // Try first 5 n-grams
-    const ngramIdx = normalizedText.indexOf(ngram);
-    if (ngramIdx !== -1) {
-      // Found a matching n-gram, expand the match
-      return { 
-        start: ngramIdx, 
-        end: Math.min(ngramIdx + normalizedSearch.length, normalizedText.length),
-        confidence: 0.8 
-      };
-    }
-  }
+  // Strategy 3: Find distinctive words (long, uncommon) - require MULTIPLE matches
+  const distinctiveSearchWords = getDistinctiveWords(normalizedSearch, 6);
   
-  // Strategy 5: Word-based matching - find consecutive matching words
-  const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 2);
-  if (searchWords.length >= 3) {
-    // Try to find a sequence of first 3-5 words
-    for (let wordCount = Math.min(5, searchWords.length); wordCount >= 3; wordCount--) {
-      const wordSequence = searchWords.slice(0, wordCount).join(' ');
-      const seqIdx = normalizedText.indexOf(wordSequence);
-      if (seqIdx !== -1) {
-        return { 
-          start: seqIdx, 
-          end: Math.min(seqIdx + normalizedSearch.length, normalizedText.length),
-          confidence: 0.75 
-        };
-      }
-    }
-    
-    // Try to find distinctive words anywhere in text (author names, technical terms)
-    const distinctiveWords = searchWords.filter(w => w.length > 5);
-    for (const word of distinctiveWords) {
+  if (distinctiveSearchWords.length >= 3) {
+    // Find the first distinctive word
+    for (const word of distinctiveSearchWords.slice(0, 3)) {
       const wordIdx = normalizedText.indexOf(word);
       if (wordIdx !== -1) {
-        // Check if nearby words also match
-        const context = normalizedText.slice(Math.max(0, wordIdx - 100), wordIdx + 200);
+        // Check if MULTIPLE other distinctive words are nearby (within 300 chars)
+        const context = normalizedText.slice(Math.max(0, wordIdx - 100), wordIdx + 300);
         let matchCount = 0;
-        for (const sw of searchWords.slice(0, 5)) {
-          if (context.includes(sw)) matchCount++;
+        const matchedWords: string[] = [];
+        
+        for (const sw of distinctiveSearchWords) {
+          if (context.includes(sw)) {
+            matchCount++;
+            matchedWords.push(sw);
+          }
         }
-        if (matchCount >= 3) {
+        
+        // Require at least 60% of distinctive words to match (minimum 3)
+        const requiredMatches = Math.max(3, Math.ceil(distinctiveSearchWords.length * 0.6));
+        if (matchCount >= requiredMatches) {
           return { 
-            start: Math.max(0, wordIdx - 20), 
+            start: Math.max(0, wordIdx - 50), 
             end: Math.min(wordIdx + normalizedSearch.length, normalizedText.length),
-            confidence: 0.7 
+            confidence: 0.8 
           };
         }
       }
     }
   }
   
-  // Strategy 6: Sliding window with Levenshtein (expensive, only for shorter searches)
-  if (normalizedSearch.length <= 150) {
+  // Strategy 4: Sliding window Levenshtein ONLY for short-medium searches (expensive)
+  if (normalizedSearch.length >= 30 && normalizedSearch.length <= 100) {
     const searchLen = normalizedSearch.length;
-    const maxDist = Math.floor(searchLen * tolerance);
+    const maxDist = Math.floor(searchLen * 0.1); // Very strict: only 10% tolerance
     
-    for (let i = 0; i <= normalizedText.length - searchLen; i += 10) {
+    // Sample every 20 characters for efficiency
+    for (let i = 0; i <= normalizedText.length - searchLen; i += 20) {
       const window = normalizedText.slice(i, i + searchLen);
       const dist = levenshtein(window, normalizedSearch);
       if (dist <= maxDist) {
-        return { start: i, end: i + searchLen, confidence: 0.6 };
+        return { start: i, end: i + searchLen, confidence: 0.7 };
       }
     }
   }
   
+  // No match found - be conservative and return null
   return null;
 }
 
