@@ -82,12 +82,13 @@ function getDistinctiveWords(text: string, minLength: number = 5): string[] {
     .filter(w => w.length >= minLength && !STOP_WORDS.has(w.toLowerCase()));
 }
 
-// Fuzzy match with tolerance - More lenient matching for source PDFs
+// Fuzzy match with STRICT length constraints for source PDFs
 // Returns positions in the ORIGINAL (non-normalized) text space
+// CRITICAL: Never return a range longer than the search text + small tolerance
 function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { start: number; end: number; confidence: number } | null {
-  // Apply PDF-specific normalization for comparison
   const normalizedText = normalizePdfText(originalText).toLowerCase();
   const normalizedSearch = normalizePdfText(search).toLowerCase();
+  const searchLen = normalizedSearch.length;
   
   // Build mapping from normalized positions back to original positions
   const normalizedToOriginal: number[] = [];
@@ -101,116 +102,67 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
     }
   }
   
-  // Helper to convert normalized position to original
   const toOriginal = (normPos: number, isEnd: boolean = false): number => {
-    if (normPos >= normalizedToOriginal.length) {
-      return originalText.length;
-    }
+    if (normPos >= normalizedToOriginal.length) return originalText.length;
     const origPos = normalizedToOriginal[normPos] ?? (isEnd ? originalText.length : 0);
     return isEnd ? Math.min(origPos + 1, originalText.length) : origPos;
   };
   
+  // STRICT: Max highlight length is search length + 10%
+  const maxLen = Math.ceil(searchLen * 1.1);
+  
   // For very short searches, require exact match
-  if (normalizedSearch.length < 15) {
+  if (searchLen < 15) {
     const idx = normalizedText.indexOf(normalizedSearch);
     if (idx !== -1) {
-      return { 
-        start: toOriginal(idx), 
-        end: toOriginal(idx + normalizedSearch.length, true), 
-        confidence: 1.0 
-      };
+      return { start: toOriginal(idx), end: toOriginal(idx + searchLen, true), confidence: 1.0 };
     }
     return null;
   }
   
-  // Strategy 1: Try exact substring match
+  // Strategy 1: Exact substring match
   const exactIdx = normalizedText.indexOf(normalizedSearch);
   if (exactIdx !== -1) {
-    return { 
-      start: toOriginal(exactIdx), 
-      end: toOriginal(exactIdx + normalizedSearch.length, true), 
-      confidence: 1.0 
-    };
+    return { start: toOriginal(exactIdx), end: toOriginal(exactIdx + searchLen, true), confidence: 1.0 };
   }
   
-  // Strategy 2: Try matching prefixes of various lengths
-  for (const prefixLen of [50, 40, 30, 25, 20, 15]) {
-    if (normalizedSearch.length >= prefixLen) {
+  // Strategy 2: Prefix match - constrain end strictly
+  for (const prefixLen of [50, 40, 30, 25, 20]) {
+    if (searchLen >= prefixLen) {
       const prefix = normalizedSearch.slice(0, prefixLen);
       const prefixIdx = normalizedText.indexOf(prefix);
       if (prefixIdx !== -1) {
-        return { 
-          start: toOriginal(prefixIdx), 
-          end: toOriginal(Math.min(prefixIdx + normalizedSearch.length, normalizedText.length), true),
-          confidence: 0.9 
-        };
+        // STRICT: end is exactly search length from start
+        const endIdx = Math.min(prefixIdx + searchLen, normalizedText.length);
+        return { start: toOriginal(prefixIdx), end: toOriginal(endIdx, true), confidence: 0.9 };
       }
     }
   }
   
-  // Strategy 3: Try matching suffixes (end of search text)
-  for (const suffixLen of [40, 30, 20, 15]) {
-    if (normalizedSearch.length >= suffixLen) {
+  // Strategy 3: Suffix match - constrain start strictly
+  for (const suffixLen of [40, 30, 20]) {
+    if (searchLen >= suffixLen) {
       const suffix = normalizedSearch.slice(-suffixLen);
       const suffixIdx = normalizedText.indexOf(suffix);
       if (suffixIdx !== -1) {
-        const startIdx = Math.max(0, suffixIdx - normalizedSearch.length + suffixLen);
-        return { 
-          start: toOriginal(startIdx), 
-          end: toOriginal(suffixIdx + suffixLen, true),
-          confidence: 0.85 
-        };
+        // STRICT: start is exactly search length before suffix end
+        const suffixEnd = suffixIdx + suffixLen;
+        const startIdx = Math.max(0, suffixEnd - searchLen);
+        return { start: toOriginal(startIdx), end: toOriginal(suffixEnd, true), confidence: 0.85 };
       }
     }
   }
   
-  // Strategy 4: Find distinctive words with relaxed requirements
-  const distinctiveSearchWords = getDistinctiveWords(normalizedSearch, 4); // Lower min length
-  
-  if (distinctiveSearchWords.length >= 2) {
-    for (const word of distinctiveSearchWords.slice(0, 5)) {
-      const wordIdx = normalizedText.indexOf(word);
-      if (wordIdx !== -1) {
-        const contextStart = Math.max(0, wordIdx - 100);
-        const contextEnd = Math.min(normalizedText.length, wordIdx + normalizedSearch.length + 100);
-        const context = normalizedText.slice(contextStart, contextEnd);
-        let matchCount = 0;
-        
-        for (const sw of distinctiveSearchWords) {
-          if (context.includes(sw)) matchCount++;
-        }
-        
-        // Require just 30% match (min 2 words)
-        const requiredMatches = Math.max(2, Math.ceil(distinctiveSearchWords.length * 0.3));
-        if (matchCount >= requiredMatches) {
-          const matchStart = contextStart + (wordIdx - contextStart);
-          return { 
-            start: toOriginal(Math.max(0, matchStart - 20)), 
-            end: toOriginal(Math.min(matchStart + normalizedSearch.length + 20, normalizedText.length), true),
-            confidence: 0.7 
-          };
-        }
-      }
-    }
-  }
-  
-  // Strategy 5: Middle section match (for long excerpts where start/end might be cut off)
-  if (normalizedSearch.length >= 60) {
-    const middleStart = Math.floor(normalizedSearch.length * 0.3);
-    const middleEnd = Math.floor(normalizedSearch.length * 0.7);
-    const middleSection = normalizedSearch.slice(middleStart, middleEnd);
+  // Strategy 4: Middle section match - strict boundaries
+  if (searchLen >= 60) {
+    const middleStart = Math.floor(searchLen * 0.3);
+    const middleSection = normalizedSearch.slice(middleStart, middleStart + 30);
     
-    if (middleSection.length >= 20) {
-      const middleIdx = normalizedText.indexOf(middleSection);
-      if (middleIdx !== -1) {
-        const estimatedStart = Math.max(0, middleIdx - middleStart);
-        const estimatedEnd = Math.min(normalizedText.length, estimatedStart + normalizedSearch.length);
-        return {
-          start: toOriginal(estimatedStart),
-          end: toOriginal(estimatedEnd, true),
-          confidence: 0.65
-        };
-      }
+    const middleIdx = normalizedText.indexOf(middleSection);
+    if (middleIdx !== -1) {
+      const estimatedStart = Math.max(0, middleIdx - middleStart);
+      const estimatedEnd = Math.min(normalizedText.length, estimatedStart + searchLen);
+      return { start: toOriginal(estimatedStart), end: toOriginal(estimatedEnd, true), confidence: 0.7 };
     }
   }
   
