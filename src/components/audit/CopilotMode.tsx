@@ -988,17 +988,18 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setIsBatchChecking(true);
     abortRef.current = false;
     setBatchProgress(0);
-    setCurrentBatchSize(1); // Start with 1 to warm up
+    setCurrentBatchSize(2); // Start with 2 for faster ramp-up
     setTokenUsage({ input: 0, output: 0 });
 
     const totalToCheck = uncheckedParagraphs.length;
     let completed = 0;
-    let batchSize = 1; // Start with 1 for controlled ramp-up
+    let batchSize = 2; // Start with 2 for lite model
     let consecutiveRateLimits = 0;
-    const BASE_DELAY_MS = 3000; // 3 second base delay between batches
-    const WARMUP_PARAGRAPHS = 3; // First few paragraphs run slower
+    const BASE_DELAY_MS = 800; // 800ms between batches (reduced from 3000ms)
+    const MAX_BATCH_SIZE = 5; // Max parallel requests (increased from 2)
+    const WARMUP_PARAGRAPHS = 1; // Just 1 warmup paragraph
 
-    // Process in batches with adaptive sizing and delays
+    // Process in batches with parallel processing
     let i = 0;
     while (i < uncheckedParagraphs.length) {
       if (abortRef.current) {
@@ -1009,30 +1010,26 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       const batch = uncheckedParagraphs.slice(i, i + batchSize);
       setCurrentBatchSize(batchSize);
       
-      // Run batch SEQUENTIALLY to reduce TPM spikes
-      const results: { success: boolean; rateLimited: boolean }[] = [];
-      for (const paragraph of batch) {
+      // Run batch IN PARALLEL for speed (lite model has lower token usage)
+      const promises = batch.map(async (paragraph, idx) => {
         if (abortRef.current) {
-          results.push({ success: false, rateLimited: false });
-          continue;
+          return { success: false, rateLimited: false };
         }
         
-        const result = await checkParagraphWithRetry(paragraph.index, 5, true);
-        results.push(result);
-        
-        if (result.success) {
-          completed++;
-          setBatchProgress((completed / totalToCheck) * 100);
+        // Small stagger to avoid exact simultaneous requests (100ms per item)
+        if (idx > 0) {
+          await new Promise(resolve => setTimeout(resolve, idx * 100));
         }
         
-        // Longer delay between paragraphs during warmup period
-        const isWarmup = completed < WARMUP_PARAGRAPHS;
-        const delayBetweenParagraphs = isWarmup ? 3000 : 2000; // 3s warmup, 2s normal
-        
-        if (!abortRef.current && batch.indexOf(paragraph) < batch.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, delayBetweenParagraphs));
-        }
-      }
+        return checkParagraphWithRetry(paragraph.index, 5, true);
+      });
+      
+      const results = await Promise.all(promises);
+      
+      // Update progress for successful results
+      const successCount = results.filter(r => r.success).length;
+      completed += successCount;
+      setBatchProgress((completed / totalToCheck) * 100);
 
       // Check for rate limits in this batch
       const rateLimitedCount = results.filter(r => r.rateLimited).length;
@@ -1040,13 +1037,11 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       if (rateLimitedCount > 0) {
         consecutiveRateLimits++;
         
-        // Reduce batch size on rate limits
-        if (batchSize > 1) {
-          batchSize = 1;
-        }
+        // Reduce batch size on rate limits but keep at minimum 2
+        batchSize = Math.max(2, Math.floor(batchSize / 2));
         
-        // Longer delay after rate limits
-        const delayMs = Math.min(60000, Math.pow(2, consecutiveRateLimits + 3) * 1000);
+        // Shorter delay after rate limits for lite model
+        const delayMs = Math.min(30000, Math.pow(2, consecutiveRateLimits + 2) * 1000);
         console.log(`Rate limited, batch size now ${batchSize}, waiting ${delayMs}ms`);
         toast({ 
           title: "Rate limit reached", 
@@ -1061,17 +1056,17 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         }
       } else {
         consecutiveRateLimits = 0;
-        // Gradually increase batch size after warmup (max 2)
-        if (completed >= WARMUP_PARAGRAPHS && batchSize < 2) {
-          batchSize = 2;
+        // Faster ramp-up: increase batch size more aggressively
+        if (completed >= WARMUP_PARAGRAPHS && batchSize < MAX_BATCH_SIZE) {
+          batchSize = Math.min(MAX_BATCH_SIZE, batchSize + 1);
         }
       }
       
       i += batch.length;
 
-      // Delay between batches to stay under TPM limits
+      // Short delay between batches
       if (i < uncheckedParagraphs.length && !abortRef.current) {
-        const delayMs = BASE_DELAY_MS + (consecutiveRateLimits * 1000);
+        const delayMs = BASE_DELAY_MS + (consecutiveRateLimits * 500);
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
