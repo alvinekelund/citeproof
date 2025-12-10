@@ -170,32 +170,31 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         return;
       }
       
-      // Build a concatenated page text with position tracking
+      // Build concatenated page text with position tracking
       const pageText: { char: string; itemIdx: number; charIdx: number }[] = [];
       for (let itemIdx = 0; itemIdx < textItems.length; itemIdx++) {
         const item = textItems[itemIdx];
         for (let charIdx = 0; charIdx < item.str.length; charIdx++) {
           pageText.push({ char: item.str[charIdx], itemIdx, charIdx });
         }
-        // Add space between items
         pageText.push({ char: ' ', itemIdx, charIdx: item.str.length });
       }
       
       const fullText = pageText.map(p => p.char).join('');
       
-      // Normalize for fuzzy matching
+      // Normalize for matching
       const normalize = (s: string) => s.toLowerCase().replace(/[\s\-–—]+/g, ' ').replace(/[^\w\s]/g, '').trim();
       const normalizedSearch = normalize(searchText);
       const normalizedFull = normalize(fullText);
       
-      // Try to find the best matching substring
       let bestMatchStart = -1;
       let bestMatchLength = 0;
       let bestScore = 0;
       
-      // Use sliding window to find best match
+      // Method 1: Word-based fuzzy matching with lower threshold
       const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 2);
       const windowSize = Math.min(normalizedSearch.length + 100, normalizedFull.length);
+      const minConsecutive = Math.max(1, Math.floor(searchWords.length / 3)); // Lower threshold
       
       for (let start = 0; start <= normalizedFull.length - 20; start++) {
         const window = normalizedFull.substring(start, start + windowSize);
@@ -204,45 +203,71 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         
         for (const word of searchWords) {
           const idx = window.indexOf(word);
-          if (idx !== -1 && idx < normalizedSearch.length * 1.5) {
+          if (idx !== -1 && idx < normalizedSearch.length * 2) {
             score += word.length;
-            if (idx < 100) consecutiveMatches++;
+            if (idx < 150) consecutiveMatches++;
           }
         }
         
-        // Bonus for consecutive word matches near the start
         score += consecutiveMatches * 10;
         
-        if (score > bestScore && consecutiveMatches >= Math.min(3, searchWords.length)) {
+        if (score > bestScore && consecutiveMatches >= minConsecutive) {
           bestScore = score;
           bestMatchStart = start;
           bestMatchLength = Math.min(normalizedSearch.length + 50, windowSize);
         }
       }
       
+      // Method 2: Fallback to direct substring search if fuzzy matching fails
       if (bestMatchStart === -1) {
+        // Try finding first 30 chars of search text
+        const shortSearch = normalizedSearch.slice(0, 50);
+        const directIdx = normalizedFull.indexOf(shortSearch);
+        if (directIdx !== -1) {
+          bestMatchStart = directIdx;
+          bestMatchLength = Math.min(normalizedSearch.length + 20, normalizedFull.length - directIdx);
+          console.log('[highlight] Found via direct substring match at', directIdx);
+        }
+      }
+      
+      // Method 3: Try matching just the first few words
+      if (bestMatchStart === -1 && searchWords.length > 0) {
+        const firstWords = searchWords.slice(0, 3).join(' ');
+        const idx = normalizedFull.indexOf(firstWords);
+        if (idx !== -1) {
+          bestMatchStart = idx;
+          bestMatchLength = Math.min(normalizedSearch.length, normalizedFull.length - idx);
+          console.log('[highlight] Found via first-words match at', idx);
+        }
+      }
+      
+      if (bestMatchStart === -1) {
+        console.log('[highlight] Excerpt not found on this page');
         setHighlightRects([]);
         return;
       }
       
-      // Map normalized positions back to original text positions
-      // Find text items that correspond to the matched region
+      // Map normalized positions back to original text
       let normalizedPos = 0;
       let startItemIdx = -1;
       let endItemIdx = -1;
+      let charCount = 0;
       
       for (let i = 0; i < fullText.length; i++) {
-        const normChar = fullText[i].toLowerCase().replace(/[^\w\s]/g, '');
-        if (normChar && normChar !== ' ') {
-          if (normalizedPos === bestMatchStart && startItemIdx === -1) {
+        const char = fullText[i];
+        const isWordChar = /\w/.test(char);
+        const isSpace = /\s/.test(char);
+        
+        if (isWordChar) {
+          if (charCount === bestMatchStart && startItemIdx === -1) {
             startItemIdx = pageText[i]?.itemIdx ?? -1;
           }
-          if (normalizedPos >= bestMatchStart && normalizedPos < bestMatchStart + bestMatchLength) {
+          if (charCount >= bestMatchStart && charCount < bestMatchStart + bestMatchLength) {
             endItemIdx = pageText[i]?.itemIdx ?? endItemIdx;
           }
-          normalizedPos++;
-        } else if (fullText[i] === ' ' || /\s/.test(fullText[i])) {
-          if (normalizedPos > 0) normalizedPos++; // Count spaces in normalized
+          charCount++;
+        } else if (isSpace && charCount > 0) {
+          charCount++;
         }
       }
       
@@ -283,7 +308,7 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         // Scroll to first highlight
         if (rects.length > 0 && containerRef.current) {
           const firstRect = rects[0];
-          const scrollTop = Math.max(0, firstRect.y - 100); // 100px padding from top
+          const scrollTop = Math.max(0, firstRect.y - 100);
           setTimeout(() => {
             containerRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' });
           }, 100);
