@@ -519,6 +519,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     // Match sources to detected citations
     const matchedSources: Source[] = [];
     const matchedIds = new Set<string>();
+    const unmatchedPairs = new Set(detectedPairs);
     
     for (const source of allSources) {
       // Build keys from source's in_text_label
@@ -528,6 +529,11 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         const labelMatch = source.in_text_label.match(/([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
         if (labelMatch && source.year) {
           sourceKeys.add(`${normalizeForKey(labelMatch[1])}|${source.year}`);
+        }
+        // Also try extracting year from the label itself if source.year is missing
+        const yearFromLabel = source.in_text_label.match(/(\d{4})/);
+        if (labelMatch && yearFromLabel) {
+          sourceKeys.add(`${normalizeForKey(labelMatch[1])}|${yearFromLabel[1]}`);
         }
       }
       
@@ -540,17 +546,69 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         }
       }
       
+      // Also try title-based matching for sources without proper author/year
+      if (source.title && source.year) {
+        const titleFirstWord = source.title.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
+        if (titleFirstWord) {
+          sourceKeys.add(`${normalizeForKey(titleFirstWord[1])}|${source.year}`);
+        }
+      }
+      
       // Check if any source key matches any detected pair
       for (const sourceKey of sourceKeys) {
         if (detectedPairs.has(sourceKey)) {
           if (!matchedIds.has(source.id)) {
             matchedSources.push(source);
             matchedIds.add(source.id);
+            unmatchedPairs.delete(sourceKey);
             console.log(`[getRelevantSources] Matched source: ${source.in_text_label || source.shorthand_id} (key: ${sourceKey})`);
           }
           break;
         }
       }
+    }
+    
+    // Second pass: try to match unmatched citations by partial/fuzzy matching on shorthand_id or in_text_label
+    if (unmatchedPairs.size > 0) {
+      for (const unmatchedKey of Array.from(unmatchedPairs)) {
+        const [authorPart, yearPart] = unmatchedKey.split('|');
+        
+        for (const source of allSources) {
+          if (matchedIds.has(source.id)) continue;
+          
+          // Try matching shorthand_id (e.g., "brynjolfsson-2020")
+          const shorthandLower = (source.shorthand_id || '').toLowerCase();
+          if (shorthandLower.includes(authorPart) && shorthandLower.includes(yearPart)) {
+            matchedSources.push(source);
+            matchedIds.add(source.id);
+            unmatchedPairs.delete(unmatchedKey);
+            console.log(`[getRelevantSources] Matched by shorthand_id: ${source.shorthand_id} for ${unmatchedKey}`);
+            break;
+          }
+          
+          // Try matching in_text_label loosely
+          const labelLower = (source.in_text_label || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (labelLower.includes(authorPart) && labelLower.includes(yearPart)) {
+            matchedSources.push(source);
+            matchedIds.add(source.id);
+            unmatchedPairs.delete(unmatchedKey);
+            console.log(`[getRelevantSources] Matched by in_text_label (fuzzy): ${source.in_text_label} for ${unmatchedKey}`);
+            break;
+          }
+        }
+      }
+    }
+    
+    // Log unmatched citations for debugging
+    if (unmatchedPairs.size > 0) {
+      console.warn('[getRelevantSources] UNMATCHED citation pairs (sources not found in library):', Array.from(unmatchedPairs));
+      // Log all sources for debugging
+      console.log('[getRelevantSources] Available sources for matching:', allSources.map(s => ({
+        shorthand_id: s.shorthand_id,
+        in_text_label: s.in_text_label,
+        authors: s.authors,
+        year: s.year,
+      })));
     }
     
     console.log(`[getRelevantSources] Matched ${matchedSources.length} sources out of ${allSources.length} total`);
