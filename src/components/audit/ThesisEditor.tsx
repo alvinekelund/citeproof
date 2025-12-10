@@ -157,13 +157,23 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     
     setIsPdfLoading(true);
     try {
-      const file = await getFile(thesisFilePath);
-      if (!file) {
-        toast({ title: "PDF not found", variant: "destructive" });
-        return;
+      let arrayBuffer: ArrayBuffer;
+      
+      // Check if it's a blob URL (from direct file upload) or a storage path
+      if (thesisFilePath.startsWith('blob:')) {
+        // Fetch the blob URL directly
+        const response = await fetch(thesisFilePath);
+        arrayBuffer = await response.arrayBuffer();
+      } else {
+        // It's a storage path, use getFile
+        const file = await getFile(thesisFilePath);
+        if (!file) {
+          toast({ title: "PDF not found", variant: "destructive" });
+          return;
+        }
+        arrayBuffer = await file.arrayBuffer();
       }
       
-      const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       setPdfDoc(pdf);
       setTotalPdfPages(pdf.numPages);
