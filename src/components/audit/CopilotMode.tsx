@@ -502,21 +502,24 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       return match ? match[1] : null;
     };
     
-    // Extract author-year pairs from paragraph
+    // Extract author-year pairs from paragraph - also capture full author text for better matching
     const detectedPairs = new Set<string>();
     const detectedAuthors = new Set<string>(); // Just author names for fuzzy matching
     const detectedYears = new Set<string>();
+    const rawCitations: { author: string; year: string }[] = []; // Keep original format
     
     for (const pattern of citationPatterns) {
       let match;
       while ((match = pattern.exec(paragraphText)) !== null) {
-        const authorPart = match[1].replace(/\s+et\s+al\.?/gi, '').replace(/\s*[&]\s*.*$/, '').replace(/\s+and\s+.*$/i, '').trim();
+        const rawAuthor = match[1].trim();
+        const authorPart = rawAuthor.replace(/\s+et\s+al\.?/gi, '').replace(/\s*[&]\s*.*$/, '').replace(/\s+and\s+.*$/i, '').trim();
         const year = match[2].replace(/[a-z]$/, '');
         const normalizedAuthor = normalizeForKey(authorPart);
         const key = `${normalizedAuthor}|${year}`;
         detectedPairs.add(key);
         detectedAuthors.add(normalizedAuthor);
         detectedYears.add(year);
+        rawCitations.push({ author: rawAuthor, year });
       }
     }
     
@@ -526,6 +529,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     }
     
     console.log('[getRelevantSources] Detected citation pairs:', Array.from(detectedPairs));
+    console.log('[getRelevantSources] Raw citations:', rawCitations);
     
     // Match sources to detected citations
     const matchedSources: Source[] = [];
@@ -594,7 +598,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       tryMatchSource(source, sourceKeys, 'exact');
     }
     
-    // Second pass: fuzzy matching for unmatched pairs
+    // Second pass: fuzzy matching for unmatched pairs - more aggressive
     if (unmatchedPairs.size > 0) {
       for (const unmatchedKey of Array.from(unmatchedPairs)) {
         const [authorPart, yearPart] = unmatchedKey.split('|');
@@ -608,49 +612,71 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             extractYear(source.original_filename || '') ||
             extractYear(source.shorthand_id || '');
           
+          // Year must match
           if (!sourceYear || sourceYear !== yearPart) continue;
           
-          // Try partial author matching (first 4+ chars)
+          // Try partial author matching - more aggressive with shorter prefix
           const shortAuthor = authorPart.slice(0, 4);
+          const veryShortAuthor = authorPart.slice(0, 3);
           
-          // Check shorthand_id
-          const shorthandLower = (source.shorthand_id || '').toLowerCase();
-          if (shorthandLower.includes(shortAuthor)) {
+          // Collect all searchable text for this source
+          const searchableText = [
+            (source.shorthand_id || '').toLowerCase(),
+            normalizeForKey(source.in_text_label || ''),
+            normalizeForKey(source.authors || ''),
+            normalizeForKey(source.original_filename || ''),
+            normalizeForKey(source.title || ''),
+          ].join(' ');
+          
+          // Check if author appears anywhere
+          if (searchableText.includes(shortAuthor) || searchableText.includes(veryShortAuthor)) {
             matchedSources.push(source);
             matchedIds.add(source.id);
             unmatchedPairs.delete(unmatchedKey);
-            console.log(`[getRelevantSources] Fuzzy matched via shorthand_id: ${source.shorthand_id} for ${unmatchedKey}`);
+            console.log(`[getRelevantSources] Fuzzy matched: ${source.in_text_label || source.shorthand_id} for ${unmatchedKey}`);
             break;
           }
+        }
+      }
+    }
+    
+    // Third pass: match any remaining by year only if author seems to be in the source
+    if (unmatchedPairs.size > 0) {
+      for (const unmatchedKey of Array.from(unmatchedPairs)) {
+        const [authorPart, yearPart] = unmatchedKey.split('|');
+        
+        // Find raw citation for this pair to get full author text
+        const rawCitation = rawCitations.find(rc => 
+          normalizeForKey(rc.author.replace(/\s+et\s+al\.?/gi, '').replace(/\s*[&]\s*.*$/, '').replace(/\s+and\s+.*$/i, '')) === authorPart && 
+          rc.year === yearPart
+        );
+        
+        for (const source of allSources) {
+          if (matchedIds.has(source.id)) continue;
           
-          // Check in_text_label
-          const labelLower = normalizeForKey(source.in_text_label || '');
-          if (labelLower.includes(shortAuthor)) {
-            matchedSources.push(source);
-            matchedIds.add(source.id);
-            unmatchedPairs.delete(unmatchedKey);
-            console.log(`[getRelevantSources] Fuzzy matched via in_text_label: ${source.in_text_label} for ${unmatchedKey}`);
-            break;
-          }
+          const sourceYear = source.year?.toString() || 
+            extractYear(source.in_text_label || '') || 
+            extractYear(source.original_filename || '');
           
-          // Check authors field
-          const authorsLower = normalizeForKey(source.authors || '');
-          if (authorsLower.includes(shortAuthor)) {
-            matchedSources.push(source);
-            matchedIds.add(source.id);
-            unmatchedPairs.delete(unmatchedKey);
-            console.log(`[getRelevantSources] Fuzzy matched via authors: ${source.authors} for ${unmatchedKey}`);
-            break;
-          }
+          if (!sourceYear || sourceYear !== yearPart) continue;
           
-          // Check original_filename
-          const filenameLower = normalizeForKey(source.original_filename || '');
-          if (filenameLower.includes(shortAuthor)) {
-            matchedSources.push(source);
-            matchedIds.add(source.id);
-            unmatchedPairs.delete(unmatchedKey);
-            console.log(`[getRelevantSources] Fuzzy matched via filename: ${source.original_filename} for ${unmatchedKey}`);
-            break;
+          // Try to match the full in_text_label from source against detected citation
+          const sourceLabel = (source.in_text_label || '').toLowerCase();
+          const detectedCitationText = rawCitation ? `(${rawCitation.author}, ${rawCitation.year})`.toLowerCase() : '';
+          
+          // Check for similarity in labels
+          if (sourceLabel && detectedCitationText) {
+            // Extract first word from both
+            const sourceLabelFirstWord = sourceLabel.match(/\(([a-z]+)/i)?.[1] || '';
+            const detectedFirstWord = authorPart.slice(0, 5);
+            
+            if (sourceLabelFirstWord.startsWith(detectedFirstWord) || detectedFirstWord.startsWith(sourceLabelFirstWord.slice(0, 4))) {
+              matchedSources.push(source);
+              matchedIds.add(source.id);
+              unmatchedPairs.delete(unmatchedKey);
+              console.log(`[getRelevantSources] Label-similarity matched: ${source.in_text_label} for ${unmatchedKey}`);
+              break;
+            }
           }
         }
       }

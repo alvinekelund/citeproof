@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Download, Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw } from "lucide-react";
+import { Download, Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, AlertCircle } from "lucide-react";
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getFile } from "@/lib/client-storage";
+import { toast } from "@/hooks/use-toast";
 
 // Set up the worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -36,6 +37,8 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
   const [pageInputValue, setPageInputValue] = useState(String(initialPage));
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [highlightRects, setHighlightRects] = useState<{ x: number; y: number; width: number; height: number }[]>([]);
+  const [highlightNotFound, setHighlightNotFound] = useState(false);
+  const [searchedPages, setSearchedPages] = useState<Set<number>>(new Set());
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const highlightCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -60,11 +63,16 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
     };
   }, [open, filePath]);
 
-  // Set initial page when initialPage prop changes
+  // Set initial page and reset highlight state when dialog opens
   useEffect(() => {
-    if (open && initialPage && initialPage !== currentPage) {
-      setCurrentPage(initialPage);
-      setPageInputValue(String(initialPage));
+    if (open) {
+      if (initialPage && initialPage !== currentPage) {
+        setCurrentPage(initialPage);
+        setPageInputValue(String(initialPage));
+      }
+      // Reset highlight state when opening
+      setHighlightNotFound(false);
+      setSearchedPages(new Set());
     }
   }, [open, initialPage]);
 
@@ -242,10 +250,19 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
       }
       
       if (bestMatchStart === -1) {
-        console.log('[highlight] Excerpt not found on this page');
+        console.log('[highlight] Excerpt not found on page', currentPage);
         setHighlightRects([]);
+        setSearchedPages(prev => new Set(prev).add(currentPage));
+        
+        // Show "not found" indicator after searching initial page
+        if (!searchedPages.has(currentPage)) {
+          setHighlightNotFound(true);
+        }
         return;
       }
+      
+      // Found! Clear the not found indicator
+      setHighlightNotFound(false);
       
       // Map normalized positions back to original text
       let normalizedPos = 0;
@@ -485,6 +502,36 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
                 className="absolute top-0 left-0 pointer-events-none"
                 style={{ maxWidth: '100%', height: 'auto' }}
               />
+              
+              {/* Not found indicator */}
+              {searchText && highlightNotFound && highlightRects.length === 0 && (
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-100 dark:bg-amber-900/50 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2 flex items-center gap-2 shadow-lg z-10">
+                  <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                  <span className="text-sm text-amber-800 dark:text-amber-200">
+                    Excerpt not found on this page
+                  </span>
+                  <div className="flex gap-1 ml-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() => goToPage(currentPage - 1)}
+                      disabled={currentPage <= 1}
+                    >
+                      Try prev
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() => goToPage(currentPage + 1)}
+                      disabled={currentPage >= totalPages}
+                    >
+                      Try next
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
