@@ -105,6 +105,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [thesisPdfPath, setThesisPdfPath] = useState<string | null>(null);
   const [selectedClaimIdx, setSelectedClaimIdx] = useState<number | null>(null);
+  const [matchedSourcesCollapsed, setMatchedSourcesCollapsed] = useState(false);
   
   // PDF viewer for source checkup
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
@@ -1435,30 +1436,6 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             </p>
           </div>
         </div>
-        
-        {file && (
-          <div className="flex items-center gap-2">
-            {/* Show claims view toggle when there are checked paragraphs */}
-            {checkedCount > blueCount && (
-              <Button
-                variant={showClaimsView ? "default" : "outline"}
-                size="sm"
-                onClick={() => setShowClaimsView(!showClaimsView)}
-              >
-                <FileEdit className="h-4 w-4 mr-1" />
-                {showClaimsView ? 'Paragraph View' : 'Claims View'}
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowStructure(!showStructure)}
-            >
-              {showStructure ? <List className="h-4 w-4 mr-1" /> : <FolderOpen className="h-4 w-4 mr-1" />}
-              {showStructure ? 'List View' : 'Structure View'}
-            </Button>
-          </div>
-        )}
       </div>
 
       {/* Session Selector - always visible */}
@@ -1674,29 +1651,35 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             <CheckCircle2 className="h-5 w-5 text-verdict-green shrink-0 mt-0.5" />
             <div className="flex-1">
               <div className="flex items-center justify-between flex-wrap gap-2">
-                <span className="font-semibold text-verdict-green">
+                <button 
+                  onClick={() => setMatchedSourcesCollapsed(!matchedSourcesCollapsed)}
+                  className="flex items-center gap-1 font-semibold text-verdict-green hover:underline"
+                >
+                  {matchedSourcesCollapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
                   {citationAnalysis.matchedCount} Matched Source{citationAnalysis.matchedCount > 1 ? 's' : ''} in Library
-                </span>
+                </button>
                 <Button variant="outline" size="sm" onClick={refreshSourcesAndCitations}>
                   <RefreshCw className="h-4 w-4 mr-1" />
                   Re-analyze
                 </Button>
               </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {citationAnalysis.detectedCitations
-                  .filter(c => c.matched)
-                  .map((citation, i) => (
-                    <Badge 
-                      key={i} 
-                      variant="outline" 
-                      className="text-verdict-green border-verdict-green bg-verdict-green-bg/50"
-                    >
-                      {citation.raw}
-                      {citation.count > 1 && <span className="ml-1 opacity-60">×{citation.count}</span>}
-                    </Badge>
-                  ))
-                }
-              </div>
+              {!matchedSourcesCollapsed && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {citationAnalysis.detectedCitations
+                    .filter(c => c.matched)
+                    .map((citation, i) => (
+                      <Badge 
+                        key={i} 
+                        variant="outline" 
+                        className="text-verdict-green border-verdict-green bg-verdict-green-bg/50"
+                      >
+                        {citation.raw}
+                        {citation.count > 1 && <span className="ml-1 opacity-60">×{citation.count}</span>}
+                      </Badge>
+                    ))
+                  }
+                </div>
+              )}
             </div>
           </div>
         </Card>
@@ -1767,10 +1750,34 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       {/* Claims View */}
       {file && paragraphs.length > 0 && showClaimsView && (
         <div className={cn(
-          isFullscreen && "fixed inset-0 z-50 bg-background p-6 overflow-auto"
+          isFullscreen 
+            ? "fixed inset-0 z-50 bg-background p-6 overflow-hidden grid gap-6 grid-cols-2"
+            : "grid gap-6 lg:grid-cols-2"
         )}>
-          <div className="grid gap-6 lg:grid-cols-2 h-full">
-            {/* Left: Claims List */}
+          {/* Left side: In fullscreen = PDF, otherwise = Claims List */}
+          {isFullscreen && thesisPdfPath ? (
+            <div className="h-full overflow-hidden rounded-lg border">
+              <div className="flex items-center justify-between p-2 border-b bg-secondary/30">
+                <span className="text-sm font-medium">Thesis Document</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsFullscreen(false)}
+                >
+                  <Minimize2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <iframe 
+                src={`${thesisPdfPath}#search=${encodeURIComponent(
+                  selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
+                    ? allClaims[selectedClaimIdx].paragraphText.substring(0, 50) 
+                    : ''
+                )}`}
+                className="w-full h-[calc(100%-48px)]"
+                title="Thesis Document"
+              />
+            </div>
+          ) : (
             <div className="space-y-4">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
@@ -1814,6 +1821,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                 </div>
               </ScrollArea>
             </div>
+          )}
             
             {/* Right: Claim Details */}
             <div className="space-y-4">
@@ -1877,9 +1885,18 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                       </div>
                     </div>
                     
-                    {/* Context paragraph */}
-                    <Card className="p-4 bg-secondary/30 max-h-[150px] overflow-y-auto">
-                      <p className="text-xs text-muted-foreground mb-1 font-medium">¶{selectedClaim.paragraphIndex + 1} Context:</p>
+                    {/* Context paragraph - clickable to navigate to paragraph view */}
+                    <Card 
+                      className="p-4 bg-secondary/30 max-h-[150px] overflow-y-auto cursor-pointer hover:bg-secondary/50 transition-colors"
+                      onClick={() => {
+                        setSelectedIndex(selectedClaim.paragraphIndex);
+                        setShowClaimsView(false);
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs text-muted-foreground font-medium">¶{selectedClaim.paragraphIndex + 1} Context:</p>
+                        <span className="text-xs text-primary">Click to view paragraph →</span>
+                      </div>
                       <p className="text-sm whitespace-pre-wrap">{selectedClaim.paragraphText}</p>
                     </Card>
                     
@@ -1977,17 +1994,36 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                 </Card>
               )}
             </div>
-          </div>
         </div>
       )}
 
       {/* Main Interface - Paragraph View */}
       {file && paragraphs.length > 0 && !showClaimsView && (
         <div className={cn(
-          "grid gap-6 lg:grid-cols-2",
-          isFullscreen && "fixed inset-0 z-50 bg-background p-6 overflow-auto"
+          isFullscreen 
+            ? "fixed inset-0 z-50 bg-background p-6 overflow-hidden grid gap-6 grid-cols-2" 
+            : "grid gap-6 lg:grid-cols-2"
         )}>
-          {/* Left: Paragraph List */}
+          {/* Left side: In fullscreen = PDF, otherwise = Paragraph List */}
+          {isFullscreen && thesisPdfPath ? (
+            <div className="h-full overflow-hidden rounded-lg border">
+              <div className="flex items-center justify-between p-2 border-b bg-secondary/30">
+                <span className="text-sm font-medium">Thesis Document</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsFullscreen(false)}
+                >
+                  <Minimize2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <iframe 
+                src={`${thesisPdfPath}#search=${encodeURIComponent(selectedParagraph?.text.substring(0, 50) || '')}`}
+                className="w-full h-[calc(100%-48px)]"
+                title="Thesis Document"
+              />
+            </div>
+          ) : (
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
@@ -2163,6 +2199,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
               </div>
             </ScrollArea>
           </div>
+          )}
 
           {/* Right: Results */}
           <div className="space-y-4">
@@ -2179,11 +2216,11 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                     {/* View toggle - Paragraphs vs Claims */}
                     {checkedCount > blueCount && (
                       <Button
-                        variant={showClaimsView ? "default" : "outline"}
+                        variant="outline"
                         size="sm"
-                        onClick={() => setShowClaimsView(!showClaimsView)}
+                        onClick={() => setShowClaimsView(true)}
                       >
-                        {showClaimsView ? 'Paragraphs' : 'Claims'}
+                        Claims
                       </Button>
                     )}
                   </div>
