@@ -1101,12 +1101,19 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     }
 
     // Save all results at the end of batch checking to avoid race conditions
-    if (file) {
-      // Get the latest paragraphs state
-      setParagraphs(currentParagraphs => {
-        saveSession(file.name, currentParagraphs);
-        return currentParagraphs;
-      });
+    // Use a ref-like pattern to get latest state synchronously
+    let latestParagraphs: ParagraphData[] = [];
+    setParagraphs(current => {
+      latestParagraphs = current;
+      return current;
+    });
+    
+    // Wait for state to be set, then save
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    if (file && latestParagraphs.length > 0) {
+      console.log('[CopilotMode] Batch complete - saving', latestParagraphs.filter(p => p.checked).length, 'checked paragraphs');
+      await saveSession(file.name, latestParagraphs);
     }
 
     setIsBatchChecking(false);
