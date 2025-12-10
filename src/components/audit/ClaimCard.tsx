@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Eye, AlertTriangle, Lightbulb, FileText, Wand2, Loader2, BookOpen, PenLine, Copy, Check, FileCheck } from "lucide-react";
+import { Eye, AlertTriangle, Lightbulb, FileText, Wand2, Loader2, BookOpen, PenLine, Copy, Check, FileCheck, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Claim, Source } from "@/lib/types";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
@@ -22,6 +22,8 @@ interface ClaimCardProps {
   onOpenSource?: (source: Source, pageNumber: number, excerpt?: string) => void;
   onImplementRewrite?: (newText: string) => void;
   showImplementButton?: boolean;
+  originalText?: string; // If provided, shows this claim was modified
+  onRevert?: () => void; // Callback to revert to original text
 }
 
 function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | 'yellow' | 'red' {
@@ -40,7 +42,7 @@ function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | '
   return 'yellow';
 }
 
-export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, showImplementButton }: ClaimCardProps) {
+export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, showImplementButton, originalText, onRevert }: ClaimCardProps) {
   const verdictColor = getVerdictColor(claim.verdict, claim.common_knowledge);
   const [textViewerOpen, setTextViewerOpen] = useState(false);
   const [textContent, setTextContent] = useState<string>('');
@@ -294,8 +296,19 @@ export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, sh
                   Common knowledge
                 </span>
               )}
+              {originalText && (
+                <span className="text-xs px-2 py-0.5 rounded bg-orange-500/10 text-orange-600 border border-orange-500/30">
+                  Modified
+                </span>
+              )}
             </div>
             <p className="text-sm leading-relaxed">{claim.text}</p>
+            {originalText && (
+              <div className="mt-2 p-2 bg-muted/50 rounded border border-dashed">
+                <p className="text-xs text-muted-foreground mb-1">Original text:</p>
+                <p className="text-xs text-muted-foreground italic line-clamp-2">{originalText}</p>
+              </div>
+            )}
           </div>
           <VerdictBadge color={verdictColor} />
         </div>
