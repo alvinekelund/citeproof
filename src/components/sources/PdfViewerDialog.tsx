@@ -43,48 +43,78 @@ function levenshtein(a: string, b: string): number {
   return matrix[b.length][a.length];
 }
 
-// Fuzzy match with tolerance
+// Fuzzy match with tolerance - multiple strategies for robustness
 function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: number; end: number } | null {
   const normalize = (s: string) => s.toLowerCase().replace(/[\s\-–—]+/g, ' ').replace(/[^\w\s]/g, '').trim();
   const normalizedText = normalize(text);
   const normalizedSearch = normalize(search);
   
+  // Strategy 1: For short searches, do exact match
   if (normalizedSearch.length < 10) {
     const idx = normalizedText.indexOf(normalizedSearch);
     if (idx !== -1) return { start: idx, end: idx + normalizedSearch.length };
     return null;
   }
   
-  // Try exact match first
+  // Strategy 2: Try exact match first
   const exactIdx = normalizedText.indexOf(normalizedSearch);
   if (exactIdx !== -1) {
     return { start: exactIdx, end: exactIdx + normalizedSearch.length };
   }
   
-  // Try matching first sentence/clause (first 80 chars)
-  const firstPart = normalizedSearch.slice(0, 80);
-  const firstIdx = normalizedText.indexOf(firstPart);
-  if (firstIdx !== -1) {
-    return { start: firstIdx, end: Math.min(firstIdx + normalizedSearch.length, normalizedText.length) };
-  }
-  
-  // Sliding window with Levenshtein tolerance
-  const searchLen = normalizedSearch.length;
-  const maxDist = Math.floor(searchLen * tolerance);
-  
-  for (let i = 0; i <= normalizedText.length - searchLen; i += 5) {
-    const window = normalizedText.slice(i, i + searchLen);
-    const dist = levenshtein(window, normalizedSearch);
-    if (dist <= maxDist) {
-      return { start: i, end: i + searchLen };
+  // Strategy 3: Try matching progressively shorter prefixes (80, 60, 40, 20 chars)
+  for (const prefixLen of [80, 60, 40, 20]) {
+    if (normalizedSearch.length >= prefixLen) {
+      const prefix = normalizedSearch.slice(0, prefixLen);
+      const prefixIdx = normalizedText.indexOf(prefix);
+      if (prefixIdx !== -1) {
+        return { start: prefixIdx, end: Math.min(prefixIdx + normalizedSearch.length, normalizedText.length) };
+      }
     }
   }
   
-  // Last resort: match first few words
-  const searchWords = normalizedSearch.split(/\s+/).slice(0, 5).join(' ');
-  const wordIdx = normalizedText.indexOf(searchWords);
-  if (wordIdx !== -1) {
-    return { start: wordIdx, end: Math.min(wordIdx + normalizedSearch.length, normalizedText.length) };
+  // Strategy 4: Word-based matching - find consecutive matching words
+  const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 2);
+  if (searchWords.length >= 3) {
+    // Try to find a sequence of first 3-5 words
+    for (let wordCount = Math.min(5, searchWords.length); wordCount >= 3; wordCount--) {
+      const wordSequence = searchWords.slice(0, wordCount).join(' ');
+      const seqIdx = normalizedText.indexOf(wordSequence);
+      if (seqIdx !== -1) {
+        return { start: seqIdx, end: Math.min(seqIdx + normalizedSearch.length, normalizedText.length) };
+      }
+    }
+    
+    // Try to find distinctive words anywhere in text (author names, technical terms)
+    const distinctiveWords = searchWords.filter(w => w.length > 4);
+    for (const word of distinctiveWords) {
+      const wordIdx = normalizedText.indexOf(word);
+      if (wordIdx !== -1) {
+        // Check if nearby words also match
+        const context = normalizedText.slice(Math.max(0, wordIdx - 100), wordIdx + 200);
+        let matchCount = 0;
+        for (const sw of searchWords.slice(0, 5)) {
+          if (context.includes(sw)) matchCount++;
+        }
+        if (matchCount >= 3) {
+          return { start: Math.max(0, wordIdx - 20), end: Math.min(wordIdx + normalizedSearch.length, normalizedText.length) };
+        }
+      }
+    }
+  }
+  
+  // Strategy 5: Sliding window with Levenshtein (expensive, only for shorter searches)
+  if (normalizedSearch.length <= 200) {
+    const searchLen = normalizedSearch.length;
+    const maxDist = Math.floor(searchLen * tolerance);
+    
+    for (let i = 0; i <= normalizedText.length - searchLen; i += 10) {
+      const window = normalizedText.slice(i, i + searchLen);
+      const dist = levenshtein(window, normalizedSearch);
+      if (dist <= maxDist) {
+        return { start: i, end: i + searchLen };
+      }
+    }
   }
   
   return null;

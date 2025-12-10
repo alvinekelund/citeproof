@@ -152,6 +152,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     },
   }), [refreshSourcesAndCitations]);
 
+  // Flag to track if we've already auto-loaded a session
+  const hasAutoLoadedRef = useRef(false);
+  
   // Load sources and sessions on mount - auto-load most recent session
   useEffect(() => {
     setSources(getSources());
@@ -178,9 +181,11 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       
       setSessions(parsedSessions);
       
-      // Auto-load most recent session if requested and no session is currently loaded
-      if (autoLoadMostRecent && parsedSessions.length > 0 && !currentSessionId && !file) {
+      // Auto-load most recent session if requested and we haven't already
+      if (autoLoadMostRecent && parsedSessions.length > 0 && !hasAutoLoadedRef.current) {
+        hasAutoLoadedRef.current = true;
         const mostRecent = parsedSessions[0];
+        console.log('[CopilotMode] Auto-loading most recent session:', mostRecent.thesis_name, mostRecent.checked_paragraphs, '/', mostRecent.total_paragraphs);
         loadSessionData(mostRecent);
       }
     } catch (error) {
@@ -1311,14 +1316,15 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         
         {file && (
           <div className="flex items-center gap-2">
-            {allChecked && (
+            {/* Show editor button when there are checked paragraphs */}
+            {checkedCount > blueCount && (
               <Button
-                variant="default"
+                variant={allChecked ? "default" : "outline"}
                 size="sm"
                 onClick={() => setShowEditor(true)}
               >
                 <FileEdit className="h-4 w-4 mr-1" />
-                Open Editor
+                {allChecked ? 'Open Editor' : 'View in Editor'}
               </Button>
             )}
             <Button
