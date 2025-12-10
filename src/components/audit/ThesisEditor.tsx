@@ -301,146 +301,155 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     textContent: { items: any[] }
   ) => {
     const colorMap: Record<string, string> = {
-      green: 'rgba(34, 197, 94, 0.25)',
-      yellow: 'rgba(250, 204, 21, 0.3)',
-      red: 'rgba(239, 68, 68, 0.25)',
-      blue: 'rgba(59, 130, 246, 0.2)',
+      green: 'rgba(34, 197, 94, 0.3)',
+      yellow: 'rgba(250, 204, 21, 0.35)',
+      red: 'rgba(239, 68, 68, 0.3)',
+      blue: 'rgba(59, 130, 246, 0.25)',
     };
 
-    // Collect clickable regions
     const regions: ClickableRegion[] = [];
 
-    // Group text items into lines for better matching
-    let currentLineY = -1;
-    let currentLineText = '';
-    let lineItems: any[] = [];
-    const lines: { text: string; items: any[]; y: number; matched: boolean }[] = [];
+    // Build full page text from all items to find paragraph positions
+    const textItems = textContent.items.filter((item: any) => item.str && item.str.trim());
     
-    for (const item of textContent.items) {
-      if (!item.str || item.str.trim() === '') continue;
-      
-      const transform = item.transform;
-      const y = transform[5];
-      
-      // If this is a new line (different Y position)
-      if (Math.abs(y - currentLineY) > 5) {
-        if (currentLineText.trim()) {
-          lines.push({ text: currentLineText.trim(), items: [...lineItems], y: currentLineY, matched: false });
-        }
-        currentLineY = y;
-        currentLineText = item.str;
-        lineItems = [item];
-      } else {
-        currentLineText += ' ' + item.str;
-        lineItems.push(item);
-      }
-    }
-    // Don't forget the last line
-    if (currentLineText.trim()) {
-      lines.push({ text: currentLineText.trim(), items: [...lineItems], y: currentLineY, matched: false });
-    }
-
-    // Extract words from paragraph for matching
-    const extractWords = (text: string): string[] => {
-      return normalizeText(text)
-        .split(/\s+/)
-        .filter(w => w.length > 2)
-        .map(w => w.replace(/[.,;:!?()]/g, ''));
+    // Create a simple word-based matching approach
+    const getFirstNWords = (text: string, n: number): string => {
+      return normalizeText(text).split(/\s+/).slice(0, n).join(' ');
+    };
+    
+    const getLastNWords = (text: string, n: number): string => {
+      const words = normalizeText(text).split(/\s+/);
+      return words.slice(-n).join(' ');
     };
 
-    // For each paragraph, find matching lines and highlight them
+    // For each checked paragraph, find its text in the PDF
     for (const p of paragraphs) {
       if (!p.checked || !p.result) continue;
       
       const color = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
       const fillColor = colorMap[color] || colorMap.blue;
-      
-      // Find the global claim index for this paragraph (first claim if any)
       const globalClaimIdx = allClaims.findIndex(c => c.paragraphIndex === p.index);
       
-      // Get ALL words from the paragraph (not just first 100 chars)
-      const paragraphWords = extractWords(p.text);
-      const normalizedParagraph = normalizeText(p.text);
+      // Get key phrases from the paragraph for matching
+      const paragraphStart = getFirstNWords(p.text, 8);
+      const paragraphEnd = getLastNWords(p.text, 5);
       
-      // Use a sliding window approach - check if 4+ consecutive words match
-      const checkLineMatch = (normalizedLine: string): boolean => {
-        if (normalizedLine.length < 10) return false;
-        
-        const lineWords = normalizedLine.split(/\s+/).filter(w => w.length > 2);
-        
-        // Check if line words appear consecutively in paragraph
-        for (let i = 0; i <= paragraphWords.length - 3; i++) {
-          const phraseToCheck = paragraphWords.slice(i, i + 4).join(' ');
-          if (normalizedLine.includes(phraseToCheck)) return true;
-        }
-        
-        // Also check reverse - if paragraph phrase appears in line
-        for (let i = 0; i <= lineWords.length - 3; i++) {
-          const phraseToCheck = lineWords.slice(i, i + 3).join(' ');
-          if (normalizedParagraph.includes(phraseToCheck) && phraseToCheck.length > 15) return true;
-        }
-        
-        // Fallback: count matching significant words
-        let matchCount = 0;
-        for (const word of lineWords) {
-          if (word.length > 4 && paragraphWords.includes(word)) matchCount++;
-        }
-        return matchCount >= Math.min(4, lineWords.length * 0.6);
-      };
+      // Track if we're currently in this paragraph's text
+      let inParagraph = false;
+      let matchedItems: any[] = [];
+      let runningText = '';
       
-      // Find lines that match this paragraph
-      for (const line of lines) {
-        if (line.matched) continue; // Already matched to another paragraph
+      for (let i = 0; i < textItems.length; i++) {
+        const item = textItems[i];
+        const itemText = normalizeText(item.str);
+        runningText += ' ' + itemText;
         
-        const normalizedLine = normalizeText(line.text);
+        // Check if running text contains paragraph start
+        if (!inParagraph && runningText.includes(paragraphStart)) {
+          inParagraph = true;
+          matchedItems = [item];
+          runningText = itemText;
+        } else if (inParagraph) {
+          matchedItems.push(item);
+          
+          // Check if we've hit the end of the paragraph
+          if (runningText.includes(paragraphEnd) || matchedItems.length > 50) {
+            // Draw highlights for all matched items
+            let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
+            
+            for (const matchedItem of matchedItems) {
+              const transform = matchedItem.transform;
+              const x = transform[4];
+              const y = transform[5];
+              const fontSize = transform[0] || 12;
+              const width = matchedItem.width || (matchedItem.str.length * fontSize * 0.5);
+              const height = fontSize * 1.2;
+              
+              // Use viewport transform to convert PDF coords to canvas coords
+              const [a, b, c, d, e, f] = viewport.transform;
+              const canvasX = a * x + c * y + e;
+              const canvasY = b * x + d * y + f;
+              
+              // Draw the highlight
+              ctx.fillStyle = fillColor;
+              ctx.fillRect(canvasX, canvasY - height, width, height + 2);
+              
+              // Track bounds
+              minX = Math.min(minX, canvasX);
+              maxX = Math.max(maxX, canvasX + width);
+              minY = Math.min(minY, canvasY - height);
+              maxY = Math.max(maxY, canvasY + 2);
+            }
+            
+            // Create one clickable region for the entire paragraph on this page
+            if (minX !== Infinity) {
+              regions.push({
+                x: minX - 5,
+                y: minY - 5,
+                width: maxX - minX + 10,
+                height: maxY - minY + 10,
+                paragraphIndex: p.index,
+                claimIndex: p.result?.claims?.[0] ? 0 : null,
+                globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
+                color,
+              });
+            }
+            
+            // Reset for next paragraph
+            inParagraph = false;
+            matchedItems = [];
+            runningText = '';
+            break; // Move to next paragraph
+          }
+        }
         
-        if (checkLineMatch(normalizedLine)) {
-          line.matched = true;
+        // Keep running text from getting too long
+        if (runningText.length > 500) {
+          runningText = runningText.slice(-250);
+        }
+      }
+      
+      // If we started matching but didn't find the end, still create a region
+      if (inParagraph && matchedItems.length > 0) {
+        let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
+        
+        for (const matchedItem of matchedItems) {
+          const transform = matchedItem.transform;
+          const x = transform[4];
+          const y = transform[5];
+          const fontSize = transform[0] || 12;
+          const width = matchedItem.width || (matchedItem.str.length * fontSize * 0.5);
+          const height = fontSize * 1.2;
           
-          // Calculate bounding box for entire line
-          let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
+          const [a, b, c, d, e, f] = viewport.transform;
+          const canvasX = a * x + c * y + e;
+          const canvasY = b * x + d * y + f;
           
-          // Draw highlight for each text item in this line
-          for (const item of line.items) {
-            const transform = item.transform;
-            const x = transform[4];
-            const y = transform[5];
-            const width = item.width || (item.str.length * 6 * pdfScale);
-            const height = item.height || 12 * pdfScale;
-            
-            // Transform coordinates to canvas space
-            const [a, b, c, d, e, f] = viewport.transform;
-            const canvasX = a * x + c * y + e;
-            const canvasY = b * x + d * y + f;
-            
-            ctx.fillStyle = fillColor;
-            ctx.fillRect(canvasX, canvasY - height, width * pdfScale, height + 4);
-            
-            // Track bounds for clickable region
-            minX = Math.min(minX, canvasX);
-            maxX = Math.max(maxX, canvasX + width * pdfScale);
-            minY = Math.min(minY, canvasY - height);
-            maxY = Math.max(maxY, canvasY + 4);
-          }
+          ctx.fillStyle = fillColor;
+          ctx.fillRect(canvasX, canvasY - height, width, height + 2);
           
-          // Add clickable region for this line
-          if (minX !== Infinity) {
-            regions.push({
-              x: minX,
-              y: minY,
-              width: maxX - minX,
-              height: maxY - minY,
-              paragraphIndex: p.index,
-              claimIndex: p.result?.claims?.[0] ? 0 : null,
-              globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
-              color,
-            });
-          }
+          minX = Math.min(minX, canvasX);
+          maxX = Math.max(maxX, canvasX + width);
+          minY = Math.min(minY, canvasY - height);
+          maxY = Math.max(maxY, canvasY + 2);
+        }
+        
+        if (minX !== Infinity) {
+          regions.push({
+            x: minX - 5,
+            y: minY - 5,
+            width: maxX - minX + 10,
+            height: maxY - minY + 10,
+            paragraphIndex: p.index,
+            claimIndex: p.result?.claims?.[0] ? 0 : null,
+            globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
+            color,
+          });
         }
       }
     }
     
-    // Store clickable regions
+    console.log('[PDF] Created', regions.length, 'clickable regions on page', currentPdfPage);
     setPdfClickableRegions(regions);
   };
 
@@ -485,9 +494,12 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     const coords = getCanvasCoordinates(e);
     if (!coords) return;
     
-    const region = findRegionAtPoint(coords.x, coords.y, 8); // 8px tolerance for easier clicking
+    console.log('[PDF Click] at', coords.x.toFixed(0), coords.y.toFixed(0), '- checking', pdfClickableRegions.length, 'regions');
+    
+    const region = findRegionAtPoint(coords.x, coords.y, 15); // Increased tolerance
     
     if (region) {
+      console.log('[PDF Click] Hit region for paragraph', region.paragraphIndex, 'claim', region.globalClaimIndex);
       if (region.globalClaimIndex !== null) {
         selectClaim(region.globalClaimIndex);
       } else {
@@ -496,8 +508,10 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
           selectBlueParagraph(bluePara);
         }
       }
+    } else {
+      console.log('[PDF Click] No region found at this position');
     }
-  }, [getCanvasCoordinates, findRegionAtPoint, selectClaim, selectBlueParagraph, blueParagraphs]);
+  }, [getCanvasCoordinates, findRegionAtPoint, selectClaim, selectBlueParagraph, blueParagraphs, pdfClickableRegions.length]);
 
   // Handle PDF canvas hover
   const handlePdfCanvasMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
