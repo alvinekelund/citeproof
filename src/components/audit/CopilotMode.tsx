@@ -914,8 +914,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           return updatedParagraphs;
         });
         
-        // Save session with updated paragraphs
-        if (file && updatedParagraphs.length > 0) {
+        // Save session with updated paragraphs - but NOT during batch checking (race condition)
+        // Batch saves are handled at the end of the batch
+        if (!isBatch && file && updatedParagraphs.length > 0) {
           await saveSession(file.name, updatedParagraphs);
         }
 
@@ -1097,6 +1098,15 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         const delayMs = BASE_DELAY_MS + (consecutiveRateLimits * 500);
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
+    }
+
+    // Save all results at the end of batch checking to avoid race conditions
+    if (file) {
+      // Get the latest paragraphs state
+      setParagraphs(currentParagraphs => {
+        saveSession(file.name, currentParagraphs);
+        return currentParagraphs;
+      });
     }
 
     setIsBatchChecking(false);
