@@ -107,6 +107,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [thesisPdfPath, setThesisPdfPath] = useState<string | null>(null);
   const [selectedClaimIdx, setSelectedClaimIdx] = useState<number | null>(null);
   const [matchedSourcesCollapsed, setMatchedSourcesCollapsed] = useState(false);
+  const [showListInFullscreen, setShowListInFullscreen] = useState(false);
   
   // PDF viewer for source checkup
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
@@ -1755,16 +1756,22 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             ? "fixed inset-0 z-50 bg-background p-6 overflow-hidden grid gap-6 grid-cols-2"
             : "grid gap-6 lg:grid-cols-2"
         )}>
-          {/* Left side: In fullscreen = PDF viewer, otherwise = Claims List */}
-          {isFullscreen && thesisPdfPath ? (
+          {/* Left side: Always PDF viewer in fullscreen, otherwise Claims List */}
+          {isFullscreen ? (
             <div className="h-[calc(100vh-48px)]">
-              <InlinePdfViewer
-                blobUrl={thesisPdfPath}
-                searchText={selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
-                  ? allClaims[selectedClaimIdx].paragraphText.substring(0, 80) 
-                  : undefined}
-                onClose={() => setIsFullscreen(false)}
-              />
+              {thesisPdfPath ? (
+                <InlinePdfViewer
+                  blobUrl={thesisPdfPath}
+                  searchText={selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
+                    ? allClaims[selectedClaimIdx].paragraphText.substring(0, 80) 
+                    : undefined}
+                  onClose={() => setIsFullscreen(false)}
+                />
+              ) : (
+                <Card className="h-full flex items-center justify-center">
+                  <p className="text-muted-foreground">No PDF available</p>
+                </Card>
+              )}
             </div>
           ) : (
             <div className="space-y-4">
@@ -1779,7 +1786,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                 </div>
               </div>
               
-              <ScrollArea className={cn(isFullscreen ? "h-[calc(100vh-120px)]" : "h-[550px]", "border rounded-lg")}>
+              <ScrollArea className="h-[550px] border rounded-lg">
                 <div className="p-2 space-y-1">
                   {allClaims.map((item, idx) => (
                     <Card
@@ -1812,175 +1819,248 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             </div>
           )}
             
-            {/* Right: Claim Details */}
-            <div className="space-y-4">
-              {selectedClaimIdx !== null && allClaims[selectedClaimIdx] && (() => {
-                const selectedClaim = allClaims[selectedClaimIdx];
-                return (
-                  <>
-                    <div className="flex items-center justify-between flex-wrap gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">Claim {selectedClaim.displayId}</span>
-                        {/* Toggle back to paragraphs */}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setShowClaimsView(false)}
-                        >
-                          Paragraphs
-                        </Button>
-                      </div>
-                      <div className="flex gap-2">
-                        {/* View in thesis button */}
-                        {thesisPdfPath && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setThesisViewerSearchText(selectedClaim.claim.text.substring(0, 80).trim());
-                              setThesisViewerOpen(true);
-                            }}
-                          >
-                            <Eye className="h-4 w-4 mr-1" />
-                            View in Thesis
-                          </Button>
-                        )}
-                        {/* Fullscreen toggle */}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setIsFullscreen(!isFullscreen)}
-                        >
-                          {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setSelectedClaimIdx(Math.max(0, selectedClaimIdx - 1))}
-                          disabled={selectedClaimIdx === 0}
-                        >
-                          <ChevronLeft className="h-4 w-4" />
-                          Prev
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setSelectedClaimIdx(Math.min(allClaims.length - 1, selectedClaimIdx + 1))}
-                          disabled={selectedClaimIdx === allClaims.length - 1}
-                        >
-                          Next
-                          <ChevronRight className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                    
-                    {/* Context paragraph - clickable to navigate to paragraph view */}
-                    <Card 
-                      className="p-4 bg-secondary/30 max-h-[150px] overflow-y-auto cursor-pointer hover:bg-secondary/50 transition-colors"
-                      onClick={() => {
-                        setSelectedIndex(selectedClaim.paragraphIndex);
-                        setShowClaimsView(false);
-                      }}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <p className="text-xs text-muted-foreground font-medium">¶{selectedClaim.paragraphIndex + 1} Context:</p>
-                        <span className="text-xs text-primary">Click to view paragraph →</span>
-                      </div>
-                      <p className="text-sm whitespace-pre-wrap">{selectedClaim.paragraphText}</p>
-                    </Card>
-                    
-                    {/* Claim details */}
-                    <Card className={cn(
-                      "p-4 border-l-4",
-                      selectedClaim.color === 'green' && "border-l-verdict-green bg-verdict-green-bg/20",
-                      selectedClaim.color === 'yellow' && "border-l-verdict-yellow bg-verdict-yellow-bg/20",
-                      selectedClaim.color === 'red' && "border-l-verdict-red bg-verdict-red-bg/20"
-                    )}>
-                      <div className="flex items-start justify-between gap-4 mb-3">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="text-xs font-medium text-muted-foreground font-mono">
-                              Claim {selectedClaim.displayId}
-                            </span>
-                            {selectedClaim.claim.common_knowledge && (
-                              <span className="text-xs px-2 py-0.5 rounded bg-secondary text-secondary-foreground">
-                                Common knowledge
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-sm leading-relaxed">{selectedClaim.claim.text}</p>
-                        </div>
-                        <VerdictBadge color={selectedClaim.color} />
-                      </div>
-                      
-                      {selectedClaim.claim.intended_citations && selectedClaim.claim.intended_citations.length > 0 && (
-                        <div className="mb-3">
-                          <span className="text-xs font-medium text-muted-foreground">Citations: </span>
-                          <span className="text-xs font-mono">{selectedClaim.claim.intended_citations.join(', ')}</span>
-                        </div>
-                      )}
-                      
-                      <p className="text-sm text-muted-foreground mb-3">{selectedClaim.claim.verdict}</p>
-                      
-                      {/* Evidence with View Source buttons */}
-                      {selectedClaim.claim.evidence && selectedClaim.claim.evidence.length > 0 && (
-                        <div className="space-y-2">
-                          <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Evidence</h4>
-                          {selectedClaim.claim.evidence.map((ev, i) => {
-                            const source = sources.find(s => 
-                              s.in_text_label?.toLowerCase().includes(ev.label.toLowerCase().replace(/[()]/g, '')) ||
-                              (s.authors?.toLowerCase().includes(ev.label.toLowerCase().split(/[,(&]/)[0].trim()) && 
-                               s.year?.toString() === ev.label.match(/\d{4}/)?.[0])
-                            );
-                            return (
-                              <div key={i} className="bg-secondary/50 rounded-lg p-3 text-sm">
-                                <div className="flex items-center justify-between mb-1">
-                                  <span className="font-mono text-xs text-primary">{ev.label}</span>
-                                  {source && (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => handleOpenSource(source, ev.page_number, ev.excerpt, selectedClaim.color)}
-                                      className="h-7 text-xs gap-1"
-                                    >
-                                      <Eye className="h-4 w-4 mr-1" />
-                                      View Source
-                                    </Button>
-                                  )}
-                                </div>
-                                <blockquote className="text-muted-foreground italic border-l-2 border-primary/30 pl-3">
-                                  "{ev.excerpt}"
-                                </blockquote>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      
-                      {/* Issues and suggestions */}
-                      {selectedClaim.claim.issues_or_suggestions && selectedClaim.claim.issues_or_suggestions.length > 0 && (
-                        <div className="mt-3 space-y-1">
-                          <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Suggestions</h4>
-                          <ul className="text-sm text-muted-foreground space-y-1">
-                            {selectedClaim.claim.issues_or_suggestions.map((issue, i) => (
-                              <li key={i} className="flex items-start gap-2">
-                                <AlertTriangle className="h-3 w-3 mt-1 flex-shrink-0 text-verdict-yellow" />
-                                {issue}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </Card>
-                  </>
-                );
-              })()}
+            {/* Right: Claim Details or List (in fullscreen with toggle) */}
+            <div className="space-y-4 overflow-y-auto" style={{ maxHeight: isFullscreen ? 'calc(100vh - 48px)' : undefined }}>
+              {/* Fullscreen toggle header */}
+              {isFullscreen && (
+                <div className="flex items-center justify-between">
+                  <Button
+                    variant={showListInFullscreen ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setShowListInFullscreen(!showListInFullscreen)}
+                  >
+                    <List className="h-4 w-4 mr-1" />
+                    {showListInFullscreen ? "Show Details" : "Show List"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsFullscreen(false)}
+                  >
+                    <Minimize2 className="h-4 w-4 mr-1" />
+                    Exit Fullscreen
+                  </Button>
+                </div>
+              )}
               
-              {selectedClaimIdx === null && (
-                <Card className="p-12 text-center">
-                  <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                  <p className="text-muted-foreground">Select a claim to view details</p>
-                </Card>
+              {/* Show list in fullscreen when toggled */}
+              {isFullscreen && showListInFullscreen ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <h3 className="font-semibold">All Claims ({allClaims.length})</h3>
+                    <div className="flex gap-3 text-sm">
+                      <span className="text-verdict-green">{allClaims.filter(c => c.color === 'green').length} ✓</span>
+                      <span className="text-verdict-yellow">{allClaims.filter(c => c.color === 'yellow').length} ⚠</span>
+                      <span className="text-verdict-red">{allClaims.filter(c => c.color === 'red').length} ✗</span>
+                    </div>
+                  </div>
+                  <ScrollArea className="h-[calc(100vh-180px)] border rounded-lg">
+                    <div className="p-2 space-y-1">
+                      {allClaims.map((item, idx) => (
+                        <Card
+                          key={`${item.paragraphIndex}-${item.claimIndex}`}
+                          className={cn(
+                            "p-3 cursor-pointer transition-all hover:shadow-md border-l-4",
+                            selectedClaimIdx === idx && "ring-2 ring-primary",
+                            item.color === 'green' && "border-l-verdict-green",
+                            item.color === 'yellow' && "border-l-verdict-yellow",
+                            item.color === 'red' && "border-l-verdict-red",
+                            item.color === 'blue' && "border-l-verdict-blue"
+                          )}
+                          onClick={() => {
+                            setSelectedClaimIdx(idx);
+                            setShowListInFullscreen(false);
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs font-medium text-muted-foreground font-mono">
+                                  Claim {item.displayId}
+                                </span>
+                                <VerdictBadge color={item.color} size="sm" />
+                              </div>
+                              <p className="text-sm line-clamp-2">{item.claim.text}</p>
+                            </div>
+                          </div>
+                        </Card>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+              ) : (
+                <>
+                  {selectedClaimIdx !== null && allClaims[selectedClaimIdx] && (() => {
+                    const selectedClaim = allClaims[selectedClaimIdx];
+                    return (
+                      <>
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">Claim {selectedClaim.displayId}</span>
+                            {/* Toggle back to paragraphs */}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setShowClaimsView(false)}
+                            >
+                              Paragraphs
+                            </Button>
+                          </div>
+                          <div className="flex gap-2">
+                            {/* View in thesis button - only in non-fullscreen */}
+                            {!isFullscreen && thesisPdfPath && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setThesisViewerSearchText(selectedClaim.claim.text.substring(0, 80).trim());
+                                  setThesisViewerOpen(true);
+                                }}
+                              >
+                                <Eye className="h-4 w-4 mr-1" />
+                                View in Thesis
+                              </Button>
+                            )}
+                            {/* Fullscreen toggle - only in non-fullscreen */}
+                            {!isFullscreen && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setIsFullscreen(true)}
+                              >
+                                <Maximize2 className="h-4 w-4" />
+                              </Button>
+                            )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setSelectedClaimIdx(Math.max(0, selectedClaimIdx - 1))}
+                              disabled={selectedClaimIdx === 0}
+                            >
+                              <ChevronLeft className="h-4 w-4" />
+                              Prev
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setSelectedClaimIdx(Math.min(allClaims.length - 1, selectedClaimIdx + 1))}
+                              disabled={selectedClaimIdx === allClaims.length - 1}
+                            >
+                              Next
+                              <ChevronRight className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                        
+                        {/* Context paragraph - clickable to navigate to paragraph view */}
+                        <Card 
+                          className="p-4 bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors"
+                          onClick={() => {
+                            setSelectedIndex(selectedClaim.paragraphIndex);
+                            setShowClaimsView(false);
+                          }}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <p className="text-xs text-muted-foreground font-medium">¶{selectedClaim.paragraphIndex + 1} Context:</p>
+                            <span className="text-xs text-primary">Click to view paragraph →</span>
+                          </div>
+                          <p className="text-sm whitespace-pre-wrap">{selectedClaim.paragraphText}</p>
+                        </Card>
+                        
+                        {/* Claim details */}
+                        <Card className={cn(
+                          "p-4 border-l-4",
+                          selectedClaim.color === 'green' && "border-l-verdict-green bg-verdict-green-bg/20",
+                          selectedClaim.color === 'yellow' && "border-l-verdict-yellow bg-verdict-yellow-bg/20",
+                          selectedClaim.color === 'red' && "border-l-verdict-red bg-verdict-red-bg/20"
+                        )}>
+                          <div className="flex items-start justify-between gap-4 mb-3">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-xs font-medium text-muted-foreground font-mono">
+                                  Claim {selectedClaim.displayId}
+                                </span>
+                                {selectedClaim.claim.common_knowledge && (
+                                  <span className="text-xs px-2 py-0.5 rounded bg-secondary text-secondary-foreground">
+                                    Common knowledge
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-sm leading-relaxed">{selectedClaim.claim.text}</p>
+                            </div>
+                            <VerdictBadge color={selectedClaim.color} />
+                          </div>
+                          
+                          {selectedClaim.claim.intended_citations && selectedClaim.claim.intended_citations.length > 0 && (
+                            <div className="mb-3">
+                              <span className="text-xs font-medium text-muted-foreground">Citations: </span>
+                              <span className="text-xs font-mono">{selectedClaim.claim.intended_citations.join(', ')}</span>
+                            </div>
+                          )}
+                          
+                          <p className="text-sm text-muted-foreground mb-3">{selectedClaim.claim.verdict}</p>
+                          
+                          {/* Evidence with View Source buttons */}
+                          {selectedClaim.claim.evidence && selectedClaim.claim.evidence.length > 0 && (
+                            <div className="space-y-2">
+                              <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Evidence</h4>
+                              {selectedClaim.claim.evidence.map((ev, i) => {
+                                const source = sources.find(s => 
+                                  s.in_text_label?.toLowerCase().includes(ev.label.toLowerCase().replace(/[()]/g, '')) ||
+                                  (s.authors?.toLowerCase().includes(ev.label.toLowerCase().split(/[,(&]/)[0].trim()) && 
+                                   s.year?.toString() === ev.label.match(/\d{4}/)?.[0])
+                                );
+                                return (
+                                  <div key={i} className="bg-secondary/50 rounded-lg p-3 text-sm">
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className="font-mono text-xs text-primary">{ev.label}</span>
+                                      {source && (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => handleOpenSource(source, ev.page_number, ev.excerpt, selectedClaim.color)}
+                                          className="h-7 text-xs gap-1"
+                                        >
+                                          <Eye className="h-4 w-4 mr-1" />
+                                          View Source
+                                        </Button>
+                                      )}
+                                    </div>
+                                    <blockquote className="text-muted-foreground italic border-l-2 border-primary/30 pl-3">
+                                      "{ev.excerpt}"
+                                    </blockquote>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          
+                          {/* Issues and suggestions */}
+                          {selectedClaim.claim.issues_or_suggestions && selectedClaim.claim.issues_or_suggestions.length > 0 && (
+                            <div className="mt-3 space-y-1">
+                              <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Suggestions</h4>
+                              <ul className="text-sm text-muted-foreground space-y-1">
+                                {selectedClaim.claim.issues_or_suggestions.map((issue, i) => (
+                                  <li key={i} className="flex items-start gap-2">
+                                    <AlertTriangle className="h-3 w-3 mt-1 flex-shrink-0 text-verdict-yellow" />
+                                    {issue}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </Card>
+                      </>
+                    );
+                  })()}
+                  
+                  {selectedClaimIdx === null && (
+                    <Card className="p-12 text-center">
+                      <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                      <p className="text-muted-foreground">Select a claim to view details</p>
+                    </Card>
+                  )}
+                </>
               )}
             </div>
         </div>
@@ -1993,14 +2073,20 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             ? "fixed inset-0 z-50 bg-background p-6 overflow-hidden grid gap-6 grid-cols-2" 
             : "grid gap-6 lg:grid-cols-2"
         )}>
-          {/* Left side: In fullscreen = PDF viewer, otherwise = Paragraph List */}
-          {isFullscreen && thesisPdfPath ? (
+          {/* Left side: Always PDF viewer in fullscreen, otherwise Paragraph List */}
+          {isFullscreen ? (
             <div className="h-[calc(100vh-48px)]">
-              <InlinePdfViewer
-                blobUrl={thesisPdfPath}
-                searchText={selectedParagraph?.text.substring(0, 80)}
-                onClose={() => setIsFullscreen(false)}
-              />
+              {thesisPdfPath ? (
+                <InlinePdfViewer
+                  blobUrl={thesisPdfPath}
+                  searchText={selectedParagraph?.text.substring(0, 80)}
+                  onClose={() => setIsFullscreen(false)}
+                />
+              ) : (
+                <Card className="h-full flex items-center justify-center">
+                  <p className="text-muted-foreground">No PDF available</p>
+                </Card>
+              )}
             </div>
           ) : (
           <div className="space-y-4">
@@ -2180,100 +2266,187 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           </div>
           )}
 
-          {/* Right: Results */}
-          <div className="space-y-4">
-            {selectedParagraph && (
-              <>
+          {/* Right: Results or List (in fullscreen with toggle) */}
+          <div className="space-y-4 overflow-y-auto" style={{ maxHeight: isFullscreen ? 'calc(100vh - 48px)' : undefined }}>
+            {/* Fullscreen toggle header */}
+            {isFullscreen && (
+              <div className="flex items-center justify-between">
+                <Button
+                  variant={showListInFullscreen ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setShowListInFullscreen(!showListInFullscreen)}
+                >
+                  <List className="h-4 w-4 mr-1" />
+                  {showListInFullscreen ? "Show Details" : "Show List"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsFullscreen(false)}
+                >
+                  <Minimize2 className="h-4 w-4 mr-1" />
+                  Exit Fullscreen
+                </Button>
+              </div>
+            )}
+            
+            {/* Show list in fullscreen when toggled */}
+            {isFullscreen && showListInFullscreen ? (
+              <div className="space-y-4">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium">
-                      {selectedParagraph.sectionType === 'chapter' || selectedParagraph.sectionType === 'section' 
-                        ? `${selectedParagraph.sectionType.charAt(0).toUpperCase() + selectedParagraph.sectionType.slice(1)}: `
-                        : `Paragraph ${selectedIndex! + 1} of ${paragraphs.length}`
-                      }
-                    </span>
-                    {/* View toggle - Paragraphs vs Claims */}
-                    {checkedCount > blueCount && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setShowClaimsView(true)}
-                      >
-                        Claims
-                      </Button>
-                    )}
+                    <Badge variant="outline">{checkableParagraphCount} to check</Badge>
+                    <Badge variant="secondary">{blueCount} skipped</Badge>
                   </div>
-                  <div className="flex gap-2">
-                    {/* View in thesis button */}
-                    {thesisPdfPath && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          // Take first ~50 chars of paragraph for search
-                          const searchText = selectedParagraph.text.substring(0, 80).trim();
-                          setThesisViewerSearchText(searchText);
-                          setThesisViewerOpen(true);
-                        }}
-                      >
-                        <Eye className="h-4 w-4 mr-1" />
-                        View in Thesis
-                      </Button>
-                    )}
-                    {/* Fullscreen toggle */}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setIsFullscreen(!isFullscreen)}
-                    >
-                      {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => navigateParagraph('prev')}
-                      disabled={selectedIndex === 0}
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                      Prev
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => navigateParagraph('next')}
-                      disabled={selectedIndex === paragraphs.length - 1}
-                    >
-                      Next
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
+                  <div className="flex gap-3 text-sm">
+                    {greenCount > 0 && <span className="text-verdict-green">{greenCount} ✓</span>}
+                    {yellowCount > 0 && <span className="text-verdict-yellow">{yellowCount} ⚠</span>}
+                    {redCount > 0 && <span className="text-verdict-red">{redCount} ✗</span>}
+                    {blueCount > 0 && <span className="text-verdict-blue">{blueCount} ○</span>}
                   </div>
                 </div>
-
-                {/* Content area - same for both fullscreen and normal */}
-                {/* Full paragraph text */}
-                <Card className={cn(
-                  "p-4 bg-secondary/30 overflow-y-auto",
-                  isFullscreen ? "max-h-[300px]" : "max-h-[200px]"
-                )}>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-muted-foreground">Paragraph Text</span>
-                    {thesisPdfPath && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setThesisViewerSearchText(selectedParagraph.text.substring(0, 80).trim());
-                          setThesisViewerOpen(true);
-                        }}
-                        className="h-6 text-xs"
-                      >
-                        <Eye className="h-3 w-3 mr-1" />
-                        View in Thesis
-                      </Button>
-                    )}
+                <ScrollArea className="h-[calc(100vh-180px)] border rounded-lg">
+                  <div className="p-2 space-y-1">
+                    {paragraphs.map((p, i) => {
+                      const isSection = p.sectionType === 'chapter' || p.sectionType === 'section';
+                      
+                      return (
+                        <Card
+                          key={i}
+                          className={cn(
+                            "p-3 cursor-pointer transition-all hover:shadow-md border-l-4",
+                            selectedIndex === i && "ring-2 ring-primary",
+                            p.checked ? getColorClass(p.result) : "border-l-transparent",
+                            isSection && "bg-secondary/30",
+                          )}
+                          onClick={() => {
+                            setSelectedIndex(i);
+                            setShowListInFullscreen(false);
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs">{getSectionIcon(p.sectionType)}</span>
+                                {isSection ? (
+                                  <span className="text-xs font-semibold text-primary uppercase">
+                                    {p.sectionType}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs font-medium text-muted-foreground">
+                                    ¶{i + 1}
+                                  </span>
+                                )}
+                                {p.checked && p.result && (
+                                  <VerdictBadge color={p.result.overall_color} size="sm" />
+                                )}
+                              </div>
+                              <p className={cn(
+                                "text-sm",
+                                isSection ? "font-semibold line-clamp-1" : "line-clamp-2"
+                              )}>
+                                {p.text}
+                              </p>
+                            </div>
+                          </div>
+                        </Card>
+                      );
+                    })}
                   </div>
-                  <p className="text-sm whitespace-pre-wrap">{selectedParagraph.text}</p>
-                </Card>
+                </ScrollArea>
+              </div>
+            ) : (
+              <>
+                {selectedParagraph && (
+                  <>
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">
+                          {selectedParagraph.sectionType === 'chapter' || selectedParagraph.sectionType === 'section' 
+                            ? `${selectedParagraph.sectionType.charAt(0).toUpperCase() + selectedParagraph.sectionType.slice(1)}: `
+                            : `Paragraph ${selectedIndex! + 1} of ${paragraphs.length}`
+                          }
+                        </span>
+                        {/* View toggle - Paragraphs vs Claims */}
+                        {checkedCount > blueCount && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setShowClaimsView(true)}
+                          >
+                            Claims
+                          </Button>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        {/* View in thesis button - only in non-fullscreen */}
+                        {!isFullscreen && thesisPdfPath && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              const searchText = selectedParagraph.text.substring(0, 80).trim();
+                              setThesisViewerSearchText(searchText);
+                              setThesisViewerOpen(true);
+                            }}
+                          >
+                            <Eye className="h-4 w-4 mr-1" />
+                            View in Thesis
+                          </Button>
+                        )}
+                        {/* Fullscreen toggle - only in non-fullscreen */}
+                        {!isFullscreen && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setIsFullscreen(true)}
+                          >
+                            <Maximize2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => navigateParagraph('prev')}
+                          disabled={selectedIndex === 0}
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                          Prev
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => navigateParagraph('next')}
+                          disabled={selectedIndex === paragraphs.length - 1}
+                        >
+                          Next
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Content area */}
+                    {/* Full paragraph text */}
+                    <Card className="p-4 bg-secondary/30">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-medium text-muted-foreground">Paragraph Text</span>
+                        {!isFullscreen && thesisPdfPath && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setThesisViewerSearchText(selectedParagraph.text.substring(0, 80).trim());
+                              setThesisViewerOpen(true);
+                            }}
+                            className="h-6 text-xs"
+                          >
+                            <Eye className="h-3 w-3 mr-1" />
+                            View in Thesis
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-sm whitespace-pre-wrap">{selectedParagraph.text}</p>
+                    </Card>
 
                     {/* Result or prompt to check */}
                     {selectedParagraph.checked && selectedParagraph.result ? (
@@ -2283,7 +2456,6 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                           paragraphText={selectedParagraph.text}
                           sources={sources}
                           onClaimClick={(claimIndex) => {
-                            // Find this claim in allClaims and navigate to claims view
                             const claimIdx = allClaims.findIndex(
                               c => c.paragraphIndex === selectedIndex && c.claimIndex === claimIndex
                             );
@@ -2386,14 +2558,16 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                         </p>
                       </Card>
                     )}
-              </>
-            )}
+                  </>
+                )}
 
-            {!selectedParagraph && (
-              <Card className="p-12 text-center">
-                <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                <p className="text-muted-foreground">Select a paragraph to view details</p>
-              </Card>
+                {!selectedParagraph && (
+                  <Card className="p-12 text-center">
+                    <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-muted-foreground">Select a paragraph to view details</p>
+                  </Card>
+                )}
+              </>
             )}
           </div>
         </div>
