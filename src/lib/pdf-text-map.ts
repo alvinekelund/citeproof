@@ -209,7 +209,7 @@ export function buildPageTextFromRegions(regions: TextRegion[]): string {
 
 /**
  * Find the character range where searchText best matches within pageText
- * Uses sliding window character-level matching for precision
+ * Uses multiple strategies for precise character-level matching
  */
 export function findTextRange(
   pageText: string,
@@ -221,54 +221,52 @@ export function findTextRange(
   
   if (normalizedSearch.length < 10) return null;
   
-  // Try exact substring match first
+  // Strategy 1: Try exact substring match
   const exactIndex = normalizedPage.indexOf(normalizedSearch);
   if (exactIndex !== -1) {
     return { start: exactIndex, end: exactIndex + normalizedSearch.length, similarity: 1.0 };
   }
   
-  // Try with progressively shorter prefixes for fuzzy start finding
-  const searchWords = normalizedSearch.split(/\s+/);
+  // Strategy 2: Find longest common substring at the start
+  // This handles minor OCR/encoding differences
+  const searchLen = normalizedSearch.length;
   
-  for (const prefixLen of [8, 6, 5, 4]) {
-    if (searchWords.length < prefixLen) continue;
+  // Try matching first N characters directly (sliding window for start)
+  for (const startLen of [50, 40, 30, 20, 15]) {
+    if (searchLen < startLen) continue;
     
-    const prefix = searchWords.slice(0, prefixLen).join(' ');
-    const prefixIdx = normalizedPage.indexOf(prefix);
+    const searchStart = normalizedSearch.slice(0, startLen);
+    const startIdx = normalizedPage.indexOf(searchStart);
     
-    if (prefixIdx !== -1) {
-      // Found prefix - now find where the match should end
-      // Limit the end to approximately the search text length
-      const expectedEnd = prefixIdx + normalizedSearch.length;
-      const maxEnd = Math.min(normalizedPage.length, expectedEnd + 50);
+    if (startIdx !== -1) {
+      // Found the start - now determine where it ends
+      // Use the search text length as a guide, with some tolerance
+      const expectedEnd = startIdx + searchLen;
+      const endIdx = Math.min(normalizedPage.length, expectedEnd + Math.floor(searchLen * 0.1));
       
-      // Try to find the last few words to confirm the match
-      for (const suffixLen of [4, 3, 2]) {
-        if (searchWords.length < suffixLen) continue;
-        
-        const suffix = searchWords.slice(-suffixLen).join(' ');
-        const suffixSearchStart = prefixIdx + prefix.length;
-        const suffixIdx = normalizedPage.indexOf(suffix, suffixSearchStart);
-        
-        if (suffixIdx !== -1 && suffixIdx < maxEnd) {
-          const matchEnd = suffixIdx + suffix.length;
-          const matchedText = normalizedPage.slice(prefixIdx, matchEnd);
-          const similarity = stringSimilarity(matchedText, normalizedSearch);
-          
-          if (similarity >= minSimilarity) {
-            return { start: prefixIdx, end: matchEnd, similarity };
-          }
-        }
-      }
+      return { 
+        start: startIdx, 
+        end: Math.min(endIdx, startIdx + searchLen + 20), // Cap expansion
+        similarity: 0.9 
+      };
+    }
+  }
+  
+  // Strategy 3: Word-based matching with strict length constraints
+  const searchWords = normalizedSearch.split(/\s+/);
+  const pageWords = normalizedPage.split(/\s+/);
+  
+  if (searchWords.length >= 5) {
+    // Find first 3-4 words
+    const firstPhrase = searchWords.slice(0, 4).join(' ');
+    const firstIdx = normalizedPage.indexOf(firstPhrase);
+    
+    if (firstIdx !== -1) {
+      // Constrain end to approximately the right length
+      const charEstimate = normalizedSearch.length;
+      const endIdx = Math.min(normalizedPage.length, firstIdx + charEstimate + 30);
       
-      // Suffix not found, but prefix was - use estimated length
-      const estimatedEnd = Math.min(prefixIdx + normalizedSearch.length, normalizedPage.length);
-      const matchedText = normalizedPage.slice(prefixIdx, estimatedEnd);
-      const similarity = stringSimilarity(matchedText, normalizedSearch);
-      
-      if (similarity >= minSimilarity * 0.8) {
-        return { start: prefixIdx, end: estimatedEnd, similarity };
-      }
+      return { start: firstIdx, end: endIdx, similarity: 0.85 };
     }
   }
   
@@ -294,25 +292,34 @@ export function findMatchingRegions(
   const range = findTextRange(pageText, searchText, 0.4);
   if (!range) return [];
   
+  // Calculate expected character count for the search text
+  const expectedCharCount = normalizeText(searchText).length;
+  
+  // Limit the range to approximately the search text length
+  const constrainedEnd = Math.min(range.end, range.start + expectedCharCount + 50);
+  
   // Map character range back to regions - be precise about boundaries
   const matchedRegions: TextRegion[] = [];
   let charPos = 0;
+  let totalMatchedChars = 0;
   
   for (const region of regions) {
     const regionStart = charPos;
     const regionEnd = charPos + region.text.length;
     
-    // Only include regions that significantly overlap with the matched range
-    // At least half the region should be within the match
+    // Check if region overlaps with the constrained match range
     const overlapStart = Math.max(regionStart, range.start);
-    const overlapEnd = Math.min(regionEnd, range.end);
+    const overlapEnd = Math.min(regionEnd, constrainedEnd);
     const overlapLength = Math.max(0, overlapEnd - overlapStart);
-    const regionLength = region.text.length;
     
-    // Include if >50% of region is in match OR if it's at the boundaries
-    const overlapRatio = regionLength > 0 ? overlapLength / regionLength : 0;
-    if (overlapRatio > 0.3) {
+    if (overlapLength > 0) {
       matchedRegions.push(region);
+      totalMatchedChars += region.text.length;
+      
+      // Stop if we've matched enough characters (with 30% buffer)
+      if (totalMatchedChars > expectedCharCount * 1.3) {
+        break;
+      }
     }
     
     charPos = regionEnd + 1; // +1 for space
@@ -334,26 +341,47 @@ export function findClaimRegions(
   }
   
   const pageText = buildPageTextFromRegions(paragraphRegions);
-  const range = findTextRange(pageText, claimText, 0.4);
+  const normalizedClaim = normalizeText(claimText).toLowerCase();
+  const normalizedPage = normalizeText(pageText).toLowerCase();
   
-  if (!range) return []; // No match found - return empty, not fallback
+  // Try direct substring match first
+  let startIdx = normalizedPage.indexOf(normalizedClaim);
+  let endIdx = startIdx !== -1 ? startIdx + normalizedClaim.length : -1;
+  
+  // If not found, try first 30 chars
+  if (startIdx === -1 && normalizedClaim.length > 30) {
+    const prefix = normalizedClaim.slice(0, 30);
+    startIdx = normalizedPage.indexOf(prefix);
+    if (startIdx !== -1) {
+      endIdx = Math.min(normalizedPage.length, startIdx + normalizedClaim.length + 20);
+    }
+  }
+  
+  if (startIdx === -1) return []; // No match found
+  
+  // Constrain to claim length
+  const expectedLen = normalizedClaim.length;
+  const constrainedEnd = Math.min(endIdx, startIdx + expectedLen + 30);
   
   // Map to regions with strict boundaries
   const matchedRegions: TextRegion[] = [];
   let charPos = 0;
+  let totalChars = 0;
   
   for (const region of paragraphRegions) {
     const regionStart = charPos;
     const regionEnd = charPos + region.text.length;
     
-    const overlapStart = Math.max(regionStart, range.start);
-    const overlapEnd = Math.min(regionEnd, range.end);
+    const overlapStart = Math.max(regionStart, startIdx);
+    const overlapEnd = Math.min(regionEnd, constrainedEnd);
     const overlapLength = Math.max(0, overlapEnd - overlapStart);
-    const regionLength = region.text.length;
     
-    const overlapRatio = regionLength > 0 ? overlapLength / regionLength : 0;
-    if (overlapRatio > 0.3) {
+    if (overlapLength > 0) {
       matchedRegions.push(region);
+      totalChars += region.text.length;
+      
+      // Stop once we have enough
+      if (totalChars > expectedLen * 1.2) break;
     }
     
     charPos = regionEnd + 1;
