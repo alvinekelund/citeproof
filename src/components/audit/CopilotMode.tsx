@@ -12,6 +12,7 @@ import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, Thesi
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
 import { PdfViewerDialog } from "@/components/sources/PdfViewerDialog";
+import { InlinePdfViewer } from "@/components/sources/InlinePdfViewer";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingDataAsync, getSessionMissingDataAsync, deleteSessionMissingDataAsync, storeSessionPdf, getSessionPdf, deleteSessionPdf } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
@@ -1754,38 +1755,16 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             ? "fixed inset-0 z-50 bg-background p-6 overflow-hidden grid gap-6 grid-cols-2"
             : "grid gap-6 lg:grid-cols-2"
         )}>
-          {/* Left side: In fullscreen = placeholder (PDF opens in dialog), otherwise = Claims List */}
+          {/* Left side: In fullscreen = PDF viewer, otherwise = Claims List */}
           {isFullscreen && thesisPdfPath ? (
-            <div className="h-full overflow-hidden rounded-lg border bg-secondary/10 flex flex-col">
-              <div className="flex items-center justify-between p-2 border-b bg-secondary/30">
-                <span className="text-sm font-medium">Thesis Document</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIsFullscreen(false)}
-                >
-                  <Minimize2 className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="flex-1 flex items-center justify-center p-4">
-                <div className="text-center space-y-4">
-                  <FileText className="h-16 w-16 mx-auto text-muted-foreground" />
-                  <p className="text-muted-foreground">PDF viewing in panel not supported by browser.</p>
-                  <Button
-                    variant="default"
-                    onClick={() => {
-                      const searchText = selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
-                        ? allClaims[selectedClaimIdx].paragraphText.substring(0, 80) 
-                        : '';
-                      setThesisViewerSearchText(searchText);
-                      setThesisViewerOpen(true);
-                    }}
-                  >
-                    <Eye className="h-4 w-4 mr-2" />
-                    Open PDF Viewer
-                  </Button>
-                </div>
-              </div>
+            <div className="h-[calc(100vh-48px)]">
+              <InlinePdfViewer
+                filePath={thesisPdfPath}
+                searchText={selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
+                  ? allClaims[selectedClaimIdx].paragraphText.substring(0, 80) 
+                  : undefined}
+                onClose={() => setIsFullscreen(false)}
+              />
             </div>
           ) : (
             <div className="space-y-4">
@@ -2014,36 +1993,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             ? "fixed inset-0 z-50 bg-background p-6 overflow-hidden grid gap-6 grid-cols-2" 
             : "grid gap-6 lg:grid-cols-2"
         )}>
-          {/* Left side: In fullscreen = placeholder (PDF opens in dialog), otherwise = Paragraph List */}
+          {/* Left side: In fullscreen = PDF viewer, otherwise = Paragraph List */}
           {isFullscreen && thesisPdfPath ? (
-            <div className="h-full overflow-hidden rounded-lg border bg-secondary/10 flex flex-col">
-              <div className="flex items-center justify-between p-2 border-b bg-secondary/30">
-                <span className="text-sm font-medium">Thesis Document</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIsFullscreen(false)}
-                >
-                  <Minimize2 className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="flex-1 flex items-center justify-center p-4">
-                <div className="text-center space-y-4">
-                  <FileText className="h-16 w-16 mx-auto text-muted-foreground" />
-                  <p className="text-muted-foreground">PDF viewing in panel not supported by browser.</p>
-                  <Button
-                    variant="default"
-                    onClick={() => {
-                      const searchText = selectedParagraph?.text.substring(0, 80) || '';
-                      setThesisViewerSearchText(searchText);
-                      setThesisViewerOpen(true);
-                    }}
-                  >
-                    <Eye className="h-4 w-4 mr-2" />
-                    Open PDF Viewer
-                  </Button>
-                </div>
-              </div>
+            <div className="h-[calc(100vh-48px)]">
+              <InlinePdfViewer
+                filePath={thesisPdfPath}
+                searchText={selectedParagraph?.text.substring(0, 80)}
+                onClose={() => setIsFullscreen(false)}
+              />
             </div>
           ) : (
           <div className="space-y-4">
