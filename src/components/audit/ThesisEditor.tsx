@@ -174,12 +174,12 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     return counts;
   }, [allClaims, blueParagraphs.length]);
 
-  // Load PDF for overlay mode
+  // Load PDF immediately when available (preload for faster tab switching)
   useEffect(() => {
-    if (viewMode === 'pdf' && thesisFilePath && !pdfDoc) {
+    if (thesisFilePath && !pdfDoc && !isPdfLoading) {
       loadThesisPdf();
     }
-  }, [viewMode, thesisFilePath]);
+  }, [thesisFilePath]);
 
   // Render PDF page when it changes
   useEffect(() => {
@@ -985,15 +985,25 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
               </div>
             </div>
             <ScrollArea className="h-[calc(100vh-280px)]" ref={pdfContainerRef}>
-              <div className="p-4 flex justify-center">
+              <div className="p-4 flex justify-center min-h-[400px]">
                 {isPdfLoading ? (
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <div className="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full" />
-                    Loading PDF...
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground justify-center">
+                    <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full" />
+                    <span>Loading PDF...</span>
                   </div>
                 ) : !thesisFilePath ? (
-                  <div className="text-muted-foreground text-sm">
-                    PDF not available. Upload a PDF thesis to use this view.
+                  <div className="flex flex-col items-center gap-3 text-muted-foreground justify-center">
+                    <File className="h-12 w-12 opacity-30" />
+                    <div className="text-center">
+                      <p className="font-medium">PDF not available</p>
+                      <p className="text-sm mt-1">Upload a PDF thesis file to use this view.</p>
+                      <p className="text-xs mt-2 opacity-70">Sessions created before PDF storage was enabled won't have the PDF available.</p>
+                    </div>
+                  </div>
+                ) : !pdfDoc ? (
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground justify-center">
+                    <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full" />
+                    <span>Preparing PDF...</span>
                   </div>
                 ) : (
                   <canvas 
