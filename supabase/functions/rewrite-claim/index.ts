@@ -22,7 +22,7 @@ serve(async (req) => {
     console.log(`Rewriting claim in ${mode} mode:`, claim.substring(0, 100));
 
     const sourceList = sources.map((s: any) => 
-      `- ${s.in_text_label || s.shorthand_id}: "${s.title}" by ${s.authors} (${s.year})`
+      `- ${s.in_text_label || s.shorthand_id}: "${s.title}" by ${s.authors} (${s.year})${s.extracted_text ? `\n  Content preview: ${s.extracted_text.substring(0, 2000)}...` : ''}`
     ).join('\n');
 
     let prompt = '';
@@ -43,11 +43,17 @@ Rules:
 3. Use proper in-text citation format matching the source's label
 4. Keep the core meaning but adjust wording to match what the source actually supports
 5. If no source is truly relevant, suggest softening the claim with hedging language
+6. IMPORTANT: Include a direct quote or specific evidence from the source content that supports the claim
 
 Respond with JSON:
 {
   "rewritten_claim": "The rewritten sentence with proper citation",
   "suggested_source": "The source label used",
+  "evidence": {
+    "excerpt": "Direct quote from the source that supports this claim",
+    "page_number": 1,
+    "section": "Section name if identifiable"
+  },
   "explanation": "Brief explanation of the change"
 }`;
     } else {
