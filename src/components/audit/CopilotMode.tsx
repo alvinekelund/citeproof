@@ -1759,9 +1759,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           {/* Left side: Always PDF viewer in fullscreen, otherwise Claims List */}
           {isFullscreen ? (
             <div className="h-[calc(100vh-48px)]">
-              {thesisPdfPath ? (
+              {(thesisPdfPath || (file instanceof File && file.type === 'application/pdf')) ? (
                 <InlinePdfViewer
-                  blobUrl={thesisPdfPath}
+                  blobUrl={thesisPdfPath || URL.createObjectURL(file as File)}
                   searchText={selectedClaimIdx !== null && allClaims[selectedClaimIdx] 
                     ? allClaims[selectedClaimIdx].paragraphText.substring(0, 80) 
                     : undefined}
@@ -1961,7 +1961,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                           }}
                         >
                           <div className="flex items-center justify-between mb-1">
-                            <p className="text-xs text-muted-foreground font-medium">¶{selectedClaim.paragraphIndex + 1} Context:</p>
+                            <p className="text-xs text-muted-foreground font-medium">¶{selectedClaim.displayId.split('.')[0]} Context:</p>
                             <span className="text-xs text-primary">Click to view paragraph →</span>
                           </div>
                           <p className="text-sm whitespace-pre-wrap">{selectedClaim.paragraphText}</p>
@@ -2076,9 +2076,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           {/* Left side: Always PDF viewer in fullscreen, otherwise Paragraph List */}
           {isFullscreen ? (
             <div className="h-[calc(100vh-48px)]">
-              {thesisPdfPath ? (
+              {(thesisPdfPath || (file instanceof File && file.type === 'application/pdf')) ? (
                 <InlinePdfViewer
-                  blobUrl={thesisPdfPath}
+                  blobUrl={thesisPdfPath || URL.createObjectURL(file as File)}
                   searchText={selectedParagraph?.text.substring(0, 80)}
                   onClose={() => setIsFullscreen(false)}
                 />
