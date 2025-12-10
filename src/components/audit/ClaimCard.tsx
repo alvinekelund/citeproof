@@ -19,7 +19,7 @@ import { toast } from "@/hooks/use-toast";
 interface ClaimCardProps {
   claim: Claim;
   sources: Source[];
-  onOpenSource?: (source: Source, pageNumber: number) => void;
+  onOpenSource?: (source: Source, pageNumber: number, excerpt?: string) => void;
 }
 
 function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | 'yellow' | 'red' {
@@ -101,16 +101,18 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
   const handleOpenSource = async (label: string, pageNumber: number, excerpt?: string) => {
     const source = findSourceByLabel(label);
     if (!source) {
-      if (sources.length > 0 && onOpenSource) {
-        onOpenSource(sources[0], pageNumber);
-      }
+      toast({
+        title: "Source not found",
+        description: `Could not find source matching "${label}" in the library`,
+        variant: "destructive",
+      });
       return;
     }
 
     const isPdf = source.file_path.toLowerCase().endsWith('.pdf');
     
     if (isPdf && onOpenSource) {
-      onOpenSource(source, pageNumber);
+      onOpenSource(source, pageNumber, excerpt);
     } else {
       setIsLoadingText(true);
       setTextViewerTitle(source.original_filename);
