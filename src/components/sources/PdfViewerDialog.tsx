@@ -23,9 +23,10 @@ interface PdfViewerDialogProps {
   filePath: string | null;
   fileName: string;
   initialPage?: number;
+  searchText?: string; // Text excerpt to highlight
 }
 
-export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initialPage = 1 }: PdfViewerDialogProps) {
+export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initialPage = 1, searchText }: PdfViewerDialogProps) {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(initialPage);
   const [totalPages, setTotalPages] = useState(0);
@@ -34,8 +35,10 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
   const [error, setError] = useState<string | null>(null);
   const [pageInputValue, setPageInputValue] = useState(String(initialPage));
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [highlightRects, setHighlightRects] = useState<{ x: number; y: number; width: number; height: number }[]>([]);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const highlightCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<pdfjsLib.RenderTask | null>(null);
 
@@ -125,6 +128,12 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       
+      // Also set highlight canvas dimensions
+      if (highlightCanvasRef.current) {
+        highlightCanvasRef.current.height = viewport.height;
+        highlightCanvasRef.current.width = viewport.width;
+      }
+      
       const renderContext = {
         canvasContext: context,
         viewport: viewport,
@@ -132,10 +141,80 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
       
       renderTaskRef.current = page.render(renderContext);
       await renderTaskRef.current.promise;
+      
+      // After rendering, search for text to highlight
+      if (searchText) {
+        await highlightSearchText(page, viewport);
+      } else {
+        setHighlightRects([]);
+      }
     } catch (err: any) {
       if (err?.name !== 'RenderingCancelledException') {
         console.error("Error rendering page:", err);
       }
+    }
+  };
+  
+  const highlightSearchText = async (page: pdfjsLib.PDFPageProxy, viewport: pdfjsLib.PageViewport) => {
+    try {
+      const textContent = await page.getTextContent();
+      const textItems = textContent.items as Array<{
+        str: string;
+        transform: number[];
+        width: number;
+        height: number;
+      }>;
+      
+      // Clean search text for matching
+      const searchWords = searchText!
+        .toLowerCase()
+        .replace(/[^\w\s]/g, '')
+        .split(/\s+/)
+        .filter(w => w.length > 3)
+        .slice(0, 8);
+      
+      if (searchWords.length === 0) {
+        setHighlightRects([]);
+        return;
+      }
+      
+      const rects: { x: number; y: number; width: number; height: number }[] = [];
+      
+      // Find text items that match search words
+      for (const item of textItems) {
+        const itemText = item.str.toLowerCase().replace(/[^\w\s]/g, '');
+        const matchCount = searchWords.filter(word => itemText.includes(word)).length;
+        
+        // Highlight if at least 2 words match or if it's a substantial partial match
+        if (matchCount >= 2 || (matchCount >= 1 && itemText.length > 20)) {
+          const [a, b, c, d, tx, ty] = item.transform;
+          
+          // Transform coordinates to viewport
+          const x = tx * viewport.scale;
+          const y = viewport.height - (ty * viewport.scale);
+          const width = item.width * viewport.scale;
+          const height = Math.abs(d) * viewport.scale * 1.2;
+          
+          rects.push({ x, y: y - height, width, height });
+        }
+      }
+      
+      setHighlightRects(rects);
+      
+      // Draw highlights on the overlay canvas
+      if (highlightCanvasRef.current && rects.length > 0) {
+        const ctx = highlightCanvasRef.current.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, highlightCanvasRef.current.width, highlightCanvasRef.current.height);
+          ctx.fillStyle = 'rgba(250, 204, 21, 0.35)'; // Yellow highlight
+          for (const rect of rects) {
+            ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error highlighting text:', err);
+      setHighlightRects([]);
     }
   };
 
@@ -293,11 +372,18 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
           )}
           
           {!isLoading && !error && (
-            <canvas 
-              ref={canvasRef} 
-              className="shadow-lg bg-background"
-              style={{ maxWidth: '100%', height: 'auto' }}
-            />
+            <div className="relative">
+              <canvas 
+                ref={canvasRef} 
+                className="shadow-lg bg-background"
+                style={{ maxWidth: '100%', height: 'auto' }}
+              />
+              <canvas 
+                ref={highlightCanvasRef}
+                className="absolute top-0 left-0 pointer-events-none"
+                style={{ maxWidth: '100%', height: 'auto' }}
+              />
+            </div>
           )}
         </div>
       </DialogContent>

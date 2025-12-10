@@ -889,6 +889,11 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       if (i < uncheckedParagraphs.length && !abortRef.current) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
+      
+      // Additional delay between each paragraph within a batch to reduce TPM
+      if (!abortRef.current && i + batch.length < uncheckedParagraphs.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
 
     setIsBatchChecking(false);

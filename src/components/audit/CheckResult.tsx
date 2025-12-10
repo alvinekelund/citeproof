@@ -15,10 +15,12 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerSource, setViewerSource] = useState<Source | null>(null);
   const [viewerPage, setViewerPage] = useState(1);
+  const [viewerSearchText, setViewerSearchText] = useState<string | undefined>(undefined);
 
-  const handleOpenSource = (source: Source, pageNumber: number) => {
+  const handleOpenSource = (source: Source, pageNumber: number, excerpt?: string) => {
     setViewerSource(source);
     setViewerPage(pageNumber);
+    setViewerSearchText(excerpt);
     setViewerOpen(true);
   };
 
@@ -85,6 +87,7 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
         filePath={viewerSource?.file_path || null}
         fileName={viewerSource?.original_filename || "Document"}
         initialPage={viewerPage}
+        searchText={viewerSearchText}
       />
     </div>
   );
