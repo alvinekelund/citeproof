@@ -107,7 +107,6 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
       return originalText.length;
     }
     const origPos = normalizedToOriginal[normPos] ?? (isEnd ? originalText.length : 0);
-    // For end positions, include the full character
     return isEnd ? Math.min(origPos + 1, originalText.length) : origPos;
   };
   
@@ -134,8 +133,8 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
     };
   }
   
-  // Strategy 2: Try matching prefixes (relaxed thresholds)
-  for (const prefixLen of [60, 40, 30, 20]) {
+  // Strategy 2: Try matching prefixes of various lengths
+  for (const prefixLen of [50, 40, 30, 25, 20, 15]) {
     if (normalizedSearch.length >= prefixLen) {
       const prefix = normalizedSearch.slice(0, prefixLen);
       const prefixIdx = normalizedText.indexOf(prefix);
@@ -149,59 +148,72 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
     }
   }
   
-  // Strategy 3: Find distinctive words - relaxed requirements
-  const distinctiveSearchWords = getDistinctiveWords(normalizedSearch, 5);
+  // Strategy 3: Try matching suffixes (end of search text)
+  for (const suffixLen of [40, 30, 20, 15]) {
+    if (normalizedSearch.length >= suffixLen) {
+      const suffix = normalizedSearch.slice(-suffixLen);
+      const suffixIdx = normalizedText.indexOf(suffix);
+      if (suffixIdx !== -1) {
+        const startIdx = Math.max(0, suffixIdx - normalizedSearch.length + suffixLen);
+        return { 
+          start: toOriginal(startIdx), 
+          end: toOriginal(suffixIdx + suffixLen, true),
+          confidence: 0.85 
+        };
+      }
+    }
+  }
+  
+  // Strategy 4: Find distinctive words with relaxed requirements
+  const distinctiveSearchWords = getDistinctiveWords(normalizedSearch, 4); // Lower min length
   
   if (distinctiveSearchWords.length >= 2) {
-    // Find the first distinctive word
-    for (const word of distinctiveSearchWords.slice(0, 4)) {
+    for (const word of distinctiveSearchWords.slice(0, 5)) {
       const wordIdx = normalizedText.indexOf(word);
       if (wordIdx !== -1) {
-        // Check if other distinctive words are nearby (within 400 chars)
-        const contextStart = Math.max(0, wordIdx - 150);
-        const contextEnd = Math.min(normalizedText.length, wordIdx + 400);
+        const contextStart = Math.max(0, wordIdx - 100);
+        const contextEnd = Math.min(normalizedText.length, wordIdx + normalizedSearch.length + 100);
         const context = normalizedText.slice(contextStart, contextEnd);
         let matchCount = 0;
         
         for (const sw of distinctiveSearchWords) {
-          if (context.includes(sw)) {
-            matchCount++;
-          }
+          if (context.includes(sw)) matchCount++;
         }
         
-        // Require at least 40% of distinctive words (minimum 2)
-        const requiredMatches = Math.max(2, Math.ceil(distinctiveSearchWords.length * 0.4));
+        // Require just 30% match (min 2 words)
+        const requiredMatches = Math.max(2, Math.ceil(distinctiveSearchWords.length * 0.3));
         if (matchCount >= requiredMatches) {
+          const matchStart = contextStart + (wordIdx - contextStart);
           return { 
-            start: toOriginal(Math.max(0, wordIdx - 30)), 
-            end: toOriginal(Math.min(wordIdx + normalizedSearch.length + 30, normalizedText.length), true),
-            confidence: 0.75 
+            start: toOriginal(Math.max(0, matchStart - 20)), 
+            end: toOriginal(Math.min(matchStart + normalizedSearch.length + 20, normalizedText.length), true),
+            confidence: 0.7 
           };
         }
       }
     }
   }
   
-  // Strategy 4: Sliding window Levenshtein for short-medium searches
-  if (normalizedSearch.length >= 25 && normalizedSearch.length <= 150) {
-    const searchLen = normalizedSearch.length;
-    const maxDist = Math.floor(searchLen * 0.15); // 15% tolerance
+  // Strategy 5: Middle section match (for long excerpts where start/end might be cut off)
+  if (normalizedSearch.length >= 60) {
+    const middleStart = Math.floor(normalizedSearch.length * 0.3);
+    const middleEnd = Math.floor(normalizedSearch.length * 0.7);
+    const middleSection = normalizedSearch.slice(middleStart, middleEnd);
     
-    // Sample every 15 characters for efficiency
-    for (let i = 0; i <= normalizedText.length - searchLen; i += 15) {
-      const window = normalizedText.slice(i, i + searchLen);
-      const dist = levenshtein(window, normalizedSearch);
-      if (dist <= maxDist) {
-        return { 
-          start: toOriginal(i), 
-          end: toOriginal(i + searchLen, true), 
-          confidence: 0.7 
+    if (middleSection.length >= 20) {
+      const middleIdx = normalizedText.indexOf(middleSection);
+      if (middleIdx !== -1) {
+        const estimatedStart = Math.max(0, middleIdx - middleStart);
+        const estimatedEnd = Math.min(normalizedText.length, estimatedStart + normalizedSearch.length);
+        return {
+          start: toOriginal(estimatedStart),
+          end: toOriginal(estimatedEnd, true),
+          confidence: 0.65
         };
       }
     }
   }
   
-  // No match found - return null
   return null;
 }
 
