@@ -487,7 +487,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&|and)\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)?(?:\s+et\s+al\.?)?)\s*\((\d{4}[a-z]?)\)/gi,
     ];
     
-    // Normalize for matching
+    // Normalize for matching - extract core letters only
     const normalizeForKey = (str: string): string => {
       return str
         .normalize('NFD')
@@ -496,20 +496,31 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         .replace(/[^a-z]/g, '');
     };
     
+    // Extract year from various string formats
+    const extractYear = (str: string): string | null => {
+      const match = str.match(/(\d{4})/);
+      return match ? match[1] : null;
+    };
+    
     // Extract author-year pairs from paragraph
     const detectedPairs = new Set<string>();
+    const detectedAuthors = new Set<string>(); // Just author names for fuzzy matching
+    const detectedYears = new Set<string>();
+    
     for (const pattern of citationPatterns) {
       let match;
       while ((match = pattern.exec(paragraphText)) !== null) {
         const authorPart = match[1].replace(/\s+et\s+al\.?/gi, '').replace(/\s*[&]\s*.*$/, '').replace(/\s+and\s+.*$/i, '').trim();
         const year = match[2].replace(/[a-z]$/, '');
-        const key = `${normalizeForKey(authorPart)}|${year}`;
+        const normalizedAuthor = normalizeForKey(authorPart);
+        const key = `${normalizedAuthor}|${year}`;
         detectedPairs.add(key);
+        detectedAuthors.add(normalizedAuthor);
+        detectedYears.add(year);
       }
     }
     
     if (detectedPairs.size === 0) {
-      // No citations detected - return empty array (don't send irrelevant sources)
       console.log('[getRelevantSources] No citations detected in paragraph, returning empty array');
       return [];
     }
@@ -521,54 +532,69 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     const matchedIds = new Set<string>();
     const unmatchedPairs = new Set(detectedPairs);
     
-    for (const source of allSources) {
-      // Build keys from source's in_text_label
-      const sourceKeys = new Set<string>();
-      
-      if (source.in_text_label) {
-        const labelMatch = source.in_text_label.match(/([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
-        if (labelMatch && source.year) {
-          sourceKeys.add(`${normalizeForKey(labelMatch[1])}|${source.year}`);
-        }
-        // Also try extracting year from the label itself if source.year is missing
-        const yearFromLabel = source.in_text_label.match(/(\d{4})/);
-        if (labelMatch && yearFromLabel) {
-          sourceKeys.add(`${normalizeForKey(labelMatch[1])}|${yearFromLabel[1]}`);
-        }
-      }
-      
-      if (source.authors && source.year) {
-        // Extract first surname from authors
-        const authorsStr = source.authors;
-        const firstSurnameMatch = authorsStr.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
-        if (firstSurnameMatch) {
-          sourceKeys.add(`${normalizeForKey(firstSurnameMatch[1])}|${source.year}`);
-        }
-      }
-      
-      // Also try title-based matching for sources without proper author/year
-      if (source.title && source.year) {
-        const titleFirstWord = source.title.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
-        if (titleFirstWord) {
-          sourceKeys.add(`${normalizeForKey(titleFirstWord[1])}|${source.year}`);
-        }
-      }
-      
-      // Check if any source key matches any detected pair
+    // Helper to try matching a source
+    const tryMatchSource = (source: Source, sourceKeys: Set<string>, matchReason: string) => {
       for (const sourceKey of sourceKeys) {
         if (detectedPairs.has(sourceKey)) {
           if (!matchedIds.has(source.id)) {
             matchedSources.push(source);
             matchedIds.add(source.id);
             unmatchedPairs.delete(sourceKey);
-            console.log(`[getRelevantSources] Matched source: ${source.in_text_label || source.shorthand_id} (key: ${sourceKey})`);
+            console.log(`[getRelevantSources] Matched: ${source.in_text_label || source.shorthand_id} via ${matchReason} (key: ${sourceKey})`);
           }
-          break;
+          return true;
         }
       }
+      return false;
+    };
+    
+    // First pass: exact key matching
+    for (const source of allSources) {
+      const sourceKeys = new Set<string>();
+      
+      // Try in_text_label
+      if (source.in_text_label) {
+        const labelMatch = source.in_text_label.match(/([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
+        const yearFromLabel = extractYear(source.in_text_label);
+        if (labelMatch) {
+          const normalizedLabel = normalizeForKey(labelMatch[1]);
+          if (source.year) sourceKeys.add(`${normalizedLabel}|${source.year}`);
+          if (yearFromLabel) sourceKeys.add(`${normalizedLabel}|${yearFromLabel}`);
+        }
+      }
+      
+      // Try authors field
+      if (source.authors) {
+        const firstSurnameMatch = source.authors.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
+        if (firstSurnameMatch) {
+          const normalizedAuthor = normalizeForKey(firstSurnameMatch[1]);
+          if (source.year) sourceKeys.add(`${normalizedAuthor}|${source.year}`);
+          // Also try year from in_text_label if source.year is null
+          const labelYear = source.in_text_label ? extractYear(source.in_text_label) : null;
+          if (labelYear) sourceKeys.add(`${normalizedAuthor}|${labelYear}`);
+        }
+      }
+      
+      // Try original_filename (e.g., "Kanbach_2024.pdf")
+      if (source.original_filename) {
+        const filenameMatch = source.original_filename.match(/([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)[_\-\s]*(\d{4})/i);
+        if (filenameMatch) {
+          sourceKeys.add(`${normalizeForKey(filenameMatch[1])}|${filenameMatch[2]}`);
+        }
+      }
+      
+      // Try shorthand_id (e.g., "kanbach-2024")
+      if (source.shorthand_id) {
+        const shorthandMatch = source.shorthand_id.match(/([a-zA-Z]+)[_\-]?(\d{4})/i);
+        if (shorthandMatch) {
+          sourceKeys.add(`${normalizeForKey(shorthandMatch[1])}|${shorthandMatch[2]}`);
+        }
+      }
+      
+      tryMatchSource(source, sourceKeys, 'exact');
     }
     
-    // Second pass: try to match unmatched citations by partial/fuzzy matching on shorthand_id or in_text_label
+    // Second pass: fuzzy matching for unmatched pairs
     if (unmatchedPairs.size > 0) {
       for (const unmatchedKey of Array.from(unmatchedPairs)) {
         const [authorPart, yearPart] = unmatchedKey.split('|');
@@ -576,48 +602,73 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         for (const source of allSources) {
           if (matchedIds.has(source.id)) continue;
           
-          // Try matching shorthand_id (e.g., "brynjolfsson-2020")
+          // Get source year from any available field
+          const sourceYear = source.year?.toString() || 
+            extractYear(source.in_text_label || '') || 
+            extractYear(source.original_filename || '') ||
+            extractYear(source.shorthand_id || '');
+          
+          if (!sourceYear || sourceYear !== yearPart) continue;
+          
+          // Try partial author matching (first 4+ chars)
+          const shortAuthor = authorPart.slice(0, 4);
+          
+          // Check shorthand_id
           const shorthandLower = (source.shorthand_id || '').toLowerCase();
-          if (shorthandLower.includes(authorPart) && shorthandLower.includes(yearPart)) {
+          if (shorthandLower.includes(shortAuthor)) {
             matchedSources.push(source);
             matchedIds.add(source.id);
             unmatchedPairs.delete(unmatchedKey);
-            console.log(`[getRelevantSources] Matched by shorthand_id: ${source.shorthand_id} for ${unmatchedKey}`);
+            console.log(`[getRelevantSources] Fuzzy matched via shorthand_id: ${source.shorthand_id} for ${unmatchedKey}`);
             break;
           }
           
-          // Try matching in_text_label loosely
-          const labelLower = (source.in_text_label || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-          if (labelLower.includes(authorPart) && labelLower.includes(yearPart)) {
+          // Check in_text_label
+          const labelLower = normalizeForKey(source.in_text_label || '');
+          if (labelLower.includes(shortAuthor)) {
             matchedSources.push(source);
             matchedIds.add(source.id);
             unmatchedPairs.delete(unmatchedKey);
-            console.log(`[getRelevantSources] Matched by in_text_label (fuzzy): ${source.in_text_label} for ${unmatchedKey}`);
+            console.log(`[getRelevantSources] Fuzzy matched via in_text_label: ${source.in_text_label} for ${unmatchedKey}`);
+            break;
+          }
+          
+          // Check authors field
+          const authorsLower = normalizeForKey(source.authors || '');
+          if (authorsLower.includes(shortAuthor)) {
+            matchedSources.push(source);
+            matchedIds.add(source.id);
+            unmatchedPairs.delete(unmatchedKey);
+            console.log(`[getRelevantSources] Fuzzy matched via authors: ${source.authors} for ${unmatchedKey}`);
+            break;
+          }
+          
+          // Check original_filename
+          const filenameLower = normalizeForKey(source.original_filename || '');
+          if (filenameLower.includes(shortAuthor)) {
+            matchedSources.push(source);
+            matchedIds.add(source.id);
+            unmatchedPairs.delete(unmatchedKey);
+            console.log(`[getRelevantSources] Fuzzy matched via filename: ${source.original_filename} for ${unmatchedKey}`);
             break;
           }
         }
       }
     }
     
-    // Log unmatched citations for debugging
+    // Log unmatched for debugging
     if (unmatchedPairs.size > 0) {
-      console.warn('[getRelevantSources] UNMATCHED citation pairs (sources not found in library):', Array.from(unmatchedPairs));
-      // Log all sources for debugging
-      console.log('[getRelevantSources] Available sources for matching:', allSources.map(s => ({
+      console.warn('[getRelevantSources] UNMATCHED:', Array.from(unmatchedPairs));
+      console.log('[getRelevantSources] Available sources:', allSources.map(s => ({
         shorthand_id: s.shorthand_id,
         in_text_label: s.in_text_label,
         authors: s.authors,
         year: s.year,
+        original_filename: s.original_filename,
       })));
     }
     
-    console.log(`[getRelevantSources] Matched ${matchedSources.length} sources out of ${allSources.length} total`);
-    
-    // Only return matched sources - NO FALLBACK to avoid sending uncited sources
-    if (matchedSources.length === 0) {
-      console.log('[getRelevantSources] No sources matched detected citations - this may indicate a library gap');
-    }
-    
+    console.log(`[getRelevantSources] Matched ${matchedSources.length}/${allSources.length} sources`);
     return matchedSources;
   };
 
@@ -653,6 +704,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     const estimatedInputTokens = Math.ceil(totalInputChars / 4); // ~4 chars per token
     console.log(`Checking paragraph with ${relevantSources.length} relevant sources (of ${sourcesWithText.length} total, ~${estimatedInputTokens.toLocaleString()} tokens)`);
     
+    // REDUCED payload to 40K chars per source to stay under TPM limits
     const sourcePayload = relevantSources.map(s => ({
       id: s.id,
       in_text_label: s.in_text_label,
@@ -660,8 +712,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       title: s.title,
       authors: s.authors,
       year: s.year,
-      // Increased limit since we're sending fewer sources
-      extracted_text: s.extracted_text ? s.extracted_text.substring(0, 80000) : undefined,
+      extracted_text: s.extracted_text ? s.extracted_text.substring(0, 40000) : undefined,
     }));
 
     let lastError: any = null;
@@ -891,15 +942,16 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setIsBatchChecking(true);
     abortRef.current = false;
     setBatchProgress(0);
-    setCurrentBatchSize(3); // Reset batch size
-    setTokenUsage({ input: 0, output: 0 }); // Reset token usage
+    setCurrentBatchSize(2); // Start smaller to avoid TPM limits
+    setTokenUsage({ input: 0, output: 0 });
 
     const totalToCheck = uncheckedParagraphs.length;
     let completed = 0;
-    let batchSize = 3; // Start with 3 parallel requests
+    let batchSize = 2; // Start with 2 concurrent requests (reduced from 3)
     let consecutiveRateLimits = 0;
+    const BASE_DELAY_MS = 2000; // 2 second base delay between batches
 
-    // Process in batches with adaptive sizing
+    // Process in batches with adaptive sizing and delays
     let i = 0;
     while (i < uncheckedParagraphs.length) {
       if (abortRef.current) {
@@ -910,16 +962,27 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       const batch = uncheckedParagraphs.slice(i, i + batchSize);
       setCurrentBatchSize(batchSize);
       
-      // Run batch in parallel with retry logic
-      const results = await Promise.all(batch.map(async (paragraph) => {
-        if (abortRef.current) return { success: false, rateLimited: false };
+      // Run batch SEQUENTIALLY to reduce TPM spikes
+      const results: { success: boolean; rateLimited: boolean }[] = [];
+      for (const paragraph of batch) {
+        if (abortRef.current) {
+          results.push({ success: false, rateLimited: false });
+          continue;
+        }
+        
         const result = await checkParagraphWithRetry(paragraph.index, 5, true);
+        results.push(result);
+        
         if (result.success) {
           completed++;
           setBatchProgress((completed / totalToCheck) * 100);
         }
-        return result;
-      }));
+        
+        // Delay between each paragraph to spread out TPM
+        if (!abortRef.current && batch.indexOf(paragraph) < batch.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5s between paragraphs
+        }
+      }
 
       // Check for rate limits in this batch
       const rateLimitedCount = results.filter(r => r.rateLimited).length;
@@ -929,38 +992,37 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         
         // Reduce batch size on rate limits
         if (batchSize > 1) {
-          batchSize = Math.max(1, Math.floor(batchSize / 2));
+          batchSize = 1;
         }
         
-        // Add extra delay after rate limits
-        const delayMs = Math.min(30000, Math.pow(2, consecutiveRateLimits + 2) * 1000);
-        console.log(`Rate limited, reducing batch size to ${batchSize}, waiting ${delayMs}ms`);
+        // Longer delay after rate limits
+        const delayMs = Math.min(60000, Math.pow(2, consecutiveRateLimits + 3) * 1000);
+        console.log(`Rate limited, batch size now ${batchSize}, waiting ${delayMs}ms`);
+        toast({ 
+          title: "Rate limit reached", 
+          description: `Waiting ${Math.round(delayMs/1000)}s before continuing...` 
+        });
         await new Promise(resolve => setTimeout(resolve, delayMs));
         
         // Re-queue rate-limited paragraphs
         const rateLimitedParagraphs = batch.filter((_, idx) => results[idx].rateLimited);
         if (rateLimitedParagraphs.length > 0) {
-          // Don't advance i, we'll retry these
           uncheckedParagraphs.splice(i + batchSize, 0, ...rateLimitedParagraphs);
         }
       } else {
         consecutiveRateLimits = 0;
-        // Gradually increase batch size if no rate limits
-        if (batchSize < 3) {
-          batchSize = Math.min(3, batchSize + 1);
+        // Gradually increase batch size if no rate limits (max 2)
+        if (batchSize < 2) {
+          batchSize = 2;
         }
       }
       
       i += batch.length;
 
-      // Small delay between batches to avoid overwhelming the API
+      // Delay between batches to stay under TPM limits
       if (i < uncheckedParagraphs.length && !abortRef.current) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      
-      // Additional delay between each paragraph within a batch to reduce TPM
-      if (!abortRef.current && i + batch.length < uncheckedParagraphs.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        const delayMs = BASE_DELAY_MS + (consecutiveRateLimits * 1000);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
 
