@@ -1,47 +1,419 @@
 /**
- * PDF Text Mapping System
- * Builds a mapping between PDF pages and text content positions
- * Enables navigation from claims to the correct PDF page
+ * Token-Based PDF Text Mapping System
+ * Indexes PDF documents at the word (token) level for precise highlighting
+ * Uses DOM-based overlays instead of canvas drawing
  */
 
 import * as pdfjsLib from 'pdfjs-dist';
-import { normalizeText, stringSimilarity } from './text-anchors';
 
-export interface PdfPageInfo {
-  pageNumber: number;
-  startOffset: number;
-  endOffset: number;
-  text: string;
-  normalizedText: string;
+// ============= Core Interfaces =============
+
+/**
+ * A single word/token in the PDF
+ */
+export interface PdfToken {
+  id: number;           // Unique index across all pages
+  text: string;         // Normalized: lowercase, trimmed, no punctuation
+  rawText: string;      // The original string for display
+  pageIndex: number;    // 0-based page index
+  // Raw PDF coordinates (unscaled, bottom-left origin)
+  rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 }
 
-export interface PdfTextItem {
-  str: string;
-  transform: number[];
-  width: number;
-  height: number;
-  pageNumber: number;
+/**
+ * Result of a search query - locations to highlight
+ */
+export interface ClaimLocation {
+  claimId: string;
+  pageIndex: number;
+  rects: PdfToken['rect'][]; // The bounding boxes to highlight
+  tokens: PdfToken[];        // The actual matched tokens
+}
+
+/**
+ * Page metadata for navigation
+ */
+export interface PdfPageMetadata {
+  pageIndex: number;
+  pageHeight: number;
+  pageWidth: number;
+  tokenCount: number;
+  startTokenId: number;
+  endTokenId: number;
+}
+
+// ============= Normalization Utilities =============
+
+/**
+ * Normalize text for fuzzy matching
+ * Removes punctuation, lowercases, collapses whitespace
+ */
+function normalizeToken(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '') // Remove punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Tokenize a string into normalized words
+ */
+function tokenizeString(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 0);
+}
+
+/**
+ * Calculate Levenshtein distance between two strings
+ */
+function levenshteinDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const matrix: number[][] = [];
+
+  for (let i = 0; i <= b.length; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= a.length; j++) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b[i - 1] === a[j - 1]) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+
+  return matrix[b.length][a.length];
+}
+
+/**
+ * Check if two tokens match with fuzzy tolerance
+ * Allows ~20% character mismatch for OCR errors
+ */
+function tokensMatch(token1: string, token2: string, tolerance: number = 0.2): boolean {
+  if (token1 === token2) return true;
+  
+  const maxLen = Math.max(token1.length, token2.length);
+  if (maxLen === 0) return true;
+  
+  // Quick rejection for very different lengths
+  const lenDiff = Math.abs(token1.length - token2.length);
+  if (lenDiff > Math.ceil(maxLen * tolerance)) return false;
+  
+  const distance = levenshteinDistance(token1, token2);
+  const similarity = 1 - (distance / maxLen);
+  
+  return similarity >= (1 - tolerance);
+}
+
+// ============= PDF Document Map Class =============
+
+export class PdfDocumentMap {
+  private tokens: PdfToken[] = [];
+  private pageMetadata: Map<number, PdfPageMetadata> = new Map();
+  private tokensByPage: Map<number, PdfToken[]> = new Map();
+  private isIndexed: boolean = false;
+
+  /**
+   * Index a PDF document, extracting all tokens with their positions
+   */
+  async indexPdf(pdfDoc: pdfjsLib.PDFDocumentProxy): Promise<void> {
+    this.tokens = [];
+    this.pageMetadata.clear();
+    this.tokensByPage.clear();
+    
+    let tokenId = 0;
+
+    for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+      const pageIndex = pageNum - 1;
+      const page = await pdfDoc.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1.0 });
+      const textContent = await page.getTextContent();
+      
+      const pageTokens: PdfToken[] = [];
+      const startTokenId = tokenId;
+
+      for (const item of textContent.items as any[]) {
+        if (!item.str || !item.str.trim()) continue;
+
+        // Extract geometry from transform matrix
+        const transform = item.transform;
+        const pdfX = transform[4];
+        const pdfY = transform[5];
+        const fontSize = Math.abs(transform[0]) || 12;
+        const itemWidth = item.width || (item.str.length * fontSize * 0.5);
+        const itemHeight = fontSize * 1.2;
+
+        // Tokenize the string item
+        const words = item.str.split(/\s+/).filter((w: string) => w.length > 0);
+        
+        if (words.length === 0) continue;
+
+        // Calculate approximate width per character
+        const charWidth = itemWidth / Math.max(item.str.length, 1);
+        let currentX = pdfX;
+
+        for (const word of words) {
+          const tokenWidth = word.length * charWidth;
+          
+          pageTokens.push({
+            id: tokenId++,
+            text: normalizeToken(word),
+            rawText: word,
+            pageIndex,
+            rect: {
+              x: currentX,
+              y: pdfY,
+              width: tokenWidth,
+              height: itemHeight,
+            },
+          });
+
+          // Move X position for next word (add space width)
+          currentX += tokenWidth + charWidth;
+        }
+      }
+
+      this.tokensByPage.set(pageIndex, pageTokens);
+      this.tokens.push(...pageTokens);
+
+      this.pageMetadata.set(pageIndex, {
+        pageIndex,
+        pageHeight: viewport.height,
+        pageWidth: viewport.width,
+        tokenCount: pageTokens.length,
+        startTokenId,
+        endTokenId: tokenId - 1,
+      });
+    }
+
+    this.isIndexed = true;
+    console.log(`[PdfDocumentMap] Indexed ${this.tokens.length} tokens across ${pdfDoc.numPages} pages`);
+  }
+
+  /**
+   * Get tokens for a specific page
+   */
+  getPageTokens(pageIndex: number): PdfToken[] {
+    return this.tokensByPage.get(pageIndex) || [];
+  }
+
+  /**
+   * Get page metadata
+   */
+  getPageMetadata(pageIndex: number): PdfPageMetadata | undefined {
+    return this.pageMetadata.get(pageIndex);
+  }
+
+  /**
+   * Get total number of pages
+   */
+  get totalPages(): number {
+    return this.pageMetadata.size;
+  }
+
+  /**
+   * Get all tokens
+   */
+  getAllTokens(): PdfToken[] {
+    return this.tokens;
+  }
+
+  /**
+   * Find claim location using sliding window sequence matching
+   * Returns matched token rects grouped by page
+   */
+  findClaimLocation(claimText: string, claimId: string): ClaimLocation[] {
+    if (!this.isIndexed || !claimText || claimText.length < 10) {
+      return [];
+    }
+
+    const claimTokens = tokenizeString(claimText);
+    if (claimTokens.length < 2) return [];
+
+    const results: ClaimLocation[] = [];
+    const matchThreshold = 0.8; // 80% of tokens must match
+
+    // Sliding window search across all tokens
+    for (let i = 0; i <= this.tokens.length - claimTokens.length; i++) {
+      let matchCount = 0;
+      const candidateTokens: PdfToken[] = [];
+
+      for (let j = 0; j < claimTokens.length; j++) {
+        const pdfToken = this.tokens[i + j];
+        const claimToken = claimTokens[j];
+
+        if (tokensMatch(pdfToken.text, claimToken)) {
+          matchCount++;
+        }
+        candidateTokens.push(pdfToken);
+      }
+
+      const matchRatio = matchCount / claimTokens.length;
+
+      if (matchRatio >= matchThreshold) {
+        // Found a match - group rects by page
+        const pageIndex = candidateTokens[0].pageIndex;
+        const rects = this.mergeAdjacentRects(candidateTokens);
+
+        results.push({
+          claimId,
+          pageIndex,
+          rects,
+          tokens: candidateTokens,
+        });
+
+        // Skip past this match to avoid overlapping results
+        i += claimTokens.length - 1;
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Find the best page for a paragraph text (for navigation)
+   */
+  findBestPageForText(text: string): number {
+    const textTokens = tokenizeString(text);
+    if (textTokens.length < 3) return 0;
+
+    // Use first few words as anchor
+    const anchorTokens = textTokens.slice(0, Math.min(6, textTokens.length));
+    
+    let bestPage = 0;
+    let bestScore = 0;
+
+    for (const [pageIndex, pageTokens] of this.tokensByPage) {
+      // Quick word overlap check
+      const pageTokenSet = new Set(pageTokens.map(t => t.text));
+      let overlap = 0;
+      for (const token of anchorTokens) {
+        if (pageTokenSet.has(token)) overlap++;
+      }
+
+      if (overlap > bestScore) {
+        bestScore = overlap;
+        bestPage = pageIndex;
+      }
+    }
+
+    return bestPage;
+  }
+
+  /**
+   * Merge adjacent tokens on the same line into larger rects
+   * Prevents "highlight jitter" from many small boxes
+   */
+  private mergeAdjacentRects(tokens: PdfToken[]): PdfToken['rect'][] {
+    if (tokens.length === 0) return [];
+
+    const lineThreshold = 5; // Pixels tolerance for same line
+    const gapThreshold = 20; // Max gap between words on same line
+
+    // Group tokens by line (similar Y position)
+    const lines: Map<number, PdfToken[]> = new Map();
+
+    for (const token of tokens) {
+      const lineKey = Math.round(token.rect.y / lineThreshold) * lineThreshold;
+      const existing = lines.get(lineKey) || [];
+      existing.push(token);
+      lines.set(lineKey, existing);
+    }
+
+    const mergedRects: PdfToken['rect'][] = [];
+
+    for (const lineTokens of lines.values()) {
+      // Sort by X position
+      const sorted = lineTokens.sort((a, b) => a.rect.x - b.rect.x);
+
+      let currentRect: PdfToken['rect'] | null = null;
+
+      for (const token of sorted) {
+        if (!currentRect) {
+          currentRect = { ...token.rect };
+        } else {
+          const gap = token.rect.x - (currentRect.x + currentRect.width);
+
+          if (gap <= gapThreshold) {
+            // Extend current rect
+            const newWidth = (token.rect.x + token.rect.width) - currentRect.x;
+            currentRect.width = newWidth;
+            currentRect.height = Math.max(currentRect.height, token.rect.height);
+          } else {
+            // Gap too large, start new rect
+            mergedRects.push(currentRect);
+            currentRect = { ...token.rect };
+          }
+        }
+      }
+
+      if (currentRect) {
+        mergedRects.push(currentRect);
+      }
+    }
+
+    return mergedRects;
+  }
+}
+
+// ============= Legacy Compatibility Layer =============
+// These exports maintain backwards compatibility with existing code
+
+/**
+ * Build page text from regions (legacy compatibility)
+ */
+export function buildPageTextFromRegions(regions: TextRegion[]): string {
+  return regions.map(r => r.text).join(' ');
 }
 
 export interface PdfTextMap {
-  pages: PdfPageInfo[];
+  pages: { pageNumber: number; startOffset: number; endOffset: number; text: string; normalizedText: string }[];
   fullText: string;
   totalPages: number;
 }
 
+export interface TextRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  charStart?: number;
+  charEnd?: number;
+}
+
 /**
- * Extract text from all pages of a PDF and build a page-to-offset map
+ * Build a text map from PDF (legacy compatibility)
  */
 export async function buildPdfTextMap(pdfDoc: pdfjsLib.PDFDocumentProxy): Promise<PdfTextMap> {
-  const pages: PdfPageInfo[] = [];
+  const pages: PdfTextMap['pages'] = [];
   let fullText = '';
   let currentOffset = 0;
 
   for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
     const page = await pdfDoc.getPage(pageNum);
     const textContent = await page.getTextContent();
-    
-    // Build page text from items
+
     const pageText = textContent.items
       .filter((item: any) => item.str && item.str.trim())
       .map((item: any) => item.str)
@@ -57,107 +429,48 @@ export async function buildPdfTextMap(pdfDoc: pdfjsLib.PDFDocumentProxy): Promis
       startOffset,
       endOffset,
       text: pageText,
-      normalizedText: normalizeText(pageText),
+      normalizedText: pageText.toLowerCase().replace(/[^\w\s]/g, ''),
     });
 
     fullText += (fullText ? ' ' : '') + pageText;
-    currentOffset = endOffset + 1; // +1 for space between pages
+    currentOffset = endOffset + 1;
   }
 
-  return {
-    pages,
-    fullText,
-    totalPages: pdfDoc.numPages,
-  };
+  return { pages, fullText, totalPages: pdfDoc.numPages };
 }
 
 /**
- * Find which PDF page contains text at the given character offset
+ * Find best page for paragraph (legacy compatibility)
  */
-export function findPageForOffset(textMap: PdfTextMap, offset: number): number {
-  for (const page of textMap.pages) {
-    if (offset >= page.startOffset && offset < page.endOffset) {
-      return page.pageNumber;
-    }
-  }
-  // Default to first page if offset not found
-  return 1;
-}
+export function findBestPageForParagraph(textMap: PdfTextMap, paragraphText: string): number {
+  const normalizedSearch = paragraphText.toLowerCase().replace(/[^\w\s]/g, '');
+  const searchWords = normalizedSearch.split(/\s+/).slice(0, 8);
+  const firstPhrase = searchWords.join(' ');
 
-/**
- * Find which PDF page(s) contain the given text using fuzzy matching
- */
-export function findPagesForText(
-  textMap: PdfTextMap,
-  searchText: string,
-  minSimilarity: number = 0.5
-): number[] {
-  const normalizedSearch = normalizeText(searchText);
-  const searchWords = normalizedSearch.split(/\s+/);
-  const matchedPages: { page: number; score: number }[] = [];
-
-  // Get key phrases for matching
-  const firstWords = searchWords.slice(0, 8).join(' ');
-  const lastWords = searchWords.slice(-5).join(' ');
+  let bestPage = 1;
+  let bestScore = 0;
 
   for (const page of textMap.pages) {
     let score = 0;
-
-    // Check for first words match
-    if (page.normalizedText.includes(firstWords)) {
-      score += 0.6;
-    }
-
-    // Check for last words match
-    if (page.normalizedText.includes(lastWords)) {
-      score += 0.4;
-    }
-
-    // If no word matches, check for partial overlap
-    if (score === 0) {
+    if (page.normalizedText.includes(firstPhrase)) {
+      score = 1;
+    } else {
       const pageWords = new Set(page.normalizedText.split(/\s+/));
-      const matchedWordCount = searchWords.filter(w => pageWords.has(w)).length;
-      const overlapRatio = matchedWordCount / searchWords.length;
-      
-      if (overlapRatio > 0.3) {
-        score = overlapRatio * 0.5;
-      }
+      const overlap = searchWords.filter(w => pageWords.has(w)).length;
+      score = overlap / searchWords.length;
     }
 
-    if (score >= minSimilarity) {
-      matchedPages.push({ page: page.pageNumber, score });
+    if (score > bestScore) {
+      bestScore = score;
+      bestPage = page.pageNumber;
     }
   }
 
-  // Sort by score descending and return page numbers
-  return matchedPages
-    .sort((a, b) => b.score - a.score)
-    .map(m => m.page);
+  return bestPage;
 }
 
 /**
- * Find the best matching page for a paragraph text
- */
-export function findBestPageForParagraph(
-  textMap: PdfTextMap,
-  paragraphText: string
-): number {
-  const pages = findPagesForText(textMap, paragraphText, 0.3);
-  return pages[0] || 1;
-}
-
-export interface TextRegion {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  text: string;
-  charStart?: number; // Character offset in concatenated page text
-  charEnd?: number;
-}
-
-/**
- * Extract detailed text regions from a PDF page with character offsets
+ * Extract page text regions (legacy compatibility)
  */
 export async function extractPageTextRegions(
   pdfDoc: pdfjsLib.PDFDocumentProxy,
@@ -175,18 +488,17 @@ export async function extractPageTextRegions(
     const transform = item.transform;
     const x = transform[4];
     const y = transform[5];
-    const fontSize = transform[0] || 12;
+    const fontSize = Math.abs(transform[0]) || 12;
     const width = item.width || (item.str.length * fontSize * 0.5);
     const height = fontSize * 1.2;
 
-    // Convert PDF coordinates to canvas coordinates
     const [a, b, c, d, e, f] = viewport.transform;
     const canvasX = a * x + c * y + e;
     const canvasY = b * x + d * y + f;
 
     regions.push({
       x: canvasX,
-      y: canvasY - height, // Adjust for text baseline
+      y: canvasY - height,
       width,
       height: height + 2,
       text: item.str,
@@ -194,238 +506,75 @@ export async function extractPageTextRegions(
       charEnd: charOffset + item.str.length,
     });
 
-    charOffset += item.str.length + 1; // +1 for space
+    charOffset += item.str.length + 1;
   }
 
   return regions;
 }
 
 /**
- * Build concatenated page text from regions
- */
-export function buildPageTextFromRegions(regions: TextRegion[]): string {
-  return regions.map(r => r.text).join(' ');
-}
-
-/**
- * Find the character range where searchText best matches within pageText
- * Uses multiple strategies for precise character-level matching
- */
-export function findTextRange(
-  pageText: string,
-  searchText: string,
-  minSimilarity: number = 0.5
-): { start: number; end: number; similarity: number } | null {
-  const normalizedPage = normalizeText(pageText).toLowerCase();
-  const normalizedSearch = normalizeText(searchText).toLowerCase();
-  
-  if (normalizedSearch.length < 10) return null;
-  
-  // Strategy 1: Try exact substring match
-  const exactIndex = normalizedPage.indexOf(normalizedSearch);
-  if (exactIndex !== -1) {
-    return { start: exactIndex, end: exactIndex + normalizedSearch.length, similarity: 1.0 };
-  }
-  
-  // Strategy 2: Find longest common substring at the start
-  // This handles minor OCR/encoding differences
-  const searchLen = normalizedSearch.length;
-  
-  // Try matching first N characters directly (sliding window for start)
-  for (const startLen of [50, 40, 30, 20, 15]) {
-    if (searchLen < startLen) continue;
-    
-    const searchStart = normalizedSearch.slice(0, startLen);
-    const startIdx = normalizedPage.indexOf(searchStart);
-    
-    if (startIdx !== -1) {
-      // Found the start - now determine where it ends
-      // Use the search text length as a guide, with some tolerance
-      const expectedEnd = startIdx + searchLen;
-      const endIdx = Math.min(normalizedPage.length, expectedEnd + Math.floor(searchLen * 0.1));
-      
-      return { 
-        start: startIdx, 
-        end: Math.min(endIdx, startIdx + searchLen + 20), // Cap expansion
-        similarity: 0.9 
-      };
-    }
-  }
-  
-  // Strategy 3: Word-based matching with strict length constraints
-  const searchWords = normalizedSearch.split(/\s+/);
-  const pageWords = normalizedPage.split(/\s+/);
-  
-  if (searchWords.length >= 5) {
-    // Find first 3-4 words
-    const firstPhrase = searchWords.slice(0, 4).join(' ');
-    const firstIdx = normalizedPage.indexOf(firstPhrase);
-    
-    if (firstIdx !== -1) {
-      // Constrain end to approximately the right length
-      const charEstimate = normalizedSearch.length;
-      const endIdx = Math.min(normalizedPage.length, firstIdx + charEstimate + 30);
-      
-      return { start: firstIdx, end: endIdx, similarity: 0.85 };
-    }
-  }
-  
-  return null;
-}
-
-// Fuzzy word match for OCR tolerance
-function fuzzyWordMatch(word1: string, word2: string, threshold: number = 0.7): boolean {
-  if (word1 === word2) return true;
-  if (Math.abs(word1.length - word2.length) > 3) return false;
-  
-  const maxLen = Math.max(word1.length, word2.length);
-  if (maxLen === 0) return true;
-  
-  // Simple Levenshtein for short words
-  if (maxLen <= 10) {
-    const matrix: number[][] = [];
-    for (let i = 0; i <= word2.length; i++) matrix[i] = [i];
-    for (let j = 0; j <= word1.length; j++) matrix[0][j] = j;
-    for (let i = 1; i <= word2.length; i++) {
-      for (let j = 1; j <= word1.length; j++) {
-        matrix[i][j] = word2[i - 1] === word1[j - 1]
-          ? matrix[i - 1][j - 1]
-          : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
-      }
-    }
-    const dist = matrix[word2.length][word1.length];
-    return (1 - dist / maxLen) >= threshold;
-  }
-  
-  // For longer words, check prefix/suffix
-  const prefixLen = Math.min(5, Math.floor(maxLen * 0.4));
-  return word1.slice(0, prefixLen) === word2.slice(0, prefixLen) ||
-         word1.slice(-prefixLen) === word2.slice(-prefixLen);
-}
-
-// Check if phrase matches in text with fuzzy word matching
-function fuzzyPhraseMatch(text: string, phrase: string, tolerance: number = 0.7): boolean {
-  const textWords = text.split(/\s+/);
-  const phraseWords = phrase.split(/\s+/);
-  
-  if (phraseWords.length === 0) return false;
-  if (textWords.length < phraseWords.length) return false;
-  
-  // Try to find the phrase in the text with fuzzy word matching
-  for (let i = 0; i <= textWords.length - phraseWords.length; i++) {
-    let matches = 0;
-    for (let j = 0; j < phraseWords.length; j++) {
-      if (fuzzyWordMatch(textWords[i + j], phraseWords[j], tolerance)) {
-        matches++;
-      }
-    }
-    // Require 70% of words to match
-    if (matches >= phraseWords.length * 0.7) return true;
-  }
-  return false;
-}
-
-/**
- * Find text regions that match a search string using word-level matching
- * Uses first/last words with fuzzy matching for OCR tolerance
+ * Find matching regions (legacy compatibility)
  */
 export function findMatchingRegions(
   regions: TextRegion[],
-  searchText: string,
-  _startWordCount: number = 6,
-  _endWordCount: number = 4
+  searchText: string
 ): TextRegion[] {
   if (regions.length === 0 || !searchText || searchText.length < 20) return [];
 
-  const normalizedSearch = normalizeText(searchText).toLowerCase();
+  const normalizedSearch = searchText.toLowerCase().replace(/[^\w\s]/g, '');
   const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 0);
-  
   if (searchWords.length < 3) return [];
-  
-  // Get first and last distinctive phrases
-  const firstPhrase = searchWords.slice(0, Math.min(5, searchWords.length)).join(' ');
-  const lastPhrase = searchWords.slice(-Math.min(4, searchWords.length)).join(' ');
-  
-  // Build normalized text for each region
+
+  const firstPhrase = searchWords.slice(0, 5).join(' ');
+  const lastPhrase = searchWords.slice(-4).join(' ');
+
   const regionData = regions.map((region, idx) => ({
     region,
     idx,
-    normalizedText: normalizeText(region.text).toLowerCase(),
+    normalizedText: region.text.toLowerCase().replace(/[^\w\s]/g, ''),
   }));
-  
-  // Find start region: look for first phrase with fuzzy matching
+
+  // Find start
   let startIdx = -1;
   for (let i = 0; i < regionData.length; i++) {
-    // Build running text from this position
     let runningText = '';
     for (let j = i; j < Math.min(i + 12, regionData.length); j++) {
       runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
       if (runningText.length > firstPhrase.length + 30) break;
     }
-    
-    // Try exact match first, then fuzzy
-    if (runningText.includes(firstPhrase) || fuzzyPhraseMatch(runningText, firstPhrase)) {
+    if (runningText.includes(firstPhrase)) {
       startIdx = i;
       break;
     }
   }
-  
-  // Try shorter prefix if not found
-  if (startIdx === -1) {
-    const shortPrefix = searchWords.slice(0, 3).join(' ');
-    for (let i = 0; i < regionData.length; i++) {
-      let runningText = '';
-      for (let j = i; j < Math.min(i + 8, regionData.length); j++) {
-        runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
-      }
-      if (runningText.includes(shortPrefix) || fuzzyPhraseMatch(runningText, shortPrefix)) {
-        startIdx = i;
-        break;
-      }
-    }
-  }
-  
+
   if (startIdx === -1) return [];
-  
-  // Find end region by searching for last phrase
-  const estimatedRegionCount = Math.ceil(searchWords.length / 2);
-  const maxEndIdx = Math.min(startIdx + estimatedRegionCount + 15, regionData.length);
-  
+
+  // Find end
+  const maxEndIdx = Math.min(startIdx + Math.ceil(searchWords.length / 2) + 15, regionData.length);
   let endIdx = -1;
+
   for (let i = maxEndIdx - 1; i >= startIdx; i--) {
-    // Build running text backwards
     let runningText = '';
     for (let j = i; j >= Math.max(i - 8, startIdx); j--) {
       runningText = regionData[j].normalizedText + (runningText ? ' ' : '') + runningText;
       if (runningText.length > lastPhrase.length + 30) break;
     }
-    
-    if (runningText.includes(lastPhrase) || fuzzyPhraseMatch(runningText, lastPhrase)) {
+    if (runningText.includes(lastPhrase)) {
       endIdx = i;
       break;
     }
   }
-  
-  // Fallback: estimate end based on character/word count
+
   if (endIdx === -1 || endIdx < startIdx) {
-    let wordCount = 0;
-    for (let i = startIdx; i < regionData.length; i++) {
-      wordCount += regionData[i].normalizedText.split(/\s+/).length;
-      if (wordCount >= searchWords.length) {
-        endIdx = i;
-        break;
-      }
-    }
-    if (endIdx === -1) endIdx = Math.min(startIdx + 10, regionData.length - 1);
+    endIdx = Math.min(startIdx + Math.ceil(searchWords.length / 2), regionData.length - 1);
   }
-  
-  // Return regions from start to end (inclusive)
+
   return regions.slice(startIdx, endIdx + 1);
 }
 
 /**
- * Find regions matching a specific claim within already-matched paragraph regions
- * Uses word-level matching for precise highlighting
+ * Find claim regions (legacy compatibility)
  */
 export function findClaimRegions(
   paragraphRegions: TextRegion[],
@@ -434,24 +583,21 @@ export function findClaimRegions(
   if (paragraphRegions.length === 0 || !claimText || claimText.length < 10) {
     return [];
   }
-  
-  const normalizedClaim = normalizeText(claimText).toLowerCase();
+
+  const normalizedClaim = claimText.toLowerCase().replace(/[^\w\s]/g, '');
   const claimWords = normalizedClaim.split(/\s+/).filter(w => w.length > 0);
-  
   if (claimWords.length < 2) return [];
-  
-  // Get first and last phrases of the claim
-  const firstPhrase = claimWords.slice(0, Math.min(4, claimWords.length)).join(' ');
-  const lastPhrase = claimWords.slice(-Math.min(3, claimWords.length)).join(' ');
-  
-  // Build normalized text for each region
+
+  const firstPhrase = claimWords.slice(0, 4).join(' ');
+  const lastPhrase = claimWords.slice(-3).join(' ');
+
   const regionData = paragraphRegions.map((region, idx) => ({
     region,
     idx,
-    normalizedText: normalizeText(region.text).toLowerCase(),
+    normalizedText: region.text.toLowerCase().replace(/[^\w\s]/g, ''),
   }));
-  
-  // Find start region with fuzzy matching
+
+  // Find start
   let startIdx = -1;
   for (let i = 0; i < regionData.length; i++) {
     let runningText = '';
@@ -459,113 +605,39 @@ export function findClaimRegions(
       runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
       if (runningText.length > firstPhrase.length + 20) break;
     }
-    
-    if (runningText.includes(firstPhrase) || fuzzyPhraseMatch(runningText, firstPhrase)) {
+    if (runningText.includes(firstPhrase)) {
       startIdx = i;
       break;
     }
   }
-  
-  // Try shorter prefix with fuzzy matching
-  if (startIdx === -1 && claimWords.length > 2) {
-    const shortPrefix = claimWords.slice(0, 2).join(' ');
-    for (let i = 0; i < regionData.length; i++) {
-      let runningText = '';
-      for (let j = i; j < Math.min(i + 6, regionData.length); j++) {
-        runningText += (runningText ? ' ' : '') + regionData[j].normalizedText;
-      }
-      if (runningText.includes(shortPrefix) || fuzzyPhraseMatch(runningText, shortPrefix, 0.8)) {
-        startIdx = i;
-        break;
-      }
-    }
-  }
-  
+
   if (startIdx === -1) return [];
-  
-  // Find end region with fuzzy matching
-  const estimatedRegionCount = Math.ceil(claimWords.length / 2);
-  const maxEndIdx = Math.min(startIdx + estimatedRegionCount + 10, regionData.length);
-  
+
+  // Find end
+  const maxEndIdx = Math.min(startIdx + Math.ceil(claimWords.length / 2) + 10, regionData.length);
   let endIdx = -1;
+
   for (let i = maxEndIdx - 1; i >= startIdx; i--) {
     let runningText = '';
     for (let j = i; j >= Math.max(i - 6, startIdx); j--) {
       runningText = regionData[j].normalizedText + (runningText ? ' ' : '') + runningText;
       if (runningText.length > lastPhrase.length + 20) break;
     }
-    
-    if (runningText.includes(lastPhrase) || fuzzyPhraseMatch(runningText, lastPhrase)) {
+    if (runningText.includes(lastPhrase)) {
       endIdx = i;
       break;
     }
   }
-  
-  // Fallback based on word count
+
   if (endIdx === -1 || endIdx < startIdx) {
-    let wordCount = 0;
-    for (let i = startIdx; i < regionData.length; i++) {
-      wordCount += regionData[i].normalizedText.split(/\s+/).length;
-      if (wordCount >= claimWords.length) {
-        endIdx = i;
-        break;
-      }
-    }
-    if (endIdx === -1) endIdx = Math.min(startIdx + 6, regionData.length - 1);
+    endIdx = Math.min(startIdx + Math.ceil(claimWords.length / 2), regionData.length - 1);
   }
-  
+
   return paragraphRegions.slice(startIdx, endIdx + 1);
 }
 
 /**
- * Merge adjacent text regions into bounding boxes
- * Groups regions by line (similar Y position)
- */
-export function mergeRegionsIntoBoxes(regions: TextRegion[]): TextRegion[] {
-  if (regions.length === 0) return [];
-
-  // Group by Y position (same line)
-  const lineGroups: Map<number, TextRegion[]> = new Map();
-  const lineThreshold = 5; // Pixels
-
-  for (const region of regions) {
-    const roundedY = Math.round(region.y / lineThreshold) * lineThreshold;
-    const existing = lineGroups.get(roundedY) || [];
-    existing.push(region);
-    lineGroups.set(roundedY, existing);
-  }
-
-  // Merge each line into a single box
-  const boxes: TextRegion[] = [];
-  for (const [_, lineRegions] of lineGroups) {
-    const sortedByX = lineRegions.sort((a, b) => a.x - b.x);
-    
-    let minX = Infinity;
-    let maxX = 0;
-    let maxHeight = 0;
-    const texts: string[] = [];
-
-    for (const region of sortedByX) {
-      minX = Math.min(minX, region.x);
-      maxX = Math.max(maxX, region.x + region.width);
-      maxHeight = Math.max(maxHeight, region.height);
-      texts.push(region.text);
-    }
-
-    boxes.push({
-      x: minX,
-      y: sortedByX[0].y,
-      width: maxX - minX,
-      height: maxHeight,
-      text: texts.join(' '),
-    });
-  }
-
-  return boxes;
-}
-
-/**
- * Calculate overall bounding box for a set of regions
+ * Get bounding box (legacy compatibility)
  */
 export function getBoundingBox(regions: TextRegion[]): TextRegion | null {
   if (regions.length === 0) return null;
