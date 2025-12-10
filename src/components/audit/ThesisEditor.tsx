@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback } from "react";
-import { ChevronLeft, ChevronRight, Copy, Check, AlertTriangle, CheckCircle, Undo2, FileText, List, History, Clock } from "lucide-react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { ChevronLeft, ChevronRight, Copy, Check, AlertTriangle, CheckCircle, Undo2, FileText, List, History, Clock, File } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -11,6 +11,8 @@ import { PdfViewerDialog } from "@/components/sources/PdfViewerDialog";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import * as pdfjsLib from 'pdfjs-dist';
+import { getFile } from "@/lib/client-storage";
 
 interface ParagraphData {
   index: number;
@@ -28,6 +30,7 @@ interface ThesisEditorProps {
   sources: Source[];
   onBack: () => void;
   onUpdateParagraph: (index: number, newText: string) => void;
+  thesisFilePath?: string; // Path to original thesis PDF for overlay mode
 }
 
 interface FlatClaim {
@@ -50,7 +53,7 @@ interface RewriteHistoryEntry {
   versions: VersionEntry[];
 }
 
-export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }: ThesisEditorProps) {
+export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, thesisFilePath }: ThesisEditorProps) {
   const [selectedClaimIndex, setSelectedClaimIndex] = useState(0);
   const [rewriteHistory, setRewriteHistory] = useState<Map<string, RewriteHistoryEntry>>(new Map());
   const [implementedClaims, setImplementedClaims] = useState<Set<string>>(new Set());
@@ -58,9 +61,19 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
   const [viewerSource, setViewerSource] = useState<Source | null>(null);
   const [viewerPage, setViewerPage] = useState(1);
   const [viewerSearchText, setViewerSearchText] = useState<string | undefined>(undefined);
+  const [viewerHighlightColor, setViewerHighlightColor] = useState<'green' | 'yellow' | 'red' | 'blue' | undefined>(undefined);
   const [copied, setCopied] = useState(false);
-  const [viewMode, setViewMode] = useState<'claims' | 'document'>('claims');
+  const [viewMode, setViewMode] = useState<'claims' | 'document' | 'pdf'>('claims');
   const [historyOpen, setHistoryOpen] = useState(false);
+  
+  // PDF overlay mode state
+  const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [currentPdfPage, setCurrentPdfPage] = useState(1);
+  const [totalPdfPages, setTotalPdfPages] = useState(0);
+  const [pdfScale, setPdfScale] = useState(1.0);
+  const [isPdfLoading, setIsPdfLoading] = useState(false);
+  const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
+  const pdfContainerRef = useRef<HTMLDivElement>(null);
 
   const getClaimColor = useCallback((claim: Claim, overallColor: string, paragraphIndex: number, claimIndex: number): 'green' | 'yellow' | 'red' | 'blue' => {
     // Check if this claim has been implemented (rewritten) - show as green
@@ -78,6 +91,11 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
     }
     if (v.includes('no clear support') || v.includes('unsupported') || v.includes('not found')) {
       return 'red';
+    }
+    
+    // Blue for unchecked paragraphs with citations that need verification
+    if (overallColor === 'blue') {
+      return 'blue';
     }
     
     return overallColor as 'green' | 'yellow' | 'red' | 'blue';
@@ -119,6 +137,86 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
     });
     return counts;
   }, [allClaims]);
+
+  // Load PDF for overlay mode
+  useEffect(() => {
+    if (viewMode === 'pdf' && thesisFilePath && !pdfDoc) {
+      loadThesisPdf();
+    }
+  }, [viewMode, thesisFilePath]);
+
+  // Render PDF page when it changes
+  useEffect(() => {
+    if (pdfDoc && viewMode === 'pdf') {
+      renderPdfPage(currentPdfPage);
+    }
+  }, [pdfDoc, currentPdfPage, pdfScale, viewMode]);
+
+  const loadThesisPdf = async () => {
+    if (!thesisFilePath) return;
+    
+    setIsPdfLoading(true);
+    try {
+      const file = await getFile(thesisFilePath);
+      if (!file) {
+        toast({ title: "PDF not found", variant: "destructive" });
+        return;
+      }
+      
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      setPdfDoc(pdf);
+      setTotalPdfPages(pdf.numPages);
+    } catch (err) {
+      console.error("Error loading thesis PDF:", err);
+      toast({ title: "Failed to load PDF", variant: "destructive" });
+    } finally {
+      setIsPdfLoading(false);
+    }
+  };
+
+  const renderPdfPage = async (pageNum: number) => {
+    if (!pdfDoc || !pdfCanvasRef.current) return;
+    
+    try {
+      const page = await pdfDoc.getPage(pageNum);
+      const canvas = pdfCanvasRef.current;
+      const context = canvas.getContext('2d');
+      
+      if (!context) return;
+      
+      const viewport = page.getViewport({ scale: pdfScale });
+      
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+      
+      await page.render({
+        canvasContext: context,
+        viewport: viewport,
+      }).promise;
+      
+      // Draw colored overlays for claims on this page
+      // This is a simplified version - in a full implementation you'd map text positions
+      drawClaimOverlays(context, viewport);
+    } catch (err) {
+      console.error("Error rendering PDF page:", err);
+    }
+  };
+
+  const drawClaimOverlays = (ctx: CanvasRenderingContext2D, viewport: pdfjsLib.PageViewport) => {
+    // Get color counts for legend
+    const colors = {
+      green: { count: claimCounts.green, rgba: 'rgba(34, 197, 94, 0.15)' },
+      yellow: { count: claimCounts.yellow, rgba: 'rgba(250, 204, 21, 0.15)' },
+      red: { count: claimCounts.red, rgba: 'rgba(239, 68, 68, 0.15)' },
+      blue: { count: claimCounts.blue, rgba: 'rgba(59, 130, 246, 0.15)' },
+    };
+    
+    // Draw a simple legend in the corner
+    ctx.font = '12px sans-serif';
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillText(`Claims: ${claimCounts.green}✓ ${claimCounts.yellow}! ${claimCounts.red}✗`, 10, 20);
+  };
 
   // Navigation
   const goToPrevClaim = useCallback(() => {
@@ -225,13 +323,15 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
     handleRevertToVersion(0);
   }, [handleRevertToVersion]);
 
-  // Open source PDF
+  // Open source PDF with color
   const handleOpenSource = useCallback((source: Source, page?: number, searchText?: string) => {
     setViewerSource(source);
     setViewerPage(page || 1);
     setViewerSearchText(searchText);
+    // Pass the current claim's color to the PDF viewer
+    setViewerHighlightColor(currentClaim?.color);
     setViewerOpen(true);
-  }, []);
+  }, [currentClaim?.color]);
 
   // Copy full document
   const copyFullDocument = useCallback(async () => {
@@ -272,7 +372,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as 'claims' | 'document')}>
+          <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as 'claims' | 'document' | 'pdf')}>
             <TabsList className="h-8">
               <TabsTrigger value="claims" className="h-7 px-2 text-xs">
                 <List className="h-3.5 w-3.5 mr-1" />
@@ -282,6 +382,12 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
                 <FileText className="h-3.5 w-3.5 mr-1" />
                 Full Text
               </TabsTrigger>
+              {thesisFilePath && (
+                <TabsTrigger value="pdf" className="h-7 px-2 text-xs">
+                  <File className="h-3.5 w-3.5 mr-1" />
+                  PDF
+                </TabsTrigger>
+              )}
             </TabsList>
           </Tabs>
           <div className="flex gap-1">
@@ -294,6 +400,11 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
             <Badge variant="outline" className="bg-red-500/10 text-red-600 border-red-500/30 text-xs">
               {claimCounts.red} ✗
             </Badge>
+            {claimCounts.blue > 0 && (
+              <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-500/30 text-xs">
+                {claimCounts.blue} ?
+              </Badge>
+            )}
           </div>
           <Button 
             variant="outline" 
@@ -490,10 +601,11 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
               showImplementButton={true}
               originalText={currentClaimHistory?.versions[0]?.text}
               onRevert={handleRevert}
+              highlightColor={currentClaim.color}
             />
           </div>
         </div>
-      ) : (
+      ) : viewMode === 'document' ? (
         /* Full Document View with inline highlights */
         <div className="grid gap-4 lg:grid-cols-[1fr_400px]">
           {/* Document with inline highlights - Left Panel */}
@@ -510,6 +622,11 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
                   // Render paragraph with inline highlighted claims
                   const renderTextWithHighlights = () => {
                     if (paragraphClaims.length === 0) {
+                      // For unchecked paragraphs, show blue background if they have citations
+                      const hasCitationPattern = /\([^)]*\d{4}[^)]*\)/.test(p.text);
+                      if (!p.checked && hasCitationPattern) {
+                        return <span className="bg-blue-500/10 rounded px-0.5">{p.text}</span>;
+                      }
                       return <span>{p.text}</span>;
                     }
 
@@ -699,11 +816,135 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
                   showImplementButton={true}
                   originalText={currentClaimHistory?.versions[0]?.text}
                   onRevert={handleRevert}
+                  highlightColor={currentClaim.color}
                 />
               </>
             ) : (
               <Card className="p-6 text-center text-muted-foreground">
                 <p className="text-sm">Click on a highlighted claim to view details</p>
+              </Card>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* PDF Overlay View */
+        <div className="grid gap-4 lg:grid-cols-[1fr_400px]">
+          {/* PDF Viewer - Left Panel */}
+          <Card className="overflow-hidden">
+            <div className="p-3 border-b bg-muted/50 flex items-center justify-between">
+              <h3 className="font-medium text-sm">Thesis PDF</h3>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPdfPage(p => Math.max(1, p - 1))}
+                  disabled={currentPdfPage <= 1 || isPdfLoading}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  {currentPdfPage} / {totalPdfPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPdfPage(p => Math.min(totalPdfPages, p + 1))}
+                  disabled={currentPdfPage >= totalPdfPages || isPdfLoading}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPdfScale(s => Math.max(0.5, s - 0.25))}
+                  disabled={pdfScale <= 0.5}
+                >
+                  -
+                </Button>
+                <span className="text-xs">{Math.round(pdfScale * 100)}%</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPdfScale(s => Math.min(2, s + 0.25))}
+                  disabled={pdfScale >= 2}
+                >
+                  +
+                </Button>
+              </div>
+            </div>
+            <ScrollArea className="h-[calc(100vh-280px)]" ref={pdfContainerRef}>
+              <div className="p-4 flex justify-center">
+                {isPdfLoading ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <div className="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full" />
+                    Loading PDF...
+                  </div>
+                ) : !thesisFilePath ? (
+                  <div className="text-muted-foreground text-sm">
+                    PDF not available. Upload a PDF thesis to use this view.
+                  </div>
+                ) : (
+                  <canvas 
+                    ref={pdfCanvasRef} 
+                    className="shadow-lg bg-background"
+                    style={{ maxWidth: '100%', height: 'auto' }}
+                  />
+                )}
+              </div>
+            </ScrollArea>
+          </Card>
+
+          {/* Claim Detail - Right Panel (same as document view) */}
+          <div className="space-y-4">
+            {currentClaim ? (
+              <>
+                {/* Navigation */}
+                <Card className="p-3">
+                  <div className="flex items-center justify-between">
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={goToPrevClaim}
+                      disabled={selectedClaimIndex === 0}
+                    >
+                      <ChevronLeft className="h-4 w-4 mr-1" />
+                      Prev
+                    </Button>
+                    
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        ¶{currentClaim.paragraphIndex + 1}
+                      </span>
+                      <VerdictBadge color={currentClaim.color} />
+                    </div>
+                    
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={goToNextClaim}
+                      disabled={selectedClaimIndex === allClaims.length - 1}
+                    >
+                      Next
+                      <ChevronRight className="h-4 w-4 ml-1" />
+                    </Button>
+                  </div>
+                </Card>
+
+                {/* Claim Card */}
+                <ClaimCard
+                  claim={currentClaim.claim}
+                  sources={sources}
+                  onOpenSource={handleOpenSource}
+                  onImplementRewrite={handleImplementRewrite}
+                  showImplementButton={true}
+                  originalText={currentClaimHistory?.versions[0]?.text}
+                  onRevert={handleRevert}
+                  highlightColor={currentClaim.color}
+                />
+              </>
+            ) : (
+              <Card className="p-6 text-center text-muted-foreground">
+                <p className="text-sm">Select a claim to view details</p>
               </Card>
             )}
           </div>
@@ -718,6 +959,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
         fileName={viewerSource?.original_filename || "Document"}
         initialPage={viewerPage}
         searchText={viewerSearchText}
+        highlightColor={viewerHighlightColor}
       />
     </div>
   );

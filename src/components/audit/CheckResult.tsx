@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckResult as CheckResultType, Source } from "@/lib/types";
+import { CheckResult as CheckResultType, Source, Claim } from "@/lib/types";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { ClaimCard } from "./ClaimCard";
 import { AlertTriangle } from "lucide-react";
@@ -11,16 +11,42 @@ interface CheckResultProps {
   sources: Source[];
 }
 
+// Determine highlight color based on claim verdict
+function getClaimHighlightColor(claim: Claim): 'green' | 'yellow' | 'red' | 'blue' {
+  if (claim.common_knowledge) return 'green';
+  
+  const v = claim.verdict.toLowerCase();
+  if (v.includes('fully supported') || v.includes('well supported') || v.includes('supported by cited')) {
+    return 'green';
+  }
+  if (v.includes('partially') || v.includes('uncertain') || v.includes('some')) {
+    return 'yellow';
+  }
+  if (v.includes('no clear support') || v.includes('unsupported') || v.includes('not found')) {
+    return 'red';
+  }
+  return 'yellow';
+}
+
 export function CheckResult({ result, paragraphText, sources }: CheckResultProps) {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerSource, setViewerSource] = useState<Source | null>(null);
   const [viewerPage, setViewerPage] = useState(1);
   const [viewerSearchText, setViewerSearchText] = useState<string | undefined>(undefined);
+  const [viewerHighlightColor, setViewerHighlightColor] = useState<'green' | 'yellow' | 'red' | 'blue' | undefined>(undefined);
+  const [currentClaimIndex, setCurrentClaimIndex] = useState<number | null>(null);
 
-  const handleOpenSource = (source: Source, pageNumber: number, excerpt?: string) => {
+  const handleOpenSource = (source: Source, pageNumber: number, excerpt?: string, claimIndex?: number) => {
     setViewerSource(source);
     setViewerPage(pageNumber);
     setViewerSearchText(excerpt);
+    // Set highlight color based on the claim that triggered this
+    if (claimIndex !== undefined && result.claims[claimIndex]) {
+      setViewerHighlightColor(getClaimHighlightColor(result.claims[claimIndex]));
+    } else {
+      setViewerHighlightColor(undefined);
+    }
+    setCurrentClaimIndex(claimIndex ?? null);
     setViewerOpen(true);
   };
 
@@ -44,12 +70,13 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
       {/* Claims breakdown */}
       <div className="space-y-4">
         <h3 className="font-semibold">Claims Analysis ({result.claims.length})</h3>
-        {result.claims.map((claim) => (
+        {result.claims.map((claim, idx) => (
           <ClaimCard 
             key={claim.index} 
             claim={claim} 
             sources={sources} 
-            onOpenSource={handleOpenSource}
+            onOpenSource={(source, pageNumber, excerpt) => handleOpenSource(source, pageNumber, excerpt, idx)}
+            highlightColor={getClaimHighlightColor(claim)}
           />
         ))}
       </div>
@@ -82,6 +109,7 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
         fileName={viewerSource?.original_filename || "Document"}
         initialPage={viewerPage}
         searchText={viewerSearchText}
+        highlightColor={viewerHighlightColor}
       />
     </div>
   );
