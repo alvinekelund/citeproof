@@ -509,9 +509,12 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     }
     
     if (detectedPairs.size === 0) {
-      // No citations detected - return a small sample for context
-      return allSources.slice(0, 5);
+      // No citations detected - return empty array (don't send irrelevant sources)
+      console.log('[getRelevantSources] No citations detected in paragraph, returning empty array');
+      return [];
     }
+    
+    console.log('[getRelevantSources] Detected citation pairs:', Array.from(detectedPairs));
     
     // Match sources to detected citations
     const matchedSources: Source[] = [];
@@ -543,14 +546,21 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           if (!matchedIds.has(source.id)) {
             matchedSources.push(source);
             matchedIds.add(source.id);
+            console.log(`[getRelevantSources] Matched source: ${source.in_text_label || source.shorthand_id} (key: ${sourceKey})`);
           }
           break;
         }
       }
     }
     
-    // If we matched some, return those. Otherwise return small sample as fallback.
-    return matchedSources.length > 0 ? matchedSources : allSources.slice(0, 5);
+    console.log(`[getRelevantSources] Matched ${matchedSources.length} sources out of ${allSources.length} total`);
+    
+    // Only return matched sources - NO FALLBACK to avoid sending uncited sources
+    if (matchedSources.length === 0) {
+      console.log('[getRelevantSources] No sources matched detected citations - this may indicate a library gap');
+    }
+    
+    return matchedSources;
   };
 
   // Check a single paragraph with retry logic for rate limits
