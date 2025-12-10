@@ -8,6 +8,7 @@ import { CheckResult as CheckResultType, Source, Claim, generateClaimDisplayId }
 import { ClaimCard } from "./ClaimCard";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { PdfViewerDialog } from "@/components/sources/PdfViewerDialog";
+import { ThesisPageOverlay, HighlightRect } from "./ThesisPageOverlay";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -15,17 +16,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import * as pdfjsLib from 'pdfjs-dist';
 import { getFile } from "@/lib/client-storage";
 import { 
+  PdfDocumentMap,
   buildPdfTextMap, 
   findBestPageForParagraph, 
-  extractPageTextRegions, 
-  findMatchingRegions, 
-  findClaimRegions,
-  getBoundingBox,
-  buildPageTextFromRegions,
   PdfTextMap,
-  TextRegion 
 } from "@/lib/pdf-text-map";
-import { normalizeText, createParagraphAnchors, ParagraphAnchor } from "@/lib/text-anchors";
+import { createParagraphAnchors, ParagraphAnchor } from "@/lib/text-anchors";
 
 interface ParagraphData {
   index: number;
@@ -113,13 +109,16 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<pdfjsLib.RenderTask | null>(null);
   
-  // PDF text mapping for page navigation
+  // PDF text mapping for page navigation (legacy) and token-based (new)
   const [pdfTextMap, setPdfTextMap] = useState<PdfTextMap | null>(null);
+  const [documentMap, setDocumentMap] = useState<PdfDocumentMap | null>(null);
   const [paragraphAnchors, setParagraphAnchors] = useState<ParagraphAnchor[]>([]);
   
-  // Store clickable regions for PDF highlights
-  const [pdfClickableRegions, setPdfClickableRegions] = useState<ClickableRegion[]>([]);
-  const [hoveredRegion, setHoveredRegion] = useState<ClickableRegion | null>(null);
+  // DOM overlay highlights
+  const [highlights, setHighlights] = useState<HighlightRect[]>([]);
+  const [selectedHighlightId, setSelectedHighlightId] = useState<string | undefined>();
+  const [hoveredHighlightId, setHoveredHighlightId] = useState<string | undefined>();
+  const [currentPageHeight, setCurrentPageHeight] = useState(0);
   
   // Track if we should auto-navigate to claim's page
   const [shouldAutoNavigate, setShouldAutoNavigate] = useState(false);
@@ -320,6 +319,10 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       
+      // Store page height for DOM overlay coordinate conversion
+      const pageMetadata = documentMap?.getPageMetadata(pageNum - 1);
+      setCurrentPageHeight(pageMetadata?.pageHeight || viewport.height / pdfScale);
+      
       const renderTask = page.render({
         canvasContext: context,
         viewport: viewport,
@@ -329,8 +332,8 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       await renderTask.promise;
       renderTaskRef.current = null;
       
-      // Draw overlays after rendering
-      await drawTextOverlays(context, viewport, pdfDoc);
+      // Build highlights for DOM overlay (no canvas drawing)
+      buildPageHighlights(pageNum - 1);
     } catch (err: any) {
       if (err?.name !== 'RenderingCancelledException') {
         console.error("Error rendering PDF page:", err);
@@ -338,225 +341,81 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     }
   };
 
-  // Draw text overlays on the PDF - per-text-item precision for proper line-level highlighting
-  const drawTextOverlays = async (
-    ctx: CanvasRenderingContext2D, 
-    viewport: pdfjsLib.PageViewport,
-    pdf: pdfjsLib.PDFDocumentProxy
-  ) => {
-    const colorMap: Record<string, string> = {
-      green: 'rgba(34, 197, 94, 0.25)',
-      yellow: 'rgba(250, 204, 21, 0.30)',
-      red: 'rgba(239, 68, 68, 0.25)',
-      blue: 'rgba(59, 130, 246, 0.20)',
-    };
-
-    const regions: ClickableRegion[] = [];
-    
-    // Extract text regions with positions from current page
-    const pageTextRegions = await extractPageTextRegions(pdf, currentPdfPage, viewport);
-    
-    if (pageTextRegions.length === 0) {
-      console.log('[PDF] No text regions found on page', currentPdfPage);
-      setPdfClickableRegions([]);
+  // Build DOM overlay highlights for the current page
+  const buildPageHighlights = useCallback((pageIndex: number) => {
+    if (!documentMap) {
+      setHighlights([]);
       return;
     }
 
-    // Track which regions have been highlighted to avoid double-highlighting
-    const highlightedRegionIndices = new Set<number>();
+    const newHighlights: HighlightRect[] = [];
 
-    // For each checked paragraph, try to find it on this page
-    for (const p of paragraphs) {
-      if (!p.checked || !p.result) continue;
-      
-      const overallColor = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
-      
-      // Try to find the paragraph text in this page's regions
-      const matchedRegions = findMatchingRegions(pageTextRegions, p.text);
-      
-      if (matchedRegions.length === 0) continue; // Paragraph not on this page
-      
-      // If paragraph has claims, highlight each claim individually
-      if (p.result.claims && p.result.claims.length > 0) {
-        for (let claimIdx = 0; claimIdx < p.result.claims.length; claimIdx++) {
-          const claim = p.result.claims[claimIdx];
-          const claimColor = getClaimColor(claim, overallColor, p.index, claimIdx);
-          const fillColor = colorMap[claimColor];
-          
-          // Find the global claim index for this claim
-          const globalClaimIdx = allClaims.findIndex(
-            c => c.paragraphIndex === p.index && c.claimIndex === claimIdx
-          );
-          const displayId = globalClaimIdx >= 0 ? allClaims[globalClaimIdx].displayId : `${p.index}.${claimIdx}`;
-          
-          // Find claim-specific regions within the paragraph
-          let claimRegions = findClaimRegions(matchedRegions, claim.text);
-          
-          // FALLBACK: If precise claim not found, estimate position within paragraph
-          if (claimRegions.length === 0 && matchedRegions.length > 0) {
-            // Use word count ratio to estimate which portion of paragraph contains the claim
-            const claimWordCount = claim.text.split(/\s+/).length;
-            const paragraphWordCount = matchedRegions.reduce(
-              (sum, r) => sum + r.text.split(/\s+/).length, 0
-            );
-            
-            // Estimate how many regions the claim spans
-            const regionRatio = claimWordCount / Math.max(paragraphWordCount, 1);
-            const estimatedRegionCount = Math.max(1, Math.ceil(matchedRegions.length * regionRatio));
-            
-            // Find approximate start by looking for any word overlap
-            let startIdx = 0;
-            const claimFirstWords = claim.text.toLowerCase().split(/\s+/).slice(0, 3);
-            for (let i = 0; i < matchedRegions.length; i++) {
-              const regionWords = matchedRegions[i].text.toLowerCase().split(/\s+/);
-              if (claimFirstWords.some(w => regionWords.some(rw => rw.includes(w) || w.includes(rw)))) {
-                startIdx = i;
-                break;
-              }
-            }
-            
-            const endIdx = Math.min(startIdx + estimatedRegionCount, matchedRegions.length);
-            claimRegions = matchedRegions.slice(startIdx, endIdx);
-          }
-          
-          if (claimRegions.length > 0) {
-            // Draw highlight for EACH individual text region (not bounding box)
-            for (const region of claimRegions) {
-              ctx.fillStyle = fillColor;
-              ctx.fillRect(region.x, region.y, region.width, region.height);
-            }
-            
-            // Create a single clickable region using the overall bounding box
-            const claimBox = getBoundingBox(claimRegions);
-            if (claimBox) {
-              regions.push({
-                x: claimBox.x - 2,
-                y: claimBox.y - 2,
-                width: claimBox.width + 4,
-                height: claimBox.height + 4,
-                paragraphIndex: p.index,
-                claimIndex: claimIdx,
-                globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
-                color: claimColor,
-                displayId,
-              });
-            }
-          }
-        }
-      } else {
-        // No claims - highlight individual regions (not full bounding box)
-        const fillColor = colorMap[overallColor] || colorMap.blue;
-        
-        for (const region of matchedRegions) {
-          ctx.fillStyle = fillColor;
-          ctx.fillRect(region.x, region.y, region.width, region.height);
-        }
-        
-        const paragraphBox = getBoundingBox(matchedRegions);
-        if (paragraphBox) {
-          regions.push({
-            x: paragraphBox.x - 2,
-            y: paragraphBox.y - 2,
-            width: paragraphBox.width + 4,
-            height: paragraphBox.height + 4,
-            paragraphIndex: p.index,
-            claimIndex: null,
-            globalClaimIndex: null,
-            color: overallColor,
-            displayId: `P${p.index + 1}`,
+    // For each claim, find its location on this page
+    for (let globalIdx = 0; globalIdx < allClaims.length; globalIdx++) {
+      const claim = allClaims[globalIdx];
+      const locations = documentMap.findClaimLocation(claim.claim.text, claim.displayId);
+
+      for (const location of locations) {
+        if (location.pageIndex !== pageIndex) continue;
+
+        // Create highlight rects for each merged rect
+        for (let rectIdx = 0; rectIdx < location.rects.length; rectIdx++) {
+          newHighlights.push({
+            id: `claim-${claim.displayId}-${rectIdx}`,
+            claimId: claim.displayId,
+            pageIndex: location.pageIndex,
+            rect: location.rects[rectIdx],
+            verdict: claim.color,
+            globalClaimIndex: globalIdx,
+            paragraphIndex: claim.paragraphIndex,
+            claimIndex: claim.claimIndex,
           });
         }
       }
     }
-    
-    console.log('[PDF] Created', regions.length, 'clickable regions on page', currentPdfPage);
-    setPdfClickableRegions(regions);
-  };
 
-  const getCanvasCoordinates = useCallback((e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } | null => {
-    if (!pdfCanvasRef.current) return null;
-    
-    const canvas = pdfCanvasRef.current;
-    const rect = canvas.getBoundingClientRect();
-    
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
-    
-    return { x, y };
-  }, []);
+    // Also add highlights for blue paragraphs
+    for (const bp of blueParagraphs) {
+      const p = paragraphs.find(para => para.index === bp.paragraphIndex);
+      if (!p) continue;
 
-  const findRegionAtPoint = useCallback((x: number, y: number, tolerance: number = 5): ClickableRegion | null => {
-    // Sort regions by area (smaller first) to prefer more specific matches
-    const sortedRegions = [...pdfClickableRegions].sort((a, b) => 
-      (a.width * a.height) - (b.width * b.height)
-    );
-    
-    for (const region of sortedRegions) {
-      const inX = x >= (region.x - tolerance) && x <= (region.x + region.width + tolerance);
-      const inY = y >= (region.y - tolerance) && y <= (region.y + region.height + tolerance);
-      
-      if (inX && inY) {
-        return region;
-      }
-    }
-    return null;
-  }, [pdfClickableRegions]);
+      const locations = documentMap.findClaimLocation(p.text, `bp-${bp.paragraphIndex}`);
+      for (const location of locations) {
+        if (location.pageIndex !== pageIndex) continue;
 
-  const handlePdfCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const coords = getCanvasCoordinates(e);
-    if (!coords) return;
-    
-    console.log('[PDF Click] at', coords.x.toFixed(0), coords.y.toFixed(0));
-    
-    const region = findRegionAtPoint(coords.x, coords.y, 15);
-    
-    if (region) {
-      console.log('[PDF Click] Hit region', region.displayId, 'claim idx', region.globalClaimIndex);
-      if (region.globalClaimIndex !== null) {
-        selectClaim(region.globalClaimIndex);
-      } else {
-        const bluePara = blueParagraphs.find(bp => bp.paragraphIndex === region.paragraphIndex);
-        if (bluePara) {
-          selectBlueParagraph(bluePara);
+        for (let rectIdx = 0; rectIdx < location.rects.length; rectIdx++) {
+          newHighlights.push({
+            id: `blue-${bp.paragraphIndex}-${rectIdx}`,
+            pageIndex: location.pageIndex,
+            rect: location.rects[rectIdx],
+            verdict: 'blue',
+            paragraphIndex: bp.paragraphIndex,
+            claimIndex: null,
+          });
         }
       }
     }
-  }, [getCanvasCoordinates, findRegionAtPoint, selectClaim, selectBlueParagraph, blueParagraphs]);
 
-  const handlePdfCanvasMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const coords = getCanvasCoordinates(e);
-    if (!coords) {
-      if (hoveredRegion) setHoveredRegion(null);
-      return;
-    }
-    
-    const region = findRegionAtPoint(coords.x, coords.y, 3);
-    
-    if (region) {
-      if (!hoveredRegion || hoveredRegion.displayId !== region.displayId) {
-        setHoveredRegion(region);
-        if (pdfCanvasRef.current) {
-          pdfCanvasRef.current.style.cursor = 'pointer';
-        }
-      }
-    } else {
-      if (hoveredRegion) {
-        setHoveredRegion(null);
-        if (pdfCanvasRef.current) {
-          pdfCanvasRef.current.style.cursor = 'default';
-        }
+    console.log('[PDF] Built', newHighlights.length, 'DOM highlights for page', pageIndex + 1);
+    setHighlights(newHighlights);
+  }, [documentMap, allClaims, blueParagraphs, paragraphs]);
+
+  // Handle highlight click from DOM overlay
+  const handleHighlightClick = useCallback((highlight: HighlightRect) => {
+    if (highlight.globalClaimIndex !== undefined && highlight.globalClaimIndex !== null) {
+      selectClaim(highlight.globalClaimIndex);
+      setSelectedHighlightId(highlight.id);
+    } else if (highlight.paragraphIndex !== undefined) {
+      const bluePara = blueParagraphs.find(bp => bp.paragraphIndex === highlight.paragraphIndex);
+      if (bluePara) {
+        selectBlueParagraph(bluePara);
       }
     }
-  }, [getCanvasCoordinates, findRegionAtPoint, hoveredRegion]);
+  }, [selectClaim, selectBlueParagraph, blueParagraphs]);
 
-  const handlePdfCanvasLeave = useCallback(() => {
-    setHoveredRegion(null);
-    if (pdfCanvasRef.current) {
-      pdfCanvasRef.current.style.cursor = 'default';
-    }
+  // Handle highlight hover
+  const handleHighlightHover = useCallback((highlight: HighlightRect | null) => {
+    setHoveredHighlightId(highlight?.id);
   }, []);
 
   const goToPrevClaim = useCallback(() => {
@@ -830,30 +689,18 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                     <canvas 
                       ref={pdfCanvasRef} 
                       className="shadow-lg bg-background block"
-                      onClick={handlePdfCanvasClick}
-                      onMouseMove={handlePdfCanvasMove}
-                      onMouseLeave={handlePdfCanvasLeave}
                     />
-                    {hoveredRegion && pdfCanvasRef.current && (
-                      <div
-                        className="absolute pointer-events-none border-2 rounded-sm"
-                        style={{
-                          left: `${(hoveredRegion.x / pdfCanvasRef.current.width) * 100}%`,
-                          top: `${(hoveredRegion.y / pdfCanvasRef.current.height) * 100}%`,
-                          width: `${(hoveredRegion.width / pdfCanvasRef.current.width) * 100}%`,
-                          height: `${(hoveredRegion.height / pdfCanvasRef.current.height) * 100}%`,
-                          borderColor: hoveredRegion.color === 'green' ? 'rgb(34, 197, 94)' :
-                                       hoveredRegion.color === 'yellow' ? 'rgb(250, 204, 21)' :
-                                       hoveredRegion.color === 'red' ? 'rgb(239, 68, 68)' :
-                                       'rgb(59, 130, 246)',
-                          backgroundColor: hoveredRegion.color === 'green' ? 'rgba(34, 197, 94, 0.2)' :
-                                           hoveredRegion.color === 'yellow' ? 'rgba(250, 204, 21, 0.25)' :
-                                           hoveredRegion.color === 'red' ? 'rgba(239, 68, 68, 0.2)' :
-                                           'rgba(59, 130, 246, 0.15)',
-                          boxShadow: '0 0 8px 2px currentColor',
-                        }}
-                      />
-                    )}
+                    {/* DOM-based overlay for reliable click detection */}
+                    <ThesisPageOverlay
+                      pageIndex={currentPdfPage - 1}
+                      scale={pdfScale}
+                      pageHeight={currentPageHeight}
+                      highlights={highlights}
+                      selectedHighlightId={selectedHighlightId}
+                      hoveredHighlightId={hoveredHighlightId}
+                      onHighlightClick={handleHighlightClick}
+                      onHighlightHover={handleHighlightHover}
+                    />
                   </div>
                 )}
               </div>
