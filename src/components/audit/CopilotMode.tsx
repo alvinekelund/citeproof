@@ -96,6 +96,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set());
   const [retryingParagraphs, setRetryingParagraphs] = useState<Set<number>>(new Set());
   const [currentBatchSize, setCurrentBatchSize] = useState(3);
+  const [tokenUsage, setTokenUsage] = useState({ input: 0, output: 0 });
 
   // Helper to analyze and deduplicate citations
   const analyzeAndDeduplicateCitations = useCallback(async (text: string, currentSources: Source[]) => {
@@ -578,8 +579,11 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     
     // OPTIMIZATION: Only send sources that are actually cited in this paragraph
     const relevantSources = getRelevantSources(paragraph.text, sourcesWithText);
-    const totalChars = relevantSources.reduce((sum, s) => sum + (s.extracted_text?.length || 0), 0);
-    console.log(`Checking paragraph with ${relevantSources.length} relevant sources (of ${sourcesWithText.length} total, ${totalChars} chars)`);
+    const sourceChars = relevantSources.reduce((sum, s) => sum + (s.extracted_text?.length || 0), 0);
+    const paragraphChars = paragraph.text.length;
+    const totalInputChars = sourceChars + paragraphChars;
+    const estimatedInputTokens = Math.ceil(totalInputChars / 4); // ~4 chars per token
+    console.log(`Checking paragraph with ${relevantSources.length} relevant sources (of ${sourcesWithText.length} total, ~${estimatedInputTokens.toLocaleString()} tokens)`);
     
     const sourcePayload = relevantSources.map(s => ({
       id: s.id,
@@ -698,6 +702,15 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         }
 
         const result: CheckResultType = data.result;
+        
+        // Track token usage (estimate output as ~500 tokens per check)
+        const estimatedOutputTokens = 500;
+        if (isBatch) {
+          setTokenUsage(prev => ({
+            input: prev.input + estimatedInputTokens,
+            output: prev.output + estimatedOutputTokens,
+          }));
+        }
 
         // Update paragraph with result
         let updatedParagraphs: ParagraphData[] = [];
@@ -811,6 +824,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     abortRef.current = false;
     setBatchProgress(0);
     setCurrentBatchSize(3); // Reset batch size
+    setTokenUsage({ input: 0, output: 0 }); // Reset token usage
 
     const totalToCheck = uncheckedParagraphs.length;
     let completed = 0;
@@ -1497,10 +1511,16 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                   </div>
                 </div>
                 {isBatchChecking && (
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     <Progress value={batchProgress} className="h-2" />
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>{Math.round(batchProgress)}% complete</span>
+                      <span className="font-mono">
+                        ~{((tokenUsage.input + tokenUsage.output) / 1000).toFixed(1)}K tokens used
+                      </span>
+                    </div>
                     {retryingParagraphs.size > 0 && (
-                      <p className="text-xs text-muted-foreground animate-pulse">
+                      <p className="text-xs text-amber-500 animate-pulse">
                         Waiting for API... ({retryingParagraphs.size} pending)
                       </p>
                     )}
