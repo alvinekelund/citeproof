@@ -237,7 +237,7 @@ serve(async (req) => {
       console.log(`Calling Google Gemini API (attempt ${attempt + 1}/${MAX_RETRIES})...`);
 
       try {
-        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`, {
+        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${GOOGLE_AI_API_KEY}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
