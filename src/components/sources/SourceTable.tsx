@@ -519,21 +519,34 @@ export function SourceTable({ sources, libraryItems, onUpdate, usedSourceIds, on
                   )}
                 >
                   <TableCell>
-                    <button
-                      onClick={() => onToggleStatus?.(source.id, !isUsed)}
-                      className="transition-all hover:scale-105"
-                      title={isUsed ? "Click to mark as unused" : "Click to mark as used"}
-                    >
-                      {isUsed ? (
-                        <span className="text-xs bg-verdict-green-bg text-verdict-green px-1.5 py-0.5 rounded cursor-pointer hover:bg-verdict-green/20">
-                          Used
-                        </span>
-                      ) : (
-                        <span className="text-xs bg-amber-500/20 text-amber-600 px-1.5 py-0.5 rounded cursor-pointer hover:bg-amber-500/30">
-                          Unused
-                        </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => onToggleStatus?.(source.id, !isUsed)}
+                        className="transition-all hover:scale-105"
+                        title={isUsed ? "Click to mark as unused" : "Click to mark as used"}
+                      >
+                        {isUsed ? (
+                          <span className="text-xs bg-verdict-green-bg text-verdict-green px-1.5 py-0.5 rounded cursor-pointer hover:bg-verdict-green/20">
+                            Used
+                          </span>
+                        ) : (
+                          <span className="text-xs bg-amber-500/20 text-amber-600 px-1.5 py-0.5 rounded cursor-pointer hover:bg-amber-500/30">
+                            Unused
+                          </span>
+                        )}
+                      </button>
+                      {/* Warning indicator for missing text */}
+                      {!textStatus.get(source.id) && (
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="text-xs">Missing extracted text</p>
+                          </TooltipContent>
+                        </Tooltip>
                       )}
-                    </button>
+                    </div>
                   </TableCell>
                   <TableCell>
                     {editingId === source.id ? (
