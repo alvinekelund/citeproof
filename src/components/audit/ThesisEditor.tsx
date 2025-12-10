@@ -97,8 +97,10 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const [viewerSearchText, setViewerSearchText] = useState<string | undefined>(undefined);
   const [viewerHighlightColor, setViewerHighlightColor] = useState<'green' | 'yellow' | 'red' | 'blue' | undefined>(undefined);
   const [copied, setCopied] = useState(false);
-  // Default to PDF view if available, otherwise claims view
-  const [viewMode, setViewMode] = useState<'claims' | 'document' | 'pdf'>(thesisFilePath ? 'pdf' : 'claims');
+  // Main view: PDF or Full Text
+  const [viewMode, setViewMode] = useState<'document' | 'pdf'>(thesisFilePath ? 'pdf' : 'document');
+  // Sidebar mode: Claims or Paragraphs list
+  const [sidebarMode, setSidebarMode] = useState<'claims' | 'paragraphs'>('claims');
   const [historyOpen, setHistoryOpen] = useState(false);
   
   // PDF overlay mode state
@@ -109,6 +111,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const [isPdfLoading, setIsPdfLoading] = useState(false);
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
+  const renderTaskRef = useRef<pdfjsLib.RenderTask | null>(null);
   
   // PDF text mapping for page navigation
   const [pdfTextMap, setPdfTextMap] = useState<PdfTextMap | null>(null);
@@ -225,7 +228,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
 
   // Update viewMode when thesisFilePath becomes available
   useEffect(() => {
-    if (thesisFilePath && viewMode === 'claims') {
+    if (thesisFilePath && viewMode === 'document') {
       setViewMode('pdf');
     }
   }, [thesisFilePath]);
@@ -295,6 +298,16 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const renderPdfPage = async (pageNum: number) => {
     if (!pdfDoc || !pdfCanvasRef.current) return;
     
+    // Cancel any pending render operation
+    if (renderTaskRef.current) {
+      try {
+        renderTaskRef.current.cancel();
+      } catch (e) {
+        // Ignore cancel errors
+      }
+      renderTaskRef.current = null;
+    }
+    
     try {
       const page = await pdfDoc.getPage(pageNum);
       const canvas = pdfCanvasRef.current;
@@ -307,15 +320,21 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       
-      await page.render({
+      const renderTask = page.render({
         canvasContext: context,
         viewport: viewport,
-      }).promise;
+      });
+      renderTaskRef.current = renderTask;
+      
+      await renderTask.promise;
+      renderTaskRef.current = null;
       
       // Draw overlays after rendering
       await drawTextOverlays(context, viewport, pdfDoc);
-    } catch (err) {
-      console.error("Error rendering PDF page:", err);
+    } catch (err: any) {
+      if (err?.name !== 'RenderingCancelledException') {
+        console.error("Error rendering PDF page:", err);
+      }
     }
   };
 
@@ -669,7 +688,8 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as 'claims' | 'document' | 'pdf')}>
+          {/* Main view toggle: PDF | Full Text */}
+          <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as 'document' | 'pdf')}>
             <TabsList className="h-8">
               <TooltipProvider>
                 <Tooltip>
@@ -691,10 +711,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
               <TabsTrigger value="document" className="h-7 px-2 text-xs">
                 <FileText className="h-3.5 w-3.5 mr-1" />
                 Full Text
-              </TabsTrigger>
-              <TabsTrigger value="claims" className="h-7 px-2 text-xs">
-                <List className="h-3.5 w-3.5 mr-1" />
-                Claims
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -831,53 +847,156 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
             </ScrollArea>
           </Card>
 
-          {/* Claim Detail - Right Panel */}
-          <div className="space-y-4">
-            {currentClaim ? (
-              <>
-                <Card className="p-3">
-                  <div className="flex items-center justify-between">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={goToPrevClaim}
-                      disabled={selectedClaimIndex === null || selectedClaimIndex === 0}
-                    >
-                      <ChevronLeft className="h-4 w-4 mr-1" />
-                      Prev
-                    </Button>
-                    
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-muted-foreground">
-                        {currentClaim.displayId}
-                      </span>
-                      <VerdictBadge color={currentClaim.color} />
-                    </div>
-                    
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={goToNextClaim}
-                      disabled={selectedClaimIndex === null || selectedClaimIndex === allClaims.length - 1}
-                    >
-                      Next
-                      <ChevronRight className="h-4 w-4 ml-1" />
-                    </Button>
-                  </div>
-                </Card>
+          {/* Right Panel - Claims List + Detail */}
+          <div className="space-y-3">
+            {/* Sidebar Mode Toggle */}
+            <Card className="p-2">
+              <Tabs value={sidebarMode} onValueChange={(v) => setSidebarMode(v as 'claims' | 'paragraphs')}>
+                <TabsList className="w-full h-8">
+                  <TabsTrigger value="claims" className="flex-1 h-7 text-xs">
+                    <List className="h-3.5 w-3.5 mr-1" />
+                    Claims ({allClaims.length})
+                  </TabsTrigger>
+                  <TabsTrigger value="paragraphs" className="flex-1 h-7 text-xs">
+                    <FileText className="h-3.5 w-3.5 mr-1" />
+                    Paragraphs ({paragraphs.filter(p => p.checked).length})
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </Card>
 
-                <ClaimCard
-                  claim={currentClaim.claim}
-                  sources={sources}
-                  onOpenSource={handleOpenSource}
-                  onImplementRewrite={handleImplementRewrite}
-                  showImplementButton={true}
-                  originalText={currentClaimHistory?.versions[0]?.text}
-                  onRevert={handleRevert}
-                  highlightColor={currentClaim.color}
-                  displayId={currentClaim.displayId}
-                />
-              </>
+            {/* Claims/Paragraphs List */}
+            <Card className="overflow-hidden">
+              <ScrollArea className="h-[200px]">
+                <div className="p-2 space-y-1">
+                  {sidebarMode === 'claims' ? (
+                    allClaims.map((item, idx) => {
+                      const key = `${item.paragraphIndex}-${item.claimIndex}`;
+                      const isModified = rewriteHistory.has(key);
+                      
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => selectClaim(idx)}
+                          className={cn(
+                            "w-full text-left p-2 rounded-md transition-colors text-xs",
+                            "hover:bg-accent/50",
+                            selectedClaimIndex === idx 
+                              ? "bg-accent border border-primary/30" 
+                              : "bg-card border border-transparent"
+                          )}
+                        >
+                          <div className="flex items-center gap-2">
+                            <div 
+                              className={cn(
+                                "w-2 h-2 rounded-full flex-shrink-0",
+                                item.color === 'green' && "bg-green-500",
+                                item.color === 'yellow' && "bg-yellow-500",
+                                item.color === 'red' && "bg-red-500",
+                                item.color === 'blue' && "bg-blue-500"
+                              )}
+                            />
+                            <span className="font-mono text-muted-foreground">{item.displayId}</span>
+                            <span className="truncate flex-1">{item.claim.text.slice(0, 40)}...</span>
+                            {isModified && (
+                              <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5 bg-orange-500/10 text-orange-600 border-orange-500/30">
+                                Mod
+                              </Badge>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    paragraphs.filter(p => p.checked).map((p) => {
+                      const pClaims = allClaims.filter(c => c.paragraphIndex === p.index);
+                      const colors = pClaims.map(c => c.color);
+                      const hasRed = colors.includes('red');
+                      const hasYellow = colors.includes('yellow');
+                      
+                      return (
+                        <button
+                          key={p.index}
+                          onClick={() => {
+                            const firstClaim = allClaims.findIndex(c => c.paragraphIndex === p.index);
+                            if (firstClaim >= 0) selectClaim(firstClaim);
+                          }}
+                          className={cn(
+                            "w-full text-left p-2 rounded-md transition-colors text-xs",
+                            "hover:bg-accent/50",
+                            currentClaim?.paragraphIndex === p.index 
+                              ? "bg-accent border border-primary/30" 
+                              : "bg-card border border-transparent"
+                          )}
+                        >
+                          <div className="flex items-center gap-2">
+                            <div 
+                              className={cn(
+                                "w-2 h-2 rounded-full flex-shrink-0",
+                                hasRed ? "bg-red-500" : hasYellow ? "bg-yellow-500" : "bg-green-500"
+                              )}
+                            />
+                            <span className="font-mono text-muted-foreground">P{p.index + 1}</span>
+                            <span className="truncate flex-1">{p.text.slice(0, 40)}...</span>
+                            <span className="text-muted-foreground">{pClaims.length} claims</span>
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </ScrollArea>
+            </Card>
+
+            {/* Navigation */}
+            {currentClaim && (
+              <Card className="p-2">
+                <div className="flex items-center justify-between">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={goToPrevClaim}
+                    disabled={selectedClaimIndex === null || selectedClaimIndex === 0}
+                    className="h-7 text-xs"
+                  >
+                    <ChevronLeft className="h-3 w-3 mr-1" />
+                    Prev
+                  </Button>
+                  
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono text-muted-foreground">
+                      {currentClaim.displayId}
+                    </span>
+                    <VerdictBadge color={currentClaim.color} />
+                  </div>
+                  
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={goToNextClaim}
+                    disabled={selectedClaimIndex === null || selectedClaimIndex === allClaims.length - 1}
+                    className="h-7 text-xs"
+                  >
+                    Next
+                    <ChevronRight className="h-3 w-3 ml-1" />
+                  </Button>
+                </div>
+              </Card>
+            )}
+
+            {/* Claim Detail */}
+            {currentClaim ? (
+              <ClaimCard
+                claim={currentClaim.claim}
+                sources={sources}
+                onOpenSource={handleOpenSource}
+                onImplementRewrite={handleImplementRewrite}
+                showImplementButton={true}
+                originalText={currentClaimHistory?.versions[0]?.text}
+                onRevert={handleRevert}
+                highlightColor={currentClaim.color}
+                displayId={currentClaim.displayId}
+              />
             ) : selectedBlueParagraph ? (
               <Card className="p-4 bg-blue-500/5 border-blue-500/20">
                 <div className="space-y-4">
@@ -913,188 +1032,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
               <Card className="p-6 text-center text-muted-foreground">
                 <p className="text-sm">Select a claim to view details</p>
               </Card>
-            )}
-          </div>
-        </div>
-      ) : viewMode === 'claims' ? (
-        <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-          {/* Claims List - Left Panel */}
-          <Card className="overflow-hidden">
-            <div className="p-3 border-b bg-muted/50">
-              <h3 className="font-medium text-sm">All Claims</h3>
-            </div>
-            <ScrollArea className="h-[calc(100vh-280px)]">
-              <div className="p-2 space-y-1">
-                {allClaims.map((item, idx) => {
-                  const key = `${item.paragraphIndex}-${item.claimIndex}`;
-                  const isModified = rewriteHistory.has(key);
-                  
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => selectClaim(idx)}
-                      className={cn(
-                        "w-full text-left p-3 rounded-lg transition-colors",
-                        "hover:bg-accent/50",
-                        selectedClaimIndex === idx 
-                          ? "bg-accent border border-primary/30" 
-                          : "bg-card border border-transparent"
-                      )}
-                    >
-                      <div className="flex items-start gap-2">
-                        <div 
-                          className={cn(
-                            "w-2 h-2 rounded-full mt-1.5 flex-shrink-0",
-                            item.color === 'green' && "bg-green-500",
-                            item.color === 'yellow' && "bg-yellow-500",
-                            item.color === 'red' && "bg-red-500",
-                            item.color === 'blue' && "bg-blue-500"
-                          )}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-xs font-mono text-muted-foreground">
-                              {item.displayId}
-                            </span>
-                            {isModified && (
-                              <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 bg-orange-500/10 text-orange-600 border-orange-500/30">
-                                Modified
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="text-sm line-clamp-2">
-                            {item.claim.text.slice(0, 80)}
-                            {item.claim.text.length > 80 ? '...' : ''}
-                          </p>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </Card>
-
-          {/* Claim Detail - Right Panel */}
-          <div className="space-y-4">
-            <Card className="p-3">
-              <div className="flex items-center justify-between">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={goToPrevClaim}
-                  disabled={selectedClaimIndex === 0}
-                >
-                  <ChevronLeft className="h-4 w-4 mr-1" />
-                  Previous
-                </Button>
-                
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-mono text-muted-foreground">
-                    {currentClaim?.displayId}
-                  </span>
-                  <VerdictBadge color={currentClaim?.color || 'blue'} />
-                  {currentClaimHistory && currentClaimHistory.versions.length > 0 && (
-                    <div className="flex items-center gap-1">
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        onClick={() => setHistoryOpen(!historyOpen)}
-                        className="text-blue-600 border-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950"
-                      >
-                        <History className="h-4 w-4 mr-1" />
-                        History ({currentClaimHistory.versions.length})
-                      </Button>
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        onClick={handleRevert}
-                        className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950"
-                      >
-                        <Undo2 className="h-4 w-4 mr-1" />
-                        Revert
-                      </Button>
-                    </div>
-                  )}
-                </div>
-                
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={goToNextClaim}
-                  disabled={selectedClaimIndex === allClaims.length - 1}
-                >
-                  Next
-                  <ChevronRight className="h-4 w-4 ml-1" />
-                </Button>
-              </div>
-            </Card>
-
-            {historyOpen && currentClaimHistory && currentClaimHistory.versions.length > 0 && (
-              <Card className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300 flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    Version History
-                  </h4>
-                  <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(false)} className="h-6 text-xs">
-                    Close
-                  </Button>
-                </div>
-                <div className="space-y-2">
-                  {currentClaimHistory.versions.map((version, idx) => (
-                    <div 
-                      key={idx} 
-                      className="flex items-start justify-between gap-2 p-2 bg-background rounded border"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Badge variant="outline" className="text-[10px]">
-                            v{idx + 1}
-                          </Badge>
-                          <span className="text-[10px] text-muted-foreground">
-                            {version.timestamp.toLocaleTimeString()}
-                          </span>
-                        </div>
-                        <p className="text-xs text-muted-foreground line-clamp-2">
-                          {version.text.slice(0, 100)}...
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleRevertToVersion(idx)}
-                        className="h-7 text-xs flex-shrink-0"
-                      >
-                        Restore
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
-
-            <Card className="p-4 bg-muted/30">
-              <div className="text-xs text-muted-foreground mb-2 font-medium uppercase tracking-wide">
-                Paragraph Context
-              </div>
-              <p className="text-sm text-muted-foreground leading-relaxed line-clamp-4">
-                {currentClaim?.paragraphText}
-              </p>
-            </Card>
-
-            {currentClaim && (
-              <ClaimCard
-                claim={currentClaim.claim}
-                sources={sources}
-                onOpenSource={handleOpenSource}
-                onImplementRewrite={handleImplementRewrite}
-                showImplementButton={true}
-                originalText={currentClaimHistory?.versions[0]?.text}
-                onRevert={handleRevert}
-                highlightColor={currentClaim.color}
-                displayId={currentClaim.displayId}
-              />
             )}
           </div>
         </div>
