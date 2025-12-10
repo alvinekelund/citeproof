@@ -8,6 +8,7 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<'copilot' | 'library' | 'history'>('copilot');
   const [usedSourceIds, setUsedSourceIds] = useState<Set<string>>(new Set());
   const [unmatchedCitations, setUnmatchedCitations] = useState<UnmatchedCitation[]>([]);
+  const [manuallyToggledSources, setManuallyToggledSources] = useState<Map<string, boolean>>(new Map());
   const copilotRef = useRef<CopilotModeHandle>(null);
 
   // Callback to trigger source refresh when switching tabs
@@ -33,8 +34,15 @@ const Index = () => {
     );
   }, []);
 
-  // Handle toggling source status manually
+  // Handle toggling source status manually - this should persist
   const handleToggleStatus = useCallback((sourceId: string, isUsed: boolean) => {
+    // Store manual override
+    setManuallyToggledSources(prev => {
+      const next = new Map(prev);
+      next.set(sourceId, isUsed);
+      return next;
+    });
+    // Update usedSourceIds
     setUsedSourceIds(prev => {
       const next = new Set(prev);
       if (isUsed) {
@@ -45,6 +53,22 @@ const Index = () => {
       return next;
     });
   }, []);
+
+  // Handle used sources change from CopilotMode - merge with manual overrides
+  const handleUsedSourcesChange = useCallback((newUsedIds: Set<string>) => {
+    setUsedSourceIds(prev => {
+      const merged = new Set(newUsedIds);
+      // Apply manual overrides
+      manuallyToggledSources.forEach((isUsed, sourceId) => {
+        if (isUsed) {
+          merged.add(sourceId);
+        } else {
+          merged.delete(sourceId);
+        }
+      });
+      return merged;
+    });
+  }, [manuallyToggledSources]);
 
   // Handle sources updated in library
   const handleSourcesUpdated = useCallback(() => {
@@ -58,7 +82,7 @@ const Index = () => {
         <CopilotMode 
           ref={copilotRef}
           onSourcesChange={handleSourcesUpdated}
-          onUsedSourcesChange={setUsedSourceIds}
+          onUsedSourcesChange={handleUsedSourcesChange}
           onUnmatchedCitationsChange={setUnmatchedCitations}
         />
       </div>
