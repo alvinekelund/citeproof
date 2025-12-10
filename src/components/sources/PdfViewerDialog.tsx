@@ -407,20 +407,30 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
       
       setHighlightNotFound(false);
       
-      // fuzzyMatch now returns positions in original text space, so use directly
+      // Get the matched character range - STRICT boundaries
       const origStart = match.start;
       const origEnd = match.end;
+      const searchLen = normalizePdfText(text).length;
       
-      // Get item indices for the match
-      const startItemIdx = pageText[origStart]?.itemIdx ?? 0;
-      const endItemIdx = pageText[Math.min(origEnd - 1, pageText.length - 1)]?.itemIdx ?? textItems.length - 1;
-      
-      // Collect rects
+      // Collect rects ONLY for items that are actually within the matched text
       const rects: { x: number; y: number; width: number; height: number }[] = [];
+      let totalHighlightedChars = 0;
+      const maxChars = searchLen * 1.2; // Allow 20% extra max
       
-      for (let idx = startItemIdx; idx <= endItemIdx && idx < textItems.length; idx++) {
-        const item = textItems[idx];
-        if (!item.str.trim()) continue;
+      // Build a map of which items are in the matched range
+      for (let charPos = origStart; charPos < origEnd && charPos < pageText.length; charPos++) {
+        const charInfo = pageText[charPos];
+        if (!charInfo) continue;
+        
+        const item = textItems[charInfo.itemIdx];
+        if (!item || !item.str.trim()) continue;
+        
+        // Check if we already added this item
+        const existingRect = rects.find(r => (r as any).itemIdx === charInfo.itemIdx);
+        if (existingRect) continue;
+        
+        // Stop if we've highlighted enough characters
+        if (totalHighlightedChars >= maxChars) break;
         
         const [a, b, c, d, tx, ty] = item.transform;
         const x = tx * viewport.scale;
@@ -428,7 +438,9 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         const width = item.width * viewport.scale;
         const height = Math.abs(d) * viewport.scale * 1.2;
         
-        rects.push({ x, y: y - height, width, height });
+        const rect = { x, y: y - height, width, height, itemIdx: charInfo.itemIdx } as any;
+        rects.push(rect);
+        totalHighlightedChars += item.str.length;
       }
       
       setHighlightRects(rects);
