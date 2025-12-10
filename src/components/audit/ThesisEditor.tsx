@@ -236,32 +236,133 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       
+      // Render the PDF page first
       await page.render({
         canvasContext: context,
         viewport: viewport,
       }).promise;
       
-      // Draw colored overlays for claims on this page
-      // This is a simplified version - in a full implementation you'd map text positions
-      drawClaimOverlays(context, viewport);
+      // Extract text content with positions
+      const textContent = await page.getTextContent();
+      
+      // Draw colored overlays based on text matching
+      await drawTextOverlays(context, viewport, textContent);
     } catch (err) {
       console.error("Error rendering PDF page:", err);
     }
   };
 
-  const drawClaimOverlays = (ctx: CanvasRenderingContext2D, viewport: pdfjsLib.PageViewport) => {
-    // Get color counts for legend
-    const colors = {
-      green: { count: claimCounts.green, rgba: 'rgba(34, 197, 94, 0.15)' },
-      yellow: { count: claimCounts.yellow, rgba: 'rgba(250, 204, 21, 0.15)' },
-      red: { count: claimCounts.red, rgba: 'rgba(239, 68, 68, 0.15)' },
-      blue: { count: claimCounts.blue, rgba: 'rgba(59, 130, 246, 0.15)' },
-    };
+  // Normalize text for matching (remove extra spaces, lowercase, etc.)
+  const normalizeText = (text: string): string => {
+    return text.toLowerCase().replace(/\s+/g, ' ').trim();
+  };
+
+  // Find which paragraph a piece of text belongs to based on fuzzy matching
+  const findParagraphForText = (pdfText: string): { paragraphIndex: number; color: 'green' | 'yellow' | 'red' | 'blue' } | null => {
+    const normalizedPdfText = normalizeText(pdfText);
+    if (normalizedPdfText.length < 20) return null; // Too short to match reliably
     
-    // Draw a simple legend in the corner
-    ctx.font = '12px sans-serif';
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillText(`Claims: ${claimCounts.green}✓ ${claimCounts.yellow}! ${claimCounts.red}✗`, 10, 20);
+    for (const p of paragraphs) {
+      if (!p.checked || !p.result) continue;
+      
+      const normalizedParagraph = normalizeText(p.text);
+      
+      // Check if this PDF text is part of this paragraph
+      if (normalizedParagraph.includes(normalizedPdfText) || normalizedPdfText.includes(normalizedParagraph.slice(0, 50))) {
+        // Determine color based on result
+        const color = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
+        return { paragraphIndex: p.index, color };
+      }
+    }
+    
+    return null;
+  };
+
+  // Draw text overlays on the PDF
+  const drawTextOverlays = async (
+    ctx: CanvasRenderingContext2D, 
+    viewport: pdfjsLib.PageViewport,
+    textContent: { items: any[] }
+  ) => {
+    const colorMap: Record<string, string> = {
+      green: 'rgba(34, 197, 94, 0.25)',
+      yellow: 'rgba(250, 204, 21, 0.3)',
+      red: 'rgba(239, 68, 68, 0.25)',
+      blue: 'rgba(59, 130, 246, 0.2)',
+    };
+
+    // Group text items into lines for better matching
+    let currentLineY = -1;
+    let currentLineText = '';
+    let lineItems: any[] = [];
+    const lines: { text: string; items: any[]; y: number }[] = [];
+    
+    for (const item of textContent.items) {
+      if (!item.str || item.str.trim() === '') continue;
+      
+      const transform = item.transform;
+      const y = transform[5];
+      
+      // If this is a new line (different Y position)
+      if (Math.abs(y - currentLineY) > 5) {
+        if (currentLineText.trim()) {
+          lines.push({ text: currentLineText.trim(), items: [...lineItems], y: currentLineY });
+        }
+        currentLineY = y;
+        currentLineText = item.str;
+        lineItems = [item];
+      } else {
+        currentLineText += ' ' + item.str;
+        lineItems.push(item);
+      }
+    }
+    // Don't forget the last line
+    if (currentLineText.trim()) {
+      lines.push({ text: currentLineText.trim(), items: [...lineItems], y: currentLineY });
+    }
+
+    // For each paragraph, find matching lines and highlight them
+    for (const p of paragraphs) {
+      if (!p.checked || !p.result) continue;
+      
+      const color = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
+      const fillColor = colorMap[color] || colorMap.blue;
+      
+      // Get first ~100 chars of paragraph for matching
+      const paragraphStart = normalizeText(p.text).slice(0, 100);
+      const paragraphWords = paragraphStart.split(' ').filter(w => w.length > 3);
+      
+      // Find lines that match this paragraph
+      for (const line of lines) {
+        const normalizedLine = normalizeText(line.text);
+        
+        // Check if line contains significant words from paragraph start
+        let matchCount = 0;
+        for (const word of paragraphWords.slice(0, 5)) {
+          if (normalizedLine.includes(word)) matchCount++;
+        }
+        
+        // If at least 3 words match, this line is likely part of the paragraph
+        if (matchCount >= 3 || paragraphStart.includes(normalizedLine.slice(0, 30))) {
+          // Draw highlight for each text item in this line
+          for (const item of line.items) {
+            const transform = item.transform;
+            const x = transform[4];
+            const y = transform[5];
+            const width = item.width || (item.str.length * 6 * pdfScale);
+            const height = item.height || 12 * pdfScale;
+            
+            // Transform coordinates to canvas space
+            const [a, b, c, d, e, f] = viewport.transform;
+            const canvasX = a * x + c * y + e;
+            const canvasY = b * x + d * y + f;
+            
+            ctx.fillStyle = fillColor;
+            ctx.fillRect(canvasX, canvasY - height, width * pdfScale, height + 4);
+          }
+        }
+      }
+    }
   };
 
   // Navigation
