@@ -129,14 +129,19 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const currentClaimKey = currentClaim ? `${currentClaim.paragraphIndex}-${currentClaim.claimIndex}` : null;
   const currentClaimHistory = currentClaimKey ? rewriteHistory.get(currentClaimKey) : null;
   
-  // Count claims by color
+  // Count claims by color (and also count blue paragraphs that have no claims)
   const claimCounts = useMemo(() => {
     const counts = { green: 0, yellow: 0, red: 0, blue: 0, total: allClaims.length };
     allClaims.forEach(c => {
       counts[c.color]++;
     });
+    // Also count paragraphs with blue status that have no claims
+    const blueParagraphCount = paragraphs.filter(
+      p => p.result?.overall_color === 'blue' && (!p.result?.claims || p.result.claims.length === 0)
+    ).length;
+    counts.blue += blueParagraphCount;
     return counts;
-  }, [allClaims]);
+  }, [allClaims, paragraphs]);
 
   // Load PDF for overlay mode
   useEffect(() => {
@@ -632,9 +637,12 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                   // Render paragraph with inline highlighted claims
                   const renderTextWithHighlights = () => {
                     if (paragraphClaims.length === 0) {
-                      // For unchecked paragraphs, show blue background if they have citations
+                      // Show blue background for:
+                      // 1. Unchecked paragraphs with citations
+                      // 2. Checked paragraphs with blue status (sections that don't need AI verification)
                       const hasCitationPattern = /\([^)]*\d{4}[^)]*\)/.test(p.text);
-                      if (!p.checked && hasCitationPattern) {
+                      const isBlueStatus = p.result?.overall_color === 'blue';
+                      if ((!p.checked && hasCitationPattern) || isBlueStatus) {
                         return <span className="bg-blue-500/10 rounded px-0.5">{p.text}</span>;
                       }
                       return <span>{p.text}</span>;
