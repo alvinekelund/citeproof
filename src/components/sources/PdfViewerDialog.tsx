@@ -82,9 +82,31 @@ function getDistinctiveWords(text: string, minLength: number = 5): string[] {
     .filter(w => w.length >= minLength && !STOP_WORDS.has(w.toLowerCase()));
 }
 
-// Fuzzy match with STRICT length constraints for source PDFs
-// Returns positions in the ORIGINAL (non-normalized) text space
-// CRITICAL: Never return a range longer than the search text + small tolerance
+// Calculate actual string similarity (0-1) using word overlap
+function calculateSimilarity(text1: string, text2: string): number {
+  const norm1 = normalizePdfText(text1).toLowerCase();
+  const norm2 = normalizePdfText(text2).toLowerCase();
+  
+  // Exact match
+  if (norm1 === norm2) return 1.0;
+  
+  // Word-based Jaccard similarity
+  const words1 = new Set(norm1.split(/\s+/).filter(w => w.length > 2));
+  const words2 = new Set(norm2.split(/\s+/).filter(w => w.length > 2));
+  
+  if (words1.size === 0 || words2.size === 0) return 0;
+  
+  let intersection = 0;
+  for (const word of words1) {
+    if (words2.has(word)) intersection++;
+  }
+  
+  const union = words1.size + words2.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+// Fuzzy match with REAL similarity scoring
+// Returns the BEST match with actual similarity calculation
 function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { start: number; end: number; confidence: number } | null {
   const normalizedText = normalizePdfText(originalText).toLowerCase();
   const normalizedSearch = normalizePdfText(search).toLowerCase();
@@ -108,9 +130,6 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
     return isEnd ? Math.min(origPos + 1, originalText.length) : origPos;
   };
   
-  // STRICT: Max highlight length is search length + 10%
-  const maxLen = Math.ceil(searchLen * 1.1);
-  
   // For very short searches, require exact match
   if (searchLen < 15) {
     const idx = normalizedText.indexOf(normalizedSearch);
@@ -120,53 +139,75 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
     return null;
   }
   
+  // Collect ALL potential matches with their actual similarity scores
+  const candidates: { start: number; end: number; similarity: number }[] = [];
+  
   // Strategy 1: Exact substring match
   const exactIdx = normalizedText.indexOf(normalizedSearch);
   if (exactIdx !== -1) {
     return { start: toOriginal(exactIdx), end: toOriginal(exactIdx + searchLen, true), confidence: 1.0 };
   }
   
-  // Strategy 2: Prefix match - constrain end strictly
+  // Strategy 2: Prefix matches
   for (const prefixLen of [50, 40, 30, 25, 20]) {
     if (searchLen >= prefixLen) {
       const prefix = normalizedSearch.slice(0, prefixLen);
-      const prefixIdx = normalizedText.indexOf(prefix);
-      if (prefixIdx !== -1) {
-        // STRICT: end is exactly search length from start
+      let searchStart = 0;
+      while (true) {
+        const prefixIdx = normalizedText.indexOf(prefix, searchStart);
+        if (prefixIdx === -1) break;
+        
         const endIdx = Math.min(prefixIdx + searchLen, normalizedText.length);
-        return { start: toOriginal(prefixIdx), end: toOriginal(endIdx, true), confidence: 0.9 };
+        const matchedText = normalizedText.slice(prefixIdx, endIdx);
+        const similarity = calculateSimilarity(matchedText, normalizedSearch);
+        
+        candidates.push({ start: prefixIdx, end: endIdx, similarity });
+        searchStart = prefixIdx + 1;
+        
+        // Limit iterations
+        if (candidates.length > 20) break;
       }
     }
+    if (candidates.length > 20) break;
   }
   
-  // Strategy 3: Suffix match - constrain start strictly
+  // Strategy 3: Suffix matches  
   for (const suffixLen of [40, 30, 20]) {
-    if (searchLen >= suffixLen) {
+    if (searchLen >= suffixLen && candidates.length < 20) {
       const suffix = normalizedSearch.slice(-suffixLen);
-      const suffixIdx = normalizedText.indexOf(suffix);
-      if (suffixIdx !== -1) {
-        // STRICT: start is exactly search length before suffix end
+      let searchStart = 0;
+      while (true) {
+        const suffixIdx = normalizedText.indexOf(suffix, searchStart);
+        if (suffixIdx === -1) break;
+        
         const suffixEnd = suffixIdx + suffixLen;
         const startIdx = Math.max(0, suffixEnd - searchLen);
-        return { start: toOriginal(startIdx), end: toOriginal(suffixEnd, true), confidence: 0.85 };
+        const matchedText = normalizedText.slice(startIdx, suffixEnd);
+        const similarity = calculateSimilarity(matchedText, normalizedSearch);
+        
+        candidates.push({ start: startIdx, end: suffixEnd, similarity });
+        searchStart = suffixIdx + 1;
+        
+        if (candidates.length > 20) break;
       }
     }
   }
   
-  // Strategy 4: Middle section match - strict boundaries
-  if (searchLen >= 60) {
-    const middleStart = Math.floor(searchLen * 0.3);
-    const middleSection = normalizedSearch.slice(middleStart, middleStart + 30);
-    
-    const middleIdx = normalizedText.indexOf(middleSection);
-    if (middleIdx !== -1) {
-      const estimatedStart = Math.max(0, middleIdx - middleStart);
-      const estimatedEnd = Math.min(normalizedText.length, estimatedStart + searchLen);
-      return { start: toOriginal(estimatedStart), end: toOriginal(estimatedEnd, true), confidence: 0.7 };
-    }
-  }
+  // No candidates found
+  if (candidates.length === 0) return null;
   
-  return null;
+  // Return the BEST match by similarity
+  candidates.sort((a, b) => b.similarity - a.similarity);
+  const best = candidates[0];
+  
+  // Require minimum 40% similarity
+  if (best.similarity < 0.4) return null;
+  
+  return { 
+    start: toOriginal(best.start), 
+    end: toOriginal(best.end, true), 
+    confidence: best.similarity 
+  };
 }
 
 // Get highlight color based on verdict
