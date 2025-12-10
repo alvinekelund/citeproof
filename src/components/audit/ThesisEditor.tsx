@@ -14,6 +14,17 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import * as pdfjsLib from 'pdfjs-dist';
 import { getFile } from "@/lib/client-storage";
+import { 
+  buildPdfTextMap, 
+  findBestPageForParagraph, 
+  extractPageTextRegions, 
+  findMatchingRegions, 
+  mergeRegionsIntoBoxes,
+  getBoundingBox,
+  PdfTextMap,
+  TextRegion 
+} from "@/lib/pdf-text-map";
+import { normalizeText, getFirstNWords, getLastNWords, createParagraphAnchors, ParagraphAnchor } from "@/lib/text-anchors";
 
 interface ParagraphData {
   index: number;
@@ -98,14 +109,23 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   
+  // PDF text mapping for page navigation
+  const [pdfTextMap, setPdfTextMap] = useState<PdfTextMap | null>(null);
+  const [paragraphAnchors, setParagraphAnchors] = useState<ParagraphAnchor[]>([]);
+  
   // Store clickable regions for PDF highlights
   const [pdfClickableRegions, setPdfClickableRegions] = useState<ClickableRegion[]>([]);
   const [hoveredRegion, setHoveredRegion] = useState<ClickableRegion | null>(null);
   
+  // Track if we should auto-navigate to claim's page
+  const [shouldAutoNavigate, setShouldAutoNavigate] = useState(false);
+  
   // Helper to select a claim and clear blue paragraph selection
+  // Also triggers auto-navigation to claim's page in PDF view
   const selectClaim = useCallback((idx: number) => {
     setSelectedClaimIndex(idx);
     setSelectedBlueParagraph(null);
+    setShouldAutoNavigate(true);
   }, []);
   
   // Helper to select a blue paragraph and clear claim selection
@@ -174,6 +194,13 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       }));
   }, [paragraphs]);
 
+  // Build paragraph anchors for text positioning
+  useEffect(() => {
+    const texts = paragraphs.map(p => p.text);
+    const anchors = createParagraphAnchors(texts);
+    setParagraphAnchors(anchors);
+  }, [paragraphs]);
+
   const currentClaim = selectedClaimIndex !== null ? allClaims[selectedClaimIndex] : null;
   
   // Check if current claim has been modified
@@ -229,6 +256,12 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       setPdfDoc(pdf);
       setTotalPdfPages(pdf.numPages);
+      
+      // Build text map for page navigation
+      console.log('[PDF] Building text map...');
+      const textMap = await buildPdfTextMap(pdf);
+      setPdfTextMap(textMap);
+      console.log('[PDF] Text map built:', textMap.totalPages, 'pages,', textMap.fullText.length, 'chars');
     } catch (err) {
       console.error("Error loading thesis PDF:", err);
       toast({ title: "Failed to load PDF", variant: "destructive" });
@@ -236,6 +269,21 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       setIsPdfLoading(false);
     }
   };
+
+  // Auto-navigate to claim's page when claim is selected in PDF view
+  useEffect(() => {
+    if (!shouldAutoNavigate || !pdfTextMap || !currentClaim || viewMode !== 'pdf') return;
+    
+    const paragraphText = currentClaim.paragraphText;
+    const targetPage = findBestPageForParagraph(pdfTextMap, paragraphText);
+    
+    if (targetPage !== currentPdfPage) {
+      console.log('[PDF] Auto-navigating to page', targetPage, 'for claim in paragraph', currentClaim.paragraphIndex);
+      setCurrentPdfPage(targetPage);
+    }
+    
+    setShouldAutoNavigate(false);
+  }, [shouldAutoNavigate, pdfTextMap, currentClaim, viewMode, currentPdfPage]);
 
   const renderPdfPage = async (pageNum: number) => {
     if (!pdfDoc || !pdfCanvasRef.current) return;
@@ -268,33 +316,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     }
   };
 
-  // Normalize text for matching (remove extra spaces, lowercase, etc.)
-  const normalizeText = (text: string): string => {
-    return text.toLowerCase().replace(/\s+/g, ' ').trim();
-  };
-
-  // Find which paragraph a piece of text belongs to based on fuzzy matching
-  const findParagraphForText = (pdfText: string): { paragraphIndex: number; color: 'green' | 'yellow' | 'red' | 'blue' } | null => {
-    const normalizedPdfText = normalizeText(pdfText);
-    if (normalizedPdfText.length < 20) return null; // Too short to match reliably
-    
-    for (const p of paragraphs) {
-      if (!p.checked || !p.result) continue;
-      
-      const normalizedParagraph = normalizeText(p.text);
-      
-      // Check if this PDF text is part of this paragraph
-      if (normalizedParagraph.includes(normalizedPdfText) || normalizedPdfText.includes(normalizedParagraph.slice(0, 50))) {
-        // Determine color based on result
-        const color = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
-        return { paragraphIndex: p.index, color };
-      }
-    }
-    
-    return null;
-  };
-
-  // Draw text overlays on the PDF
+  // Draw text overlays on the PDF using improved matching
   const drawTextOverlays = async (
     ctx: CanvasRenderingContext2D, 
     viewport: pdfjsLib.PageViewport,
@@ -312,139 +334,213 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     // Build full page text from all items to find paragraph positions
     const textItems = textContent.items.filter((item: any) => item.str && item.str.trim());
     
-    // Create a simple word-based matching approach
-    const getFirstNWords = (text: string, n: number): string => {
-      return normalizeText(text).split(/\s+/).slice(0, n).join(' ');
-    };
-    
-    const getLastNWords = (text: string, n: number): string => {
-      const words = normalizeText(text).split(/\s+/);
-      return words.slice(-n).join(' ');
-    };
+    // Build text regions for better matching
+    const pageTextRegions: TextRegion[] = textItems.map((item: any) => {
+      const transform = item.transform;
+      const x = transform[4];
+      const y = transform[5];
+      const fontSize = transform[0] || 12;
+      const width = item.width || (item.str.length * fontSize * 0.5);
+      const height = fontSize * 1.2;
+      
+      // Convert PDF coordinates to canvas coordinates
+      const [a, b, c, d, e, f] = viewport.transform;
+      const canvasX = a * x + c * y + e;
+      const canvasY = b * x + d * y + f;
+      
+      return {
+        x: canvasX,
+        y: canvasY - height,
+        width,
+        height: height + 2,
+        text: item.str,
+      };
+    });
 
-    // For each checked paragraph, find its text in the PDF
+    // For each checked paragraph, find its text in the PDF using improved matching
     for (const p of paragraphs) {
       if (!p.checked || !p.result) continue;
       
       const color = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
       const fillColor = colorMap[color] || colorMap.blue;
+      
+      // Find the correct global claim index for THIS paragraph
       const globalClaimIdx = allClaims.findIndex(c => c.paragraphIndex === p.index);
       
-      // Get key phrases from the paragraph for matching
-      const paragraphStart = getFirstNWords(p.text, 8);
-      const paragraphEnd = getLastNWords(p.text, 5);
+      // Use the new matching system
+      const matchingRegions = findMatchingRegions(pageTextRegions, p.text, 6, 4);
       
-      // Track if we're currently in this paragraph's text
-      let inParagraph = false;
-      let matchedItems: any[] = [];
-      let runningText = '';
-      
-      for (let i = 0; i < textItems.length; i++) {
-        const item = textItems[i];
-        const itemText = normalizeText(item.str);
-        runningText += ' ' + itemText;
+      if (matchingRegions.length > 0) {
+        // Draw highlights for matched regions
+        for (const region of matchingRegions) {
+          ctx.fillStyle = fillColor;
+          ctx.fillRect(region.x, region.y, region.width, region.height);
+        }
         
-        // Check if running text contains paragraph start
-        if (!inParagraph && runningText.includes(paragraphStart)) {
-          inParagraph = true;
-          matchedItems = [item];
-          runningText = itemText;
-        } else if (inParagraph) {
-          matchedItems.push(item);
+        // Get bounding box for the clickable region
+        const boundingBox = getBoundingBox(matchingRegions);
+        
+        if (boundingBox) {
+          // Add individual claim regions if the paragraph has claims
+          if (p.result.claims && p.result.claims.length > 0) {
+            // For each claim, try to find its specific position
+            p.result.claims.forEach((claim, claimIdx) => {
+              const claimGlobalIdx = allClaims.findIndex(
+                c => c.paragraphIndex === p.index && c.claimIndex === claimIdx
+              );
+              
+              // Find claim text within the matched regions
+              const claimRegions = findMatchingRegions(matchingRegions, claim.text, 4, 3);
+              
+              if (claimRegions.length > 0) {
+                const claimBox = getBoundingBox(claimRegions);
+                if (claimBox) {
+                  regions.push({
+                    x: claimBox.x - 3,
+                    y: claimBox.y - 3,
+                    width: claimBox.width + 6,
+                    height: claimBox.height + 6,
+                    paragraphIndex: p.index,
+                    claimIndex: claimIdx,
+                    globalClaimIndex: claimGlobalIdx >= 0 ? claimGlobalIdx : null,
+                    color: getClaimColor(claim, p.result!.overall_color, p.index, claimIdx),
+                  });
+                }
+              } else {
+                // Fallback: use paragraph bounding box for this claim
+                regions.push({
+                  x: boundingBox.x - 5,
+                  y: boundingBox.y - 5,
+                  width: boundingBox.width + 10,
+                  height: boundingBox.height + 10,
+                  paragraphIndex: p.index,
+                  claimIndex: claimIdx,
+                  globalClaimIndex: claimGlobalIdx >= 0 ? claimGlobalIdx : null,
+                  color: getClaimColor(claim, p.result!.overall_color, p.index, claimIdx),
+                });
+              }
+            });
+          } else {
+            // No claims, create one region for the whole paragraph
+            regions.push({
+              x: boundingBox.x - 5,
+              y: boundingBox.y - 5,
+              width: boundingBox.width + 10,
+              height: boundingBox.height + 10,
+              paragraphIndex: p.index,
+              claimIndex: null,
+              globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
+              color,
+            });
+          }
+        }
+      } else {
+        // Fallback to old word-based matching if new system finds nothing
+        const paragraphStart = getFirstNWords(p.text, 8);
+        const paragraphEnd = getLastNWords(p.text, 5);
+        
+        let inParagraph = false;
+        let matchedItems: any[] = [];
+        let runningText = '';
+        
+        for (let i = 0; i < textItems.length; i++) {
+          const item = textItems[i];
+          const itemText = normalizeText(item.str);
+          runningText += ' ' + itemText;
           
-          // Check if we've hit the end of the paragraph
-          if (runningText.includes(paragraphEnd) || matchedItems.length > 50) {
-            // Draw highlights for all matched items
-            let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
+          if (!inParagraph && runningText.includes(paragraphStart)) {
+            inParagraph = true;
+            matchedItems = [item];
+            runningText = itemText;
+          } else if (inParagraph) {
+            matchedItems.push(item);
             
-            for (const matchedItem of matchedItems) {
-              const transform = matchedItem.transform;
-              const x = transform[4];
-              const y = transform[5];
-              const fontSize = transform[0] || 12;
-              const width = matchedItem.width || (matchedItem.str.length * fontSize * 0.5);
-              const height = fontSize * 1.2;
+            if (runningText.includes(paragraphEnd) || matchedItems.length > 50) {
+              let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
               
-              // Use viewport transform to convert PDF coords to canvas coords
-              const [a, b, c, d, e, f] = viewport.transform;
-              const canvasX = a * x + c * y + e;
-              const canvasY = b * x + d * y + f;
+              for (const matchedItem of matchedItems) {
+                const transform = matchedItem.transform;
+                const x = transform[4];
+                const y = transform[5];
+                const fontSize = transform[0] || 12;
+                const width = matchedItem.width || (matchedItem.str.length * fontSize * 0.5);
+                const height = fontSize * 1.2;
+                
+                const [a, b, c, d, e, f] = viewport.transform;
+                const canvasX = a * x + c * y + e;
+                const canvasY = b * x + d * y + f;
+                
+                ctx.fillStyle = fillColor;
+                ctx.fillRect(canvasX, canvasY - height, width, height + 2);
+                
+                minX = Math.min(minX, canvasX);
+                maxX = Math.max(maxX, canvasX + width);
+                minY = Math.min(minY, canvasY - height);
+                maxY = Math.max(maxY, canvasY + 2);
+              }
               
-              // Draw the highlight
-              ctx.fillStyle = fillColor;
-              ctx.fillRect(canvasX, canvasY - height, width, height + 2);
+              if (minX !== Infinity) {
+                regions.push({
+                  x: minX - 5,
+                  y: minY - 5,
+                  width: maxX - minX + 10,
+                  height: maxY - minY + 10,
+                  paragraphIndex: p.index,
+                  claimIndex: p.result?.claims?.[0] ? 0 : null,
+                  globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
+                  color,
+                });
+              }
               
-              // Track bounds
-              minX = Math.min(minX, canvasX);
-              maxX = Math.max(maxX, canvasX + width);
-              minY = Math.min(minY, canvasY - height);
-              maxY = Math.max(maxY, canvasY + 2);
+              inParagraph = false;
+              matchedItems = [];
+              runningText = '';
+              break;
             }
-            
-            // Create one clickable region for the entire paragraph on this page
-            if (minX !== Infinity) {
-              regions.push({
-                x: minX - 5,
-                y: minY - 5,
-                width: maxX - minX + 10,
-                height: maxY - minY + 10,
-                paragraphIndex: p.index,
-                claimIndex: p.result?.claims?.[0] ? 0 : null,
-                globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
-                color,
-              });
-            }
-            
-            // Reset for next paragraph
-            inParagraph = false;
-            matchedItems = [];
-            runningText = '';
-            break; // Move to next paragraph
+          }
+          
+          if (runningText.length > 500) {
+            runningText = runningText.slice(-250);
           }
         }
         
-        // Keep running text from getting too long
-        if (runningText.length > 500) {
-          runningText = runningText.slice(-250);
-        }
-      }
-      
-      // If we started matching but didn't find the end, still create a region
-      if (inParagraph && matchedItems.length > 0) {
-        let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
-        
-        for (const matchedItem of matchedItems) {
-          const transform = matchedItem.transform;
-          const x = transform[4];
-          const y = transform[5];
-          const fontSize = transform[0] || 12;
-          const width = matchedItem.width || (matchedItem.str.length * fontSize * 0.5);
-          const height = fontSize * 1.2;
+        // Handle case where we found start but not end
+        if (inParagraph && matchedItems.length > 0) {
+          let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
           
-          const [a, b, c, d, e, f] = viewport.transform;
-          const canvasX = a * x + c * y + e;
-          const canvasY = b * x + d * y + f;
+          for (const matchedItem of matchedItems) {
+            const transform = matchedItem.transform;
+            const x = transform[4];
+            const y = transform[5];
+            const fontSize = transform[0] || 12;
+            const width = matchedItem.width || (matchedItem.str.length * fontSize * 0.5);
+            const height = fontSize * 1.2;
+            
+            const [a, b, c, d, e, f] = viewport.transform;
+            const canvasX = a * x + c * y + e;
+            const canvasY = b * x + d * y + f;
+            
+            ctx.fillStyle = fillColor;
+            ctx.fillRect(canvasX, canvasY - height, width, height + 2);
+            
+            minX = Math.min(minX, canvasX);
+            maxX = Math.max(maxX, canvasX + width);
+            minY = Math.min(minY, canvasY - height);
+            maxY = Math.max(maxY, canvasY + 2);
+          }
           
-          ctx.fillStyle = fillColor;
-          ctx.fillRect(canvasX, canvasY - height, width, height + 2);
-          
-          minX = Math.min(minX, canvasX);
-          maxX = Math.max(maxX, canvasX + width);
-          minY = Math.min(minY, canvasY - height);
-          maxY = Math.max(maxY, canvasY + 2);
-        }
-        
-        if (minX !== Infinity) {
-          regions.push({
-            x: minX - 5,
-            y: minY - 5,
-            width: maxX - minX + 10,
-            height: maxY - minY + 10,
-            paragraphIndex: p.index,
-            claimIndex: p.result?.claims?.[0] ? 0 : null,
-            globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
-            color,
-          });
+          if (minX !== Infinity) {
+            regions.push({
+              x: minX - 5,
+              y: minY - 5,
+              width: maxX - minX + 10,
+              height: maxY - minY + 10,
+              paragraphIndex: p.index,
+              claimIndex: p.result?.claims?.[0] ? 0 : null,
+              globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
+              color,
+            });
+          }
         }
       }
     }
