@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Download, Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, AlertCircle } from "lucide-react";
+import { Download, Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, AlertCircle, Search } from "lucide-react";
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   Dialog,
@@ -39,6 +39,8 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
   const [highlightRects, setHighlightRects] = useState<{ x: number; y: number; width: number; height: number }[]>([]);
   const [highlightNotFound, setHighlightNotFound] = useState(false);
   const [searchedPages, setSearchedPages] = useState<Set<number>>(new Set());
+  const [isSearchingAllPages, setIsSearchingAllPages] = useState(false);
+  const [searchProgress, setSearchProgress] = useState(0);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const highlightCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -337,6 +339,90 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
     }
   };
 
+  // Search all pages for the excerpt
+  const searchAllPages = async () => {
+    if (!pdfDoc || !searchText) return;
+    
+    setIsSearchingAllPages(true);
+    setSearchProgress(0);
+    
+    const normalize = (s: string) => s.toLowerCase().replace(/[\s\-–—]+/g, ' ').replace(/[^\w\s]/g, '').trim();
+    const normalizedSearch = normalize(searchText);
+    const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 2);
+    const minConsecutive = Math.max(1, Math.floor(searchWords.length / 3));
+    
+    try {
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        setSearchProgress(Math.round((pageNum / totalPages) * 100));
+        
+        const page = await pdfDoc.getPage(pageNum);
+        const textContent = await page.getTextContent();
+        const textItems = textContent.items as Array<{ str: string }>;
+        
+        // Concatenate page text
+        const pageText = textItems.map(item => item.str).join(' ');
+        const normalizedPage = normalize(pageText);
+        
+        // Check for match using multiple methods
+        let found = false;
+        
+        // Method 1: Word matching
+        let consecutiveMatches = 0;
+        for (const word of searchWords) {
+          if (normalizedPage.includes(word)) {
+            consecutiveMatches++;
+          }
+        }
+        if (consecutiveMatches >= minConsecutive) {
+          found = true;
+        }
+        
+        // Method 2: Direct substring
+        if (!found) {
+          const shortSearch = normalizedSearch.slice(0, 50);
+          if (normalizedPage.includes(shortSearch)) {
+            found = true;
+          }
+        }
+        
+        // Method 3: First few words
+        if (!found && searchWords.length > 0) {
+          const firstWords = searchWords.slice(0, 3).join(' ');
+          if (normalizedPage.includes(firstWords)) {
+            found = true;
+          }
+        }
+        
+        if (found) {
+          console.log('[searchAllPages] Found excerpt on page', pageNum);
+          setIsSearchingAllPages(false);
+          goToPage(pageNum);
+          toast({
+            title: "Found!",
+            description: `Excerpt found on page ${pageNum}`,
+          });
+          return;
+        }
+      }
+      
+      // Not found on any page
+      setIsSearchingAllPages(false);
+      toast({
+        title: "Not found",
+        description: "Excerpt not found in any page of this document",
+        variant: "destructive",
+      });
+    } catch (err) {
+      console.error('Error searching all pages:', err);
+      setIsSearchingAllPages(false);
+      toast({
+        title: "Search failed",
+        description: "An error occurred while searching",
+        variant: "destructive",
+      });
+    }
+  };
+
   const goToPage = useCallback((page: number) => {
     const validPage = Math.max(1, Math.min(page, totalPages));
     setCurrentPage(validPage);
@@ -504,7 +590,7 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
               />
               
               {/* Not found indicator */}
-              {searchText && highlightNotFound && highlightRects.length === 0 && (
+              {searchText && highlightNotFound && highlightRects.length === 0 && !isSearchingAllPages && (
                 <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-100 dark:bg-amber-900/50 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2 flex items-center gap-2 shadow-lg z-10">
                   <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
                   <span className="text-sm text-amber-800 dark:text-amber-200">
@@ -529,7 +615,26 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
                     >
                       Try next
                     </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={searchAllPages}
+                    >
+                      <Search className="h-3 w-3 mr-1" />
+                      Search all
+                    </Button>
                   </div>
+                </div>
+              )}
+              
+              {/* Searching all pages indicator */}
+              {isSearchingAllPages && (
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-primary/10 border border-primary/30 rounded-lg px-4 py-2 flex items-center gap-2 shadow-lg z-10">
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                  <span className="text-sm text-foreground">
+                    Searching all pages... {searchProgress}%
+                  </span>
                 </div>
               )}
             </div>
