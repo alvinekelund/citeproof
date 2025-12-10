@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
+import { useState, useCallback, useEffect, useRef, forwardRef, useImperativeHandle, useMemo } from "react";
 import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2, RotateCcw, Check, AlertTriangle, XCircle, FileEdit } from "lucide-react";
 import { useVisibilityReload } from "@/hooks/use-visibility-reload";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, ThesisSection, hasCitations } from "@/lib/pdf-parser";
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
-import { ThesisEditor } from "./ThesisEditor";
+import { PdfViewerDialog } from "@/components/sources/PdfViewerDialog";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingDataAsync, getSessionMissingDataAsync, deleteSessionMissingDataAsync, storeSessionPdf, getSessionPdf, deleteSessionPdf } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
@@ -101,8 +101,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [retryingParagraphs, setRetryingParagraphs] = useState<Set<number>>(new Set());
   const [currentBatchSize, setCurrentBatchSize] = useState(3);
   const [tokenUsage, setTokenUsage] = useState({ input: 0, output: 0 });
-  const [showEditor, setShowEditor] = useState(false);
-  const [thesisFilePath, setThesisFilePath] = useState<string | null>(null); // Store PDF path for overlay mode
+  const [showClaimsView, setShowClaimsView] = useState(false);
+  
+  // PDF viewer for source checkup
+  const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
+  const [pdfViewerSource, setPdfViewerSource] = useState<Source | null>(null);
+  const [pdfViewerPage, setPdfViewerPage] = useState(1);
+  const [pdfViewerSearchText, setPdfViewerSearchText] = useState<string | undefined>();
+  const [pdfViewerHighlightColor, setPdfViewerHighlightColor] = useState<'green' | 'yellow' | 'red' | 'blue' | undefined>();
 
   // Helper to analyze and deduplicate citations
   const analyzeAndDeduplicateCitations = useCallback(async (text: string, currentSources: Source[]) => {
@@ -229,14 +235,10 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setFile({ name: session.thesis_name } as File);
     setSelectedIndex(null);
     
-    // Restore PDF file from IndexedDB for PDF overlay mode
+    // Restore PDF file from IndexedDB if available (for source checkup)
     const pdfFile = await getSessionPdf(session.id);
     if (pdfFile) {
-      const blobUrl = URL.createObjectURL(pdfFile);
-      setThesisFilePath(blobUrl);
       console.log('[CopilotMode] Restored PDF from IndexedDB');
-    } else {
-      setThesisFilePath(null);
     }
     
     // Restore fullText from IndexedDB and re-analyze citations against current library
@@ -422,14 +424,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setSelectedIndex(null);
     setCurrentSessionId(null);
     
-    // Store file path for PDF files (for PDF overlay mode in editor)
-    if (ext === '.pdf') {
-      // Create a blob URL for the PDF
-      const blobUrl = URL.createObjectURL(uploadedFile);
-      setThesisFilePath(blobUrl);
-    } else {
-      setThesisFilePath(null);
-    }
+    // PDF files will be stored for source checkup
 
     try {
       const text = await extractTextFromFile(uploadedFile);
@@ -1215,7 +1210,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setCurrentSessionId(null);
     setCitationAnalysis(null);
     setFullText('');
-    setShowEditor(false);
+    setShowClaimsView(false);
   };
 
   // Handler for updating paragraph text from the editor
@@ -1349,18 +1344,58 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     });
   };
 
-  // Show ThesisEditor when enabled
-  if (showEditor && paragraphs.length > 0) {
-    return (
-      <ThesisEditor
-        paragraphs={paragraphs}
-        sources={sources}
-        onBack={() => setShowEditor(false)}
-        onUpdateParagraph={updateParagraphText}
-        thesisFilePath={thesisFilePath || undefined}
-      />
-    );
-  }
+  // Helper to open source in PDF viewer
+  const handleOpenSource = (source: Source, pageNumber: number, excerpt?: string, highlightColor?: 'green' | 'yellow' | 'red' | 'blue') => {
+    setPdfViewerSource(source);
+    setPdfViewerPage(pageNumber);
+    setPdfViewerSearchText(excerpt);
+    setPdfViewerHighlightColor(highlightColor);
+    setPdfViewerOpen(true);
+  };
+
+  // Build flat claims list for claims view
+  const allClaims = useMemo(() => {
+    const claims: Array<{
+      claim: CheckResultType['claims'][0];
+      paragraphIndex: number;
+      claimIndex: number;
+      paragraphText: string;
+      color: 'green' | 'yellow' | 'red' | 'blue';
+      displayId: string;
+    }> = [];
+    
+    let paragraphDisplayIndex = 0;
+    paragraphs.forEach((p, pIdx) => {
+      if (p.checked && p.result?.claims && p.result.claims.length > 0) {
+        paragraphDisplayIndex++;
+        p.result.claims.forEach((claim, claimIdx) => {
+          // Determine claim color
+          let color: 'green' | 'yellow' | 'red' | 'blue' = 'yellow';
+          if (claim.common_knowledge) {
+            color = 'green';
+          } else {
+            const v = claim.verdict.toLowerCase();
+            if (v.includes('fully supported') || v.includes('well supported') || v.includes('supported by cited')) {
+              color = 'green';
+            } else if (v.includes('no clear support') || v.includes('unsupported') || v.includes('not found')) {
+              color = 'red';
+            }
+          }
+          
+          claims.push({
+            claim,
+            paragraphIndex: pIdx,
+            claimIndex: claimIdx,
+            paragraphText: p.text,
+            color,
+            displayId: `${paragraphDisplayIndex}.${claimIdx + 1}`,
+          });
+        });
+      }
+    });
+    
+    return claims;
+  }, [paragraphs]);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -1386,15 +1421,15 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         
         {file && (
           <div className="flex items-center gap-2">
-            {/* Show editor button when there are checked paragraphs */}
+            {/* Show claims view toggle when there are checked paragraphs */}
             {checkedCount > blueCount && (
               <Button
-                variant={allChecked ? "default" : "outline"}
+                variant={showClaimsView ? "default" : "outline"}
                 size="sm"
-                onClick={() => setShowEditor(true)}
+                onClick={() => setShowClaimsView(!showClaimsView)}
               >
                 <FileEdit className="h-4 w-4 mr-1" />
-                {allChecked ? 'Open Editor' : 'View in Editor'}
+                {showClaimsView ? 'Paragraph View' : 'Claims View'}
               </Button>
             )}
             <Button
@@ -1712,8 +1747,103 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         </div>
       )}
 
-      {/* Main Interface */}
-      {file && paragraphs.length > 0 && (
+      {/* Claims View */}
+      {file && paragraphs.length > 0 && showClaimsView && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold">All Claims ({allClaims.length})</h3>
+            <div className="flex gap-2 text-sm">
+              <span className="text-verdict-green">{allClaims.filter(c => c.color === 'green').length} ✓</span>
+              <span className="text-verdict-yellow">{allClaims.filter(c => c.color === 'yellow').length} ⚠</span>
+              <span className="text-verdict-red">{allClaims.filter(c => c.color === 'red').length} ✗</span>
+            </div>
+          </div>
+          <ScrollArea className="h-[700px]">
+            <div className="space-y-4 pr-4">
+              {allClaims.map((item, idx) => (
+                <Card 
+                  key={`${item.paragraphIndex}-${item.claimIndex}`} 
+                  className={cn(
+                    "p-4 border-l-4",
+                    item.color === 'green' && "border-l-verdict-green bg-verdict-green-bg/20",
+                    item.color === 'yellow' && "border-l-verdict-yellow bg-verdict-yellow-bg/20",
+                    item.color === 'red' && "border-l-verdict-red bg-verdict-red-bg/20"
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-4 mb-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xs font-medium text-muted-foreground font-mono">
+                          Claim {item.displayId}
+                        </span>
+                        {item.claim.common_knowledge && (
+                          <span className="text-xs px-2 py-0.5 rounded bg-secondary text-secondary-foreground">
+                            Common knowledge
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm leading-relaxed">{item.claim.text}</p>
+                    </div>
+                    <VerdictBadge color={item.color} size="sm" />
+                  </div>
+                  
+                  {item.claim.intended_citations && item.claim.intended_citations.length > 0 && (
+                    <div className="mb-3">
+                      <span className="text-xs font-medium text-muted-foreground">Citations: </span>
+                      <span className="text-xs font-mono">{item.claim.intended_citations.join(', ')}</span>
+                    </div>
+                  )}
+                  
+                  <p className="text-sm text-muted-foreground mb-3">{item.claim.verdict}</p>
+                  
+                  {/* Context paragraph */}
+                  <div className="mt-3 p-3 bg-secondary/30 rounded text-xs text-muted-foreground">
+                    <span className="font-medium">Context (¶{item.paragraphIndex + 1}): </span>
+                    <span className="line-clamp-2">{item.paragraphText}</span>
+                  </div>
+                  
+                  {/* Evidence with View Source buttons */}
+                  {item.claim.evidence && item.claim.evidence.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Evidence</h4>
+                      {item.claim.evidence.map((ev, i) => {
+                        const source = sources.find(s => 
+                          s.in_text_label?.toLowerCase().includes(ev.label.toLowerCase().replace(/[()]/g, '')) ||
+                          (s.authors?.toLowerCase().includes(ev.label.toLowerCase().split(/[,(&]/)[0].trim()) && 
+                           s.year?.toString() === ev.label.match(/\d{4}/)?.[0])
+                        );
+                        return (
+                          <div key={i} className="bg-secondary/50 rounded-lg p-3 text-sm">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-mono text-xs text-primary">{ev.label}</span>
+                              {source && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleOpenSource(source, ev.page_number, ev.excerpt, item.color)}
+                                  className="h-7 text-xs gap-1"
+                                >
+                                  View Source
+                                </Button>
+                              )}
+                            </div>
+                            <blockquote className="text-muted-foreground italic border-l-2 border-primary/30 pl-3">
+                              "{ev.excerpt}"
+                            </blockquote>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </Card>
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
+      )}
+
+      {/* Main Interface - Paragraph View */}
+      {file && paragraphs.length > 0 && !showClaimsView && (
         <div className="grid gap-6 lg:grid-cols-2">
           {/* Left: Paragraph List */}
           <div className="space-y-4">
@@ -2045,6 +2175,17 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           </div>
         </div>
       )}
+
+      {/* PDF Viewer Dialog for source checkup */}
+      <PdfViewerDialog
+        open={pdfViewerOpen}
+        onOpenChange={setPdfViewerOpen}
+        filePath={pdfViewerSource?.file_path || null}
+        fileName={pdfViewerSource?.original_filename || "Document"}
+        initialPage={pdfViewerPage}
+        searchText={pdfViewerSearchText}
+        highlightColor={pdfViewerHighlightColor}
+      />
     </div>
   );
 });
