@@ -82,7 +82,7 @@ function getDistinctiveWords(text: string, minLength: number = 5): string[] {
     .filter(w => w.length >= minLength && !STOP_WORDS.has(w.toLowerCase()));
 }
 
-// Fuzzy match with tolerance - STRICT matching to avoid false positives
+// Fuzzy match with tolerance - More lenient matching for source PDFs
 // Returns positions in the ORIGINAL (non-normalized) text space
 function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { start: number; end: number; confidence: number } | null {
   // Apply PDF-specific normalization for comparison
@@ -124,8 +124,18 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
     return null;
   }
   
-  // Strategy 2: Try matching long prefixes ONLY (at least 50 chars for reliability)
-  for (const prefixLen of [100, 80, 60, 50]) {
+  // Strategy 1: Try exact substring match
+  const exactIdx = normalizedText.indexOf(normalizedSearch);
+  if (exactIdx !== -1) {
+    return { 
+      start: toOriginal(exactIdx), 
+      end: toOriginal(exactIdx + normalizedSearch.length, true), 
+      confidence: 1.0 
+    };
+  }
+  
+  // Strategy 2: Try matching prefixes (relaxed thresholds)
+  for (const prefixLen of [60, 40, 30, 20]) {
     if (normalizedSearch.length >= prefixLen) {
       const prefix = normalizedSearch.slice(0, prefixLen);
       const prefixIdx = normalizedText.indexOf(prefix);
@@ -133,22 +143,24 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
         return { 
           start: toOriginal(prefixIdx), 
           end: toOriginal(Math.min(prefixIdx + normalizedSearch.length, normalizedText.length), true),
-          confidence: 0.95 
+          confidence: 0.9 
         };
       }
     }
   }
   
-  // Strategy 3: Find distinctive words (long, uncommon) - require MULTIPLE matches
-  const distinctiveSearchWords = getDistinctiveWords(normalizedSearch, 6);
+  // Strategy 3: Find distinctive words - relaxed requirements
+  const distinctiveSearchWords = getDistinctiveWords(normalizedSearch, 5);
   
-  if (distinctiveSearchWords.length >= 3) {
+  if (distinctiveSearchWords.length >= 2) {
     // Find the first distinctive word
-    for (const word of distinctiveSearchWords.slice(0, 3)) {
+    for (const word of distinctiveSearchWords.slice(0, 4)) {
       const wordIdx = normalizedText.indexOf(word);
       if (wordIdx !== -1) {
-        // Check if MULTIPLE other distinctive words are nearby (within 300 chars)
-        const context = normalizedText.slice(Math.max(0, wordIdx - 100), wordIdx + 300);
+        // Check if other distinctive words are nearby (within 400 chars)
+        const contextStart = Math.max(0, wordIdx - 150);
+        const contextEnd = Math.min(normalizedText.length, wordIdx + 400);
+        const context = normalizedText.slice(contextStart, contextEnd);
         let matchCount = 0;
         
         for (const sw of distinctiveSearchWords) {
@@ -157,26 +169,26 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
           }
         }
         
-        // Require at least 60% of distinctive words to match (minimum 3)
-        const requiredMatches = Math.max(3, Math.ceil(distinctiveSearchWords.length * 0.6));
+        // Require at least 40% of distinctive words (minimum 2)
+        const requiredMatches = Math.max(2, Math.ceil(distinctiveSearchWords.length * 0.4));
         if (matchCount >= requiredMatches) {
           return { 
-            start: toOriginal(Math.max(0, wordIdx - 50)), 
-            end: toOriginal(Math.min(wordIdx + normalizedSearch.length, normalizedText.length), true),
-            confidence: 0.8 
+            start: toOriginal(Math.max(0, wordIdx - 30)), 
+            end: toOriginal(Math.min(wordIdx + normalizedSearch.length + 30, normalizedText.length), true),
+            confidence: 0.75 
           };
         }
       }
     }
   }
   
-  // Strategy 4: Sliding window Levenshtein ONLY for short-medium searches (expensive)
-  if (normalizedSearch.length >= 30 && normalizedSearch.length <= 100) {
+  // Strategy 4: Sliding window Levenshtein for short-medium searches
+  if (normalizedSearch.length >= 25 && normalizedSearch.length <= 150) {
     const searchLen = normalizedSearch.length;
-    const maxDist = Math.floor(searchLen * 0.1); // Very strict: only 10% tolerance
+    const maxDist = Math.floor(searchLen * 0.15); // 15% tolerance
     
-    // Sample every 20 characters for efficiency
-    for (let i = 0; i <= normalizedText.length - searchLen; i += 20) {
+    // Sample every 15 characters for efficiency
+    for (let i = 0; i <= normalizedText.length - searchLen; i += 15) {
       const window = normalizedText.slice(i, i + searchLen);
       const dist = levenshtein(window, normalizedSearch);
       if (dist <= maxDist) {
@@ -189,7 +201,7 @@ function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { s
     }
   }
   
-  // No match found - be conservative and return null
+  // No match found - return null
   return null;
 }
 
