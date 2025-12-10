@@ -476,6 +476,82 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     }
   }, []);
 
+  // Extract sources that are actually cited in a paragraph
+  const getRelevantSources = (paragraphText: string, allSources: Source[]): Source[] => {
+    // Citation patterns to detect
+    const citationPatterns = [
+      // Parenthetical: (Author, Year) or (Author et al., Year)
+      /\(([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&|and)\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)?(?:\s+et\s+al\.?)?)[,\s]+(\d{4}[a-z]?)\)/gi,
+      // Narrative: Author (Year) or Author et al. (Year)
+      /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&|and)\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)?(?:\s+et\s+al\.?)?)\s*\((\d{4}[a-z]?)\)/gi,
+    ];
+    
+    // Normalize for matching
+    const normalizeForKey = (str: string): string => {
+      return str
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z]/g, '');
+    };
+    
+    // Extract author-year pairs from paragraph
+    const detectedPairs = new Set<string>();
+    for (const pattern of citationPatterns) {
+      let match;
+      while ((match = pattern.exec(paragraphText)) !== null) {
+        const authorPart = match[1].replace(/\s+et\s+al\.?/gi, '').replace(/\s*[&]\s*.*$/, '').replace(/\s+and\s+.*$/i, '').trim();
+        const year = match[2].replace(/[a-z]$/, '');
+        const key = `${normalizeForKey(authorPart)}|${year}`;
+        detectedPairs.add(key);
+      }
+    }
+    
+    if (detectedPairs.size === 0) {
+      // No citations detected - return a small sample for context
+      return allSources.slice(0, 5);
+    }
+    
+    // Match sources to detected citations
+    const matchedSources: Source[] = [];
+    const matchedIds = new Set<string>();
+    
+    for (const source of allSources) {
+      // Build keys from source's in_text_label
+      const sourceKeys = new Set<string>();
+      
+      if (source.in_text_label) {
+        const labelMatch = source.in_text_label.match(/([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
+        if (labelMatch && source.year) {
+          sourceKeys.add(`${normalizeForKey(labelMatch[1])}|${source.year}`);
+        }
+      }
+      
+      if (source.authors && source.year) {
+        // Extract first surname from authors
+        const authorsStr = source.authors;
+        const firstSurnameMatch = authorsStr.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)/);
+        if (firstSurnameMatch) {
+          sourceKeys.add(`${normalizeForKey(firstSurnameMatch[1])}|${source.year}`);
+        }
+      }
+      
+      // Check if any source key matches any detected pair
+      for (const sourceKey of sourceKeys) {
+        if (detectedPairs.has(sourceKey)) {
+          if (!matchedIds.has(source.id)) {
+            matchedSources.push(source);
+            matchedIds.add(source.id);
+          }
+          break;
+        }
+      }
+    }
+    
+    // If we matched some, return those. Otherwise return small sample as fallback.
+    return matchedSources.length > 0 ? matchedSources : allSources.slice(0, 5);
+  };
+
   // Check a single paragraph with retry logic for rate limits
   const checkParagraphWithRetry = async (
     index: number, 
@@ -499,14 +575,21 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
 
     // Load sources with extracted text from IndexedDB once
     const sourcesWithText = await getSourcesWithText();
-    const sourcePayload = sourcesWithText.map(s => ({
+    
+    // OPTIMIZATION: Only send sources that are actually cited in this paragraph
+    const relevantSources = getRelevantSources(paragraph.text, sourcesWithText);
+    const totalChars = relevantSources.reduce((sum, s) => sum + (s.extracted_text?.length || 0), 0);
+    console.log(`Checking paragraph with ${relevantSources.length} relevant sources (of ${sourcesWithText.length} total, ${totalChars} chars)`);
+    
+    const sourcePayload = relevantSources.map(s => ({
       id: s.id,
       in_text_label: s.in_text_label,
       shorthand_id: s.shorthand_id,
       title: s.title,
       authors: s.authors,
       year: s.year,
-      extracted_text: s.extracted_text ? s.extracted_text.substring(0, 50000) : undefined,
+      // Increased limit since we're sending fewer sources
+      extracted_text: s.extracted_text ? s.extracted_text.substring(0, 80000) : undefined,
     }));
 
     let lastError: any = null;
