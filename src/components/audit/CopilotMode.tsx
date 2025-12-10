@@ -12,7 +12,7 @@ import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
 import { ThesisEditor } from "./ThesisEditor";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
-import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingDataAsync, getSessionMissingDataAsync, deleteSessionMissingDataAsync } from "@/lib/client-storage";
+import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingDataAsync, getSessionMissingDataAsync, deleteSessionMissingDataAsync, storeSessionPdf, getSessionPdf, deleteSessionPdf } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
 import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder, deduplicateCitations } from "@/lib/citation-detector";
 import { useAuth } from "@/contexts/AuthContext";
@@ -216,6 +216,16 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setFile({ name: session.thesis_name } as File);
     setSelectedIndex(null);
     
+    // Restore PDF file from IndexedDB for PDF overlay mode
+    const pdfFile = await getSessionPdf(session.id);
+    if (pdfFile) {
+      const blobUrl = URL.createObjectURL(pdfFile);
+      setThesisFilePath(blobUrl);
+      console.log('[CopilotMode] Restored PDF from IndexedDB');
+    } else {
+      setThesisFilePath(null);
+    }
+    
     // Restore fullText from IndexedDB and re-analyze citations against current library
     let sessionData = await getSessionMissingDataAsync(session.id);
     console.log('[CopilotMode] Session data:', sessionData ? `${sessionData.fullText?.length} chars` : 'none');
@@ -283,7 +293,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     }
   };
 
-  const saveSession = async (thesisName: string, paragraphsData: ParagraphData[], textContent?: string): Promise<string | null> => {
+  const saveSession = async (thesisName: string, paragraphsData: ParagraphData[], textContent?: string, pdfFile?: File): Promise<string | null> => {
     const checkedCount = paragraphsData.filter(p => p.checked).length;
     
     // Use provided textContent or fall back to current fullText state
@@ -329,6 +339,12 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         await saveSessionMissingDataAsync({ sessionId, fullText: textToSave });
       }
       
+      // Save PDF file to IndexedDB for PDF overlay mode (only on new session creation)
+      if (sessionId && pdfFile && !currentSessionId) {
+        console.log('[CopilotMode] Saving PDF to IndexedDB for session:', sessionId);
+        await storeSessionPdf(sessionId, pdfFile);
+      }
+      
       // Refresh sessions list
       loadSessions();
       return sessionId;
@@ -360,8 +376,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         setFullText('');
       }
       
-      // Also delete session text from IndexedDB
+      // Also delete session text and PDF from IndexedDB
       await deleteSessionMissingDataAsync(sessionId);
+      await deleteSessionPdf(sessionId);
       
       loadSessions();
       toast({ title: "Session deleted" });
@@ -494,8 +511,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
 
       setParagraphs(newParagraphs);
       
-      // Save new session with full text for citation persistence
-      await saveSession(uploadedFile.name, newParagraphs, text);
+      // Save new session with full text for citation persistence (pass PDF file for storage)
+      const pdfToSave = ext === '.pdf' ? uploadedFile : undefined;
+      await saveSession(uploadedFile.name, newParagraphs, text, pdfToSave);
 
       toast({ title: "File loaded", description: `Found ${paragraphTexts.length} paragraphs` });
     } catch (error) {

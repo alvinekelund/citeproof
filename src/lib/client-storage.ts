@@ -721,3 +721,21 @@ export function deleteSessionMissingData(sessionId: string): void {
   const all = getStorageItem<SessionMissingCitations[]>(SESSION_MISSING_KEY, []);
   setStorageItem(SESSION_MISSING_KEY, all.filter(s => s.sessionId !== sessionId));
 }
+
+// ============= SESSION PDF STORAGE (IndexedDB) =============
+// Store and retrieve PDF files associated with copilot sessions
+
+export async function storeSessionPdf(sessionId: string, file: File): Promise<void> {
+  const path = `session-pdf/${sessionId}`;
+  await storeFile(path, file);
+}
+
+export async function getSessionPdf(sessionId: string): Promise<File | null> {
+  const path = `session-pdf/${sessionId}`;
+  return await getFile(path);
+}
+
+export async function deleteSessionPdf(sessionId: string): Promise<void> {
+  const path = `session-pdf/${sessionId}`;
+  await deleteFile(path);
+}
