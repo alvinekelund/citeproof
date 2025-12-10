@@ -26,10 +26,40 @@ interface PdfViewerDialogProps {
   fileName: string;
   initialPage?: number;
   searchText?: string;
+  highlightColor?: 'green' | 'yellow' | 'red' | 'blue'; // Color for highlighting
+}
+
+// Normalize PDF text extraction issues - handles ligatures, encoding, OCR quirks
+function normalizePdfText(s: string): string {
+  return s
+    // Ligatures
+    .replace(/ﬁ/g, 'fi')
+    .replace(/ﬂ/g, 'fl')
+    .replace(/ﬀ/g, 'ff')
+    .replace(/ﬃ/g, 'ffi')
+    .replace(/ﬄ/g, 'ffl')
+    // Smart quotes and apostrophes
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    // Dashes and hyphens
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015]/g, '-')
+    // Soft hyphen (invisible)
+    .replace(/\u00AD/g, '')
+    // Non-breaking space
+    .replace(/\u00A0/g, ' ')
+    // Multiple spaces/whitespace to single space
+    .replace(/\s+/g, ' ')
+    // Common OCR errors
+    .replace(/[ﬆ]/g, 'st')
+    .trim();
 }
 
 // Levenshtein distance for fuzzy matching
 function levenshtein(a: string, b: string): number {
+  if (a.length > 200 || b.length > 200) {
+    // For long strings, use a simplified approach
+    return Math.abs(a.length - b.length);
+  }
   const matrix: number[][] = [];
   for (let i = 0; i <= b.length; i++) matrix[i] = [i];
   for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
@@ -43,23 +73,34 @@ function levenshtein(a: string, b: string): number {
   return matrix[b.length][a.length];
 }
 
+// Get n-grams (overlapping word sequences) for matching
+function getNgrams(text: string, n: number = 3): string[] {
+  const words = text.split(/\s+/).filter(w => w.length > 0);
+  if (words.length < n) return [words.join(' ')];
+  const ngrams: string[] = [];
+  for (let i = 0; i <= words.length - n; i++) {
+    ngrams.push(words.slice(i, i + n).join(' '));
+  }
+  return ngrams;
+}
+
 // Fuzzy match with tolerance - multiple strategies for robustness
-function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: number; end: number } | null {
-  const normalize = (s: string) => s.toLowerCase().replace(/[\s\-–—]+/g, ' ').replace(/[^\w\s]/g, '').trim();
-  const normalizedText = normalize(text);
-  const normalizedSearch = normalize(search);
+function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: number; end: number; confidence: number } | null {
+  // Apply PDF-specific normalization
+  const normalizedText = normalizePdfText(text).toLowerCase();
+  const normalizedSearch = normalizePdfText(search).toLowerCase();
   
   // Strategy 1: For short searches, do exact match
   if (normalizedSearch.length < 10) {
     const idx = normalizedText.indexOf(normalizedSearch);
-    if (idx !== -1) return { start: idx, end: idx + normalizedSearch.length };
+    if (idx !== -1) return { start: idx, end: idx + normalizedSearch.length, confidence: 1.0 };
     return null;
   }
   
   // Strategy 2: Try exact match first
   const exactIdx = normalizedText.indexOf(normalizedSearch);
   if (exactIdx !== -1) {
-    return { start: exactIdx, end: exactIdx + normalizedSearch.length };
+    return { start: exactIdx, end: exactIdx + normalizedSearch.length, confidence: 1.0 };
   }
   
   // Strategy 3: Try matching progressively shorter prefixes (80, 60, 40, 20 chars)
@@ -68,12 +109,30 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
       const prefix = normalizedSearch.slice(0, prefixLen);
       const prefixIdx = normalizedText.indexOf(prefix);
       if (prefixIdx !== -1) {
-        return { start: prefixIdx, end: Math.min(prefixIdx + normalizedSearch.length, normalizedText.length) };
+        return { 
+          start: prefixIdx, 
+          end: Math.min(prefixIdx + normalizedSearch.length, normalizedText.length),
+          confidence: 0.9 
+        };
       }
     }
   }
   
-  // Strategy 4: Word-based matching - find consecutive matching words
+  // Strategy 4: N-gram matching - find sequences of words
+  const searchNgrams = getNgrams(normalizedSearch, 4);
+  for (const ngram of searchNgrams.slice(0, 5)) { // Try first 5 n-grams
+    const ngramIdx = normalizedText.indexOf(ngram);
+    if (ngramIdx !== -1) {
+      // Found a matching n-gram, expand the match
+      return { 
+        start: ngramIdx, 
+        end: Math.min(ngramIdx + normalizedSearch.length, normalizedText.length),
+        confidence: 0.8 
+      };
+    }
+  }
+  
+  // Strategy 5: Word-based matching - find consecutive matching words
   const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 2);
   if (searchWords.length >= 3) {
     // Try to find a sequence of first 3-5 words
@@ -81,12 +140,16 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
       const wordSequence = searchWords.slice(0, wordCount).join(' ');
       const seqIdx = normalizedText.indexOf(wordSequence);
       if (seqIdx !== -1) {
-        return { start: seqIdx, end: Math.min(seqIdx + normalizedSearch.length, normalizedText.length) };
+        return { 
+          start: seqIdx, 
+          end: Math.min(seqIdx + normalizedSearch.length, normalizedText.length),
+          confidence: 0.75 
+        };
       }
     }
     
     // Try to find distinctive words anywhere in text (author names, technical terms)
-    const distinctiveWords = searchWords.filter(w => w.length > 4);
+    const distinctiveWords = searchWords.filter(w => w.length > 5);
     for (const word of distinctiveWords) {
       const wordIdx = normalizedText.indexOf(word);
       if (wordIdx !== -1) {
@@ -97,14 +160,18 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
           if (context.includes(sw)) matchCount++;
         }
         if (matchCount >= 3) {
-          return { start: Math.max(0, wordIdx - 20), end: Math.min(wordIdx + normalizedSearch.length, normalizedText.length) };
+          return { 
+            start: Math.max(0, wordIdx - 20), 
+            end: Math.min(wordIdx + normalizedSearch.length, normalizedText.length),
+            confidence: 0.7 
+          };
         }
       }
     }
   }
   
-  // Strategy 5: Sliding window with Levenshtein (expensive, only for shorter searches)
-  if (normalizedSearch.length <= 200) {
+  // Strategy 6: Sliding window with Levenshtein (expensive, only for shorter searches)
+  if (normalizedSearch.length <= 150) {
     const searchLen = normalizedSearch.length;
     const maxDist = Math.floor(searchLen * tolerance);
     
@@ -112,7 +179,7 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
       const window = normalizedText.slice(i, i + searchLen);
       const dist = levenshtein(window, normalizedSearch);
       if (dist <= maxDist) {
-        return { start: i, end: i + searchLen };
+        return { start: i, end: i + searchLen, confidence: 0.6 };
       }
     }
   }
@@ -120,7 +187,18 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
   return null;
 }
 
-export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initialPage = 1, searchText }: PdfViewerDialogProps) {
+// Get highlight color based on verdict
+function getHighlightColorRgba(color?: 'green' | 'yellow' | 'red' | 'blue'): string {
+  switch (color) {
+    case 'green': return 'rgba(34, 197, 94, 0.4)';
+    case 'red': return 'rgba(239, 68, 68, 0.4)';
+    case 'blue': return 'rgba(59, 130, 246, 0.4)';
+    case 'yellow':
+    default: return 'rgba(250, 204, 21, 0.4)';
+  }
+}
+
+export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initialPage = 1, searchText, highlightColor }: PdfViewerDialogProps) {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(initialPage);
   const [totalPages, setTotalPages] = useState(0);
@@ -193,7 +271,7 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
     if (pdfDoc) {
       renderPage(currentPage);
     }
-  }, [pdfDoc, currentPage, scale]);
+  }, [pdfDoc, currentPage, scale, highlightColor]);
 
   const loadPdf = async () => {
     if (!filePath) return;
@@ -347,9 +425,8 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
       
       setHighlightNotFound(false);
       
-      // Map match positions to text items
-      const normalize = (s: string) => s.toLowerCase().replace(/[\s\-–—]+/g, ' ').replace(/[^\w\s]/g, '').trim();
-      const normalizedFull = normalize(fullText);
+      // Map match positions to text items using normalized text
+      const normalizedFull = normalizePdfText(fullText).toLowerCase();
       
       // Find character positions in original text
       let normalizedPos = 0;
@@ -357,7 +434,7 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
       
       for (let i = 0; i < fullText.length; i++) {
         const char = fullText[i];
-        const normalizedChar = normalize(char);
+        const normalizedChar = normalizePdfText(char).toLowerCase();
         if (normalizedChar.length > 0) {
           charToOriginal[normalizedPos] = i;
           normalizedPos++;
@@ -389,12 +466,12 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
       
       setHighlightRects(rects);
       
-      // Draw highlights
+      // Draw highlights with the specified color
       if (highlightCanvasRef.current && rects.length > 0) {
         const ctx = highlightCanvasRef.current.getContext('2d');
         if (ctx) {
           ctx.clearRect(0, 0, highlightCanvasRef.current.width, highlightCanvasRef.current.height);
-          ctx.fillStyle = 'rgba(250, 204, 21, 0.4)';
+          ctx.fillStyle = getHighlightColorRgba(highlightColor);
           for (const rect of rects) {
             ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
           }

@@ -24,6 +24,7 @@ interface ClaimCardProps {
   showImplementButton?: boolean;
   originalText?: string; // If provided, shows this claim was modified
   onRevert?: () => void; // Callback to revert to original text
+  highlightColor?: 'green' | 'yellow' | 'red' | 'blue'; // Color for PDF highlights
 }
 
 function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | 'yellow' | 'red' {
@@ -42,8 +43,13 @@ function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | '
   return 'yellow';
 }
 
-export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, showImplementButton, originalText, onRevert }: ClaimCardProps) {
-  const verdictColor = getVerdictColor(claim.verdict, claim.common_knowledge);
+// Escape special regex characters
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, showImplementButton, originalText, onRevert, highlightColor }: ClaimCardProps) {
+  const verdictColor = highlightColor || getVerdictColor(claim.verdict, claim.common_knowledge);
   const [textViewerOpen, setTextViewerOpen] = useState(false);
   const [textContent, setTextContent] = useState<string>('');
   const [textViewerTitle, setTextViewerTitle] = useState('');
@@ -90,6 +96,7 @@ export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, sh
     
     // Score each source based on match quality
     let bestMatch: { source: Source; score: number } | null = null;
+    let secondBest: { source: Source; score: number } | null = null;
     
     for (const source of sources) {
       let score = 0;
@@ -112,14 +119,18 @@ export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, sh
         }
       }
       
-      // Check author name matches
+      // Check author name matches with WORD BOUNDARIES to prevent "Smith" matching "Smithson"
       if (source.authors && authorNames.length > 0) {
         const sourceAuthors = source.authors.toLowerCase();
         let authorsMatched = 0;
         
         for (const name of authorNames) {
-          if (name.length > 2 && sourceAuthors.includes(name)) {
-            authorsMatched++;
+          if (name.length > 2) {
+            // Use word boundary regex for precise matching
+            const wordBoundaryRegex = new RegExp(`\\b${escapeRegex(name)}\\b`, 'i');
+            if (wordBoundaryRegex.test(sourceAuthors)) {
+              authorsMatched++;
+            }
           }
         }
         
@@ -129,24 +140,57 @@ export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, sh
         }
       }
       
-      // Check in_text_label contains author names  
+      // Check in_text_label contains author names with word boundaries
       if (source.in_text_label && authorNames.length > 0) {
         const sourceLabel = source.in_text_label.toLowerCase();
         for (const name of authorNames) {
-          if (name.length > 2 && sourceLabel.includes(name)) {
-            score += 15;
+          if (name.length > 2) {
+            const wordBoundaryRegex = new RegExp(`\\b${escapeRegex(name)}\\b`, 'i');
+            if (wordBoundaryRegex.test(sourceLabel)) {
+              score += 15;
+            }
           }
         }
       }
       
-      // Update best match
-      if (score > 0 && (!bestMatch || score > bestMatch.score)) {
-        bestMatch = { source, score };
+      // Fallback: Check filename for author name or year
+      if (score === 0 && source.original_filename) {
+        const filenameClean = source.original_filename.toLowerCase().replace(/[-_]/g, ' ');
+        for (const name of authorNames) {
+          if (name.length > 3 && filenameClean.includes(name)) {
+            score += 10;
+          }
+        }
+        if (year && filenameClean.includes(String(year))) {
+          score += 10;
+        }
+      }
+      
+      // Update best matches
+      if (score > 0) {
+        if (!bestMatch || score > bestMatch.score) {
+          secondBest = bestMatch;
+          bestMatch = { source, score };
+        } else if (!secondBest || score > secondBest.score) {
+          secondBest = { source, score };
+        }
       }
     }
     
-    // Only return if we have a reasonable match (year + at least one author)
-    if (bestMatch && bestMatch.score >= 50) {
+    // Log ambiguous matches for debugging
+    if (bestMatch && secondBest && bestMatch.score - secondBest.score < 20) {
+      console.warn(`[ClaimCard] Ambiguous source match for "${label}": ` +
+        `${bestMatch.source.in_text_label || bestMatch.source.original_filename} (${bestMatch.score}) vs ` +
+        `${secondBest.source.in_text_label || secondBest.source.original_filename} (${secondBest.score})`);
+    }
+    
+    // Only return if we have a reasonable match (year + at least one author, or high score)
+    if (bestMatch && bestMatch.score >= 70) {
+      return bestMatch.source;
+    }
+    
+    // Lower threshold fallback if we have a year match
+    if (bestMatch && bestMatch.score >= 50 && year) {
       return bestMatch.source;
     }
     
