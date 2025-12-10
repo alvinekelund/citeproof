@@ -42,6 +42,14 @@ interface FlatClaim {
   overallColor: string;
 }
 
+// Blue paragraph (no claims, just info display)
+interface BlueParagraph {
+  paragraphIndex: number;
+  paragraphText: string;
+  sectionTitle?: string;
+  skipReason?: string;
+}
+
 // Track version history for rewrites
 interface VersionEntry {
   text: string;
@@ -54,7 +62,8 @@ interface RewriteHistoryEntry {
 }
 
 export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, thesisFilePath }: ThesisEditorProps) {
-  const [selectedClaimIndex, setSelectedClaimIndex] = useState(0);
+  const [selectedClaimIndex, setSelectedClaimIndex] = useState<number | null>(0);
+  const [selectedBlueParagraph, setSelectedBlueParagraph] = useState<BlueParagraph | null>(null);
   const [rewriteHistory, setRewriteHistory] = useState<Map<string, RewriteHistoryEntry>>(new Map());
   const [implementedClaims, setImplementedClaims] = useState<Set<string>>(new Set());
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -72,8 +81,21 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const [totalPdfPages, setTotalPdfPages] = useState(0);
   const [pdfScale, setPdfScale] = useState(1.0);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
+  const [pdfTextContent, setPdfTextContent] = useState<Map<number, string>>(new Map());
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Helper to select a claim and clear blue paragraph selection
+  const selectClaim = useCallback((idx: number) => {
+    setSelectedClaimIndex(idx);
+    setSelectedBlueParagraph(null);
+  }, []);
+  
+  // Helper to select a blue paragraph and clear claim selection
+  const selectBlueParagraph = useCallback((bp: BlueParagraph) => {
+    setSelectedBlueParagraph(bp);
+    setSelectedClaimIndex(null);
+  }, []);
 
   const getClaimColor = useCallback((claim: Claim, overallColor: string, paragraphIndex: number, claimIndex: number): 'green' | 'yellow' | 'red' | 'blue' => {
     // Check if this claim has been implemented (rewritten) - show as green
@@ -123,7 +145,19 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     return claims;
   }, [paragraphs, getClaimColor, implementedClaims]);
 
-  const currentClaim = allClaims[selectedClaimIndex];
+  // Get list of blue paragraphs (sections that don't need AI verification)
+  const blueParagraphs: BlueParagraph[] = useMemo(() => {
+    return paragraphs
+      .filter(p => p.result?.overall_color === 'blue' && (!p.result?.claims || p.result.claims.length === 0))
+      .map(p => ({
+        paragraphIndex: p.index,
+        paragraphText: p.text,
+        sectionTitle: p.sectionTitle,
+        skipReason: p.skipReason || p.result?.summary,
+      }));
+  }, [paragraphs]);
+
+  const currentClaim = selectedClaimIndex !== null ? allClaims[selectedClaimIndex] : null;
   
   // Check if current claim has been modified
   const currentClaimKey = currentClaim ? `${currentClaim.paragraphIndex}-${currentClaim.claimIndex}` : null;
@@ -135,13 +169,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     allClaims.forEach(c => {
       counts[c.color]++;
     });
-    // Also count paragraphs with blue status that have no claims
-    const blueParagraphCount = paragraphs.filter(
-      p => p.result?.overall_color === 'blue' && (!p.result?.claims || p.result.claims.length === 0)
-    ).length;
-    counts.blue += blueParagraphCount;
+    counts.blue += blueParagraphs.length;
     return counts;
-  }, [allClaims, paragraphs]);
+  }, [allClaims, blueParagraphs.length]);
 
   // Load PDF for overlay mode
   useEffect(() => {
@@ -235,30 +265,33 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
 
   // Navigation
   const goToPrevClaim = useCallback(() => {
-    setSelectedClaimIndex(prev => Math.max(0, prev - 1));
-  }, []);
+    if (selectedClaimIndex === null || selectedClaimIndex === 0) return;
+    selectClaim(selectedClaimIndex - 1);
+  }, [selectedClaimIndex, selectClaim]);
 
   const goToNextClaim = useCallback(() => {
-    setSelectedClaimIndex(prev => Math.min(allClaims.length - 1, prev + 1));
-  }, [allClaims.length]);
+    if (selectedClaimIndex === null || selectedClaimIndex >= allClaims.length - 1) return;
+    selectClaim(selectedClaimIndex + 1);
+  }, [selectedClaimIndex, allClaims.length, selectClaim]);
 
   const goToNextProblem = useCallback(() => {
+    const startIdx = selectedClaimIndex ?? -1;
     // Find next red or yellow claim after current
-    for (let i = selectedClaimIndex + 1; i < allClaims.length; i++) {
+    for (let i = startIdx + 1; i < allClaims.length; i++) {
       if (allClaims[i].color === 'red' || allClaims[i].color === 'yellow') {
-        setSelectedClaimIndex(i);
+        selectClaim(i);
         return;
       }
     }
     // Wrap around
-    for (let i = 0; i < selectedClaimIndex; i++) {
+    for (let i = 0; i < startIdx; i++) {
       if (allClaims[i].color === 'red' || allClaims[i].color === 'yellow') {
-        setSelectedClaimIndex(i);
+        selectClaim(i);
         return;
       }
     }
     toast({ title: "No more issues", description: "All claims are verified." });
-  }, [selectedClaimIndex, allClaims]);
+  }, [selectedClaimIndex, allClaims, selectClaim]);
 
   // Handle implementing a rewrite
   const handleImplementRewrite = useCallback((newClaimText: string) => {
@@ -453,7 +486,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                   return (
                     <button
                       key={key}
-                      onClick={() => setSelectedClaimIndex(idx)}
+                      onClick={() => selectClaim(idx)}
                       className={cn(
                         "w-full text-left p-3 rounded-lg transition-colors",
                         "hover:bg-accent/50",
@@ -643,7 +676,24 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                       const hasCitationPattern = /\([^)]*\d{4}[^)]*\)/.test(p.text);
                       const isBlueStatus = p.result?.overall_color === 'blue';
                       if ((!p.checked && hasCitationPattern) || isBlueStatus) {
-                        return <span className="bg-blue-500/10 rounded px-0.5">{p.text}</span>;
+                        const bp: BlueParagraph = {
+                          paragraphIndex: p.index,
+                          paragraphText: p.text,
+                          sectionTitle: p.sectionTitle,
+                          skipReason: p.skipReason || p.result?.summary,
+                        };
+                        const isSelected = selectedBlueParagraph?.paragraphIndex === p.index;
+                        return (
+                          <button
+                            onClick={() => selectBlueParagraph(bp)}
+                            className={cn(
+                              "bg-blue-500/10 rounded px-0.5 text-left transition-all cursor-pointer hover:ring-2 hover:ring-blue-500/50",
+                              isSelected && "ring-2 ring-blue-500"
+                            )}
+                          >
+                            {p.text}
+                          </button>
+                        );
                       }
                       return <span>{p.text}</span>;
                     }
@@ -680,7 +730,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                       elements.push(
                         <button
                           key={`claim-${cIdx}`}
-                          onClick={() => setSelectedClaimIndex(globalIdx)}
+                          onClick={() => selectClaim(globalIdx)}
                           className={cn(
                             "rounded px-0.5 -mx-0.5 transition-all cursor-pointer hover:ring-2 hover:ring-primary/50",
                             c.color === 'green' && "bg-green-500/20 hover:bg-green-500/30",
@@ -734,7 +784,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                       variant="outline" 
                       size="sm" 
                       onClick={goToPrevClaim}
-                      disabled={selectedClaimIndex === 0}
+                      disabled={selectedClaimIndex === null || selectedClaimIndex === 0}
                     >
                       <ChevronLeft className="h-4 w-4 mr-1" />
                       Prev
@@ -772,7 +822,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                       variant="outline" 
                       size="sm" 
                       onClick={goToNextClaim}
-                      disabled={selectedClaimIndex === allClaims.length - 1}
+                      disabled={selectedClaimIndex === null || selectedClaimIndex === allClaims.length - 1}
                     >
                       Next
                       <ChevronRight className="h-4 w-4 ml-1" />
@@ -837,9 +887,41 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                   highlightColor={currentClaim.color}
                 />
               </>
+            ) : selectedBlueParagraph ? (
+              /* Blue Paragraph Info Panel */
+              <Card className="p-4 bg-blue-500/5 border-blue-500/20">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <VerdictBadge color="blue" />
+                    <span className="text-sm font-medium">
+                      Paragraph {selectedBlueParagraph.paragraphIndex + 1}
+                    </span>
+                  </div>
+                  
+                  {selectedBlueParagraph.sectionTitle && (
+                    <div>
+                      <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Section</div>
+                      <p className="text-sm font-medium">{selectedBlueParagraph.sectionTitle}</p>
+                    </div>
+                  )}
+                  
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Status</div>
+                    <p className="text-sm">{selectedBlueParagraph.skipReason || 'This section does not require citation verification.'}</p>
+                  </div>
+                  
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-2 uppercase tracking-wide">Content Preview</div>
+                    <div className="text-sm text-muted-foreground bg-muted/50 rounded p-3 max-h-48 overflow-y-auto">
+                      {selectedBlueParagraph.paragraphText.slice(0, 500)}
+                      {selectedBlueParagraph.paragraphText.length > 500 && '...'}
+                    </div>
+                  </div>
+                </div>
+              </Card>
             ) : (
               <Card className="p-6 text-center text-muted-foreground">
-                <p className="text-sm">Click on a highlighted claim to view details</p>
+                <p className="text-sm">Click on a highlighted section to view details</p>
               </Card>
             )}
           </div>
@@ -923,7 +1005,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                       variant="outline" 
                       size="sm" 
                       onClick={goToPrevClaim}
-                      disabled={selectedClaimIndex === 0}
+                      disabled={selectedClaimIndex === null || selectedClaimIndex === 0}
                     >
                       <ChevronLeft className="h-4 w-4 mr-1" />
                       Prev
@@ -940,7 +1022,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                       variant="outline" 
                       size="sm" 
                       onClick={goToNextClaim}
-                      disabled={selectedClaimIndex === allClaims.length - 1}
+                      disabled={selectedClaimIndex === null || selectedClaimIndex === allClaims.length - 1}
                     >
                       Next
                       <ChevronRight className="h-4 w-4 ml-1" />
@@ -960,6 +1042,38 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                   highlightColor={currentClaim.color}
                 />
               </>
+            ) : selectedBlueParagraph ? (
+              /* Blue Paragraph Info Panel */
+              <Card className="p-4 bg-blue-500/5 border-blue-500/20">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <VerdictBadge color="blue" />
+                    <span className="text-sm font-medium">
+                      Paragraph {selectedBlueParagraph.paragraphIndex + 1}
+                    </span>
+                  </div>
+                  
+                  {selectedBlueParagraph.sectionTitle && (
+                    <div>
+                      <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Section</div>
+                      <p className="text-sm font-medium">{selectedBlueParagraph.sectionTitle}</p>
+                    </div>
+                  )}
+                  
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Status</div>
+                    <p className="text-sm">{selectedBlueParagraph.skipReason || 'This section does not require citation verification.'}</p>
+                  </div>
+                  
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-2 uppercase tracking-wide">Content Preview</div>
+                    <div className="text-sm text-muted-foreground bg-muted/50 rounded p-3 max-h-48 overflow-y-auto">
+                      {selectedBlueParagraph.paragraphText.slice(0, 500)}
+                      {selectedBlueParagraph.paragraphText.length > 500 && '...'}
+                    </div>
+                  </div>
+                </div>
+              </Card>
             ) : (
               <Card className="p-6 text-center text-muted-foreground">
                 <p className="text-sm">Select a claim to view details</p>
