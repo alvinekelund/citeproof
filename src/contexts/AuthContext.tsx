@@ -8,18 +8,23 @@ interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
   login: (username: string, password: string) => boolean;
+  signup: (username: string, password: string) => { success: boolean; error?: string };
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-// Hardcoded credentials
-const VALID_CREDENTIALS = {
+// Original admin account
+const ADMIN_ACCOUNT = {
   username: 'alvin',
   password: 'REDACTED',
 };
 
+// Shared password for new account creation
+const SIGNUP_PASSWORD = 'slaybot';
+
 const AUTH_KEY = 'thesis-checker-auth';
+const ACCOUNTS_KEY = 'thesis-checker-accounts';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -37,17 +42,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Get stored accounts
+  const getStoredAccounts = (): Record<string, string> => {
+    try {
+      const stored = localStorage.getItem(ACCOUNTS_KEY);
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  };
+
   const login = (username: string, password: string): boolean => {
-    if (
-      username === VALID_CREDENTIALS.username &&
-      password === VALID_CREDENTIALS.password
-    ) {
+    // Check admin account first
+    if (username === ADMIN_ACCOUNT.username && password === ADMIN_ACCOUNT.password) {
       const userData = { username };
       setUser(userData);
       localStorage.setItem(AUTH_KEY, JSON.stringify(userData));
       return true;
     }
+    
+    // Check stored accounts
+    const accounts = getStoredAccounts();
+    if (accounts[username] === password) {
+      const userData = { username };
+      setUser(userData);
+      localStorage.setItem(AUTH_KEY, JSON.stringify(userData));
+      return true;
+    }
+    
     return false;
+  };
+
+  const signup = (username: string, password: string): { success: boolean; error?: string } => {
+    if (password !== SIGNUP_PASSWORD) {
+      return { success: false, error: 'Invalid signup password' };
+    }
+    
+    if (username === ADMIN_ACCOUNT.username) {
+      return { success: false, error: 'Username already taken' };
+    }
+    
+    const accounts = getStoredAccounts();
+    if (accounts[username]) {
+      return { success: false, error: 'Username already exists' };
+    }
+    
+    // Store new account
+    accounts[username] = password;
+    localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+    
+    // Auto login
+    const userData = { username };
+    setUser(userData);
+    localStorage.setItem(AUTH_KEY, JSON.stringify(userData));
+    
+    return { success: true };
   };
 
   const logout = () => {
@@ -61,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         isAuthenticated: !!user,
         login,
+        signup,
         logout,
       }}
     >
