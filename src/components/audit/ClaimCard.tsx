@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Eye, AlertTriangle, Lightbulb, FileText, Wand2, Loader2, BookOpen, PenLine, Copy, Check } from "lucide-react";
+import { Eye, AlertTriangle, Lightbulb, FileText, Wand2, Loader2, BookOpen, PenLine, Copy, Check, FileCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Claim, Source } from "@/lib/types";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
@@ -20,6 +20,8 @@ interface ClaimCardProps {
   claim: Claim;
   sources: Source[];
   onOpenSource?: (source: Source, pageNumber: number, excerpt?: string) => void;
+  onImplementRewrite?: (newText: string) => void;
+  showImplementButton?: boolean;
 }
 
 function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | 'yellow' | 'red' {
@@ -38,7 +40,7 @@ function getVerdictColor(verdict: string, commonKnowledge: boolean): 'green' | '
   return 'yellow';
 }
 
-export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
+export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, showImplementButton }: ClaimCardProps) {
   const verdictColor = getVerdictColor(claim.verdict, claim.common_knowledge);
   const [textViewerOpen, setTextViewerOpen] = useState(false);
   const [textContent, setTextContent] = useState<string>('');
@@ -272,7 +274,8 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
   };
 
   const highlightedSections = getHighlightedSections();
-  const showRewriteButtons = verdictColor === 'red' || verdictColor === 'yellow';
+  // Show rewrite buttons for red/yellow claims OR when explicitly enabled
+  const showRewriteButtons = verdictColor === 'red' || verdictColor === 'yellow' || showImplementButton;
 
   return (
     <>
@@ -457,6 +460,19 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
                 <p className="text-xs text-muted-foreground mt-1">
                   <strong>Explanation:</strong> {rewriteResult.explanation}
                 </p>
+                
+                {/* Implement button - only show when callback is provided */}
+                {showImplementButton && onImplementRewrite && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => onImplementRewrite(rewriteResult.rewritten_claim)}
+                    className="mt-3 w-full"
+                  >
+                    <FileCheck className="h-4 w-4 mr-2" />
+                    Implement This Rewrite
+                  </Button>
+                )}
               </div>
             )}
           </div>
