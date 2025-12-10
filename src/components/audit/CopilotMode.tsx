@@ -299,6 +299,9 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     // Use provided textContent or fall back to current fullText state
     const textToSave = textContent || fullText;
     
+    // Track if this is a new session creation
+    const isNewSession = !currentSessionId;
+    
     try {
       let sessionId = currentSessionId;
       
@@ -340,7 +343,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       }
       
       // Save PDF file to IndexedDB for PDF overlay mode (only on new session creation)
-      if (sessionId && pdfFile && !currentSessionId) {
+      if (sessionId && pdfFile && isNewSession) {
         console.log('[CopilotMode] Saving PDF to IndexedDB for session:', sessionId);
         await storeSessionPdf(sessionId, pdfFile);
       }
