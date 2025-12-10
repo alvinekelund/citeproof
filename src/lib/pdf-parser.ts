@@ -17,7 +17,10 @@ const ABBREVIATIONS = new Set([
   'dr', 'mr', 'mrs', 'ms', 'prof', 'sr', 'jr', 'vs', 'etc', 'al', 'eg', 'ie',
   'inc', 'ltd', 'co', 'corp', 'fig', 'vol', 'no', 'pp', 'ed', 'eds', 'rev',
   'st', 'ave', 'blvd', 'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep',
-  'oct', 'nov', 'dec', 'approx', 'est', 'dept', 'univ', 'assoc', 'natl', 'intl'
+  'oct', 'nov', 'dec', 'approx', 'est', 'dept', 'univ', 'assoc', 'natl', 'intl',
+  // Academic-specific abbreviations
+  'cf', 'ibid', 'op', 'cit', 'loc', 'et', 'seq', 'sic', 'viz', 'ca',
+  'esp', 'trans', 'orig', 'repr', 'ser', 'suppl', 'pt', 'ch', 'sec',
 ]);
 
 export async function extractTextFromPdf(file: File): Promise<string> {
@@ -265,16 +268,33 @@ function endsIncomplete(text: string): boolean {
   if (!trimmed) return false;
   
   // Check for proper sentence-ending punctuation
-  // Allow closing quotes/parens after punctuation: ." .) ?)
+  // Allow closing quotes/parens after punctuation: ." .) ?) ;"
   const endPattern = /[.!?]["'\)]*$/;
   if (endPattern.test(trimmed)) {
+    // But check if the period is part of an abbreviation
+    const lastWord = trimmed.split(/\s+/).pop() || '';
+    const wordWithoutPunctuation = lastWord.replace(/[.!?"'\)]+$/, '').toLowerCase();
+    if (ABBREVIATIONS.has(wordWithoutPunctuation)) {
+      return true; // Ends with abbreviation, likely incomplete
+    }
     return false; // Ends with proper punctuation
+  }
+  
+  // Check if ends mid-citation like "(Author et al."
+  if (/\([^)]+$/.test(trimmed)) {
+    return true; // Unclosed parenthesis
   }
   
   // Check if ends with a word (likely mid-sentence)
   const lastWord = trimmed.split(/\s+/).pop() || '';
   // Short words like "a", "the", "an", "as" are strong indicators of incomplete sentence
-  if (/^(a|an|the|as|or|and|but|in|on|to|of|for|is|are|was|were|be|been|being)$/i.test(lastWord)) {
+  if (/^(a|an|the|as|or|and|but|in|on|to|of|for|is|are|was|were|be|been|being|with|by|from|that|this|which|who|what|where|when|how|why)$/i.test(lastWord)) {
+    return true;
+  }
+  
+  // Numbers followed by common patterns
+  if (/\d+$/.test(lastWord) && !/\d{4}\)?$/.test(trimmed)) {
+    // Ends with number but not a year in parentheses - likely incomplete
     return true;
   }
   

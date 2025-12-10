@@ -15,6 +15,13 @@ GENERAL PRINCIPLES
 - Prefer short, precise excerpts over vague summaries.
 - Treat everything as BSc-level academic work.
 
+CRITICAL RULE - EVIDENCE MUST MATCH CITATIONS:
+- For each claim, you MUST only provide evidence from sources that are listed in that claim's "intended_citations".
+- NEVER provide evidence from a source that is NOT cited in the claim.
+- If a claim cites "(Noy & Zhang, 2023)", only search for evidence in the source with label "(Noy & Zhang, 2023)".
+- If you cannot find supporting evidence in the CITED source, mark as unsupported - do NOT use evidence from other sources.
+- This is essential for academic integrity: evidence must come from the source the author cited, not from other sources.
+
 SPECIAL HANDLING
 - If a paragraph appears to be a REFERENCE LIST or BIBLIOGRAPHY entry (contains DOI, URL, author-year format, journal names), return overall_color "blue" and skip detailed analysis.
 - If NO sources have any text content (all extracted_text fields are empty or missing), mark overall_color as "yellow" with verdict "Uncertain: source documents not available for verification" - do NOT mark as red/unsupported.
@@ -49,13 +56,15 @@ TASK
 4. It is acceptable to note that a statement is common knowledge (e.g. "LLMs are a type of AI model") and does not strictly require a citation; treat such statements as effectively supported for the purposes of paragraph-level color, but mark them as common knowledge.
 
 5. Provide evidence:
+   - CRITICAL: Only provide evidence from sources listed in the claim's intended_citations!
+   - The evidence "label" MUST exactly match one of the intended_citations for that claim.
    - For each supported or partially supported claim, list one or more evidence entries with:
-     - label: in-text label
+     - label: in-text label (MUST be from intended_citations)
      - excerpt: short quote (1–3 sentences or up to ~50 words) from the source's extracted_text that supports the claim
      - page_number: estimate based on position in text if possible, or use 0 if unknown
      - section: section name if you can infer it from the excerpt context
 
-6. For claims with no support, clearly state: "No clear supporting passage found in [LABEL]."
+6. For claims with no support, clearly state: "No clear supporting passage found in [LABEL]." - do NOT substitute evidence from other sources.
 
 7. Issues and suggestions:
    - Only flag genuine issues (overgeneralisation, overstatement, missing citation for non-common-knowledge claims).
@@ -318,6 +327,35 @@ serve(async (req) => {
     }
 
     console.log('Paragraph check complete:', result.overall_color);
+    
+    // POST-PROCESS: Validate that evidence labels match intended_citations
+    if (result.claims && Array.isArray(result.claims)) {
+      for (const claim of result.claims) {
+        if (claim.evidence && Array.isArray(claim.evidence) && claim.intended_citations && Array.isArray(claim.intended_citations)) {
+          const originalEvidenceCount = claim.evidence.length;
+          // Normalize citations for comparison (remove extra spaces, etc.)
+          const normalizedCitations = claim.intended_citations.map((c: string) => c.toLowerCase().replace(/\s+/g, ' ').trim());
+          
+          // Filter evidence to only include labels that match intended_citations
+          claim.evidence = claim.evidence.filter((ev: any) => {
+            const normalizedLabel = (ev.label || '').toLowerCase().replace(/\s+/g, ' ').trim();
+            const matches = normalizedCitations.some((c: string) => 
+              c === normalizedLabel || 
+              c.includes(normalizedLabel.replace(/[()]/g, '')) ||
+              normalizedLabel.includes(c.replace(/[()]/g, ''))
+            );
+            if (!matches) {
+              console.log(`[VALIDATION] Discarding evidence from "${ev.label}" - not in intended_citations: ${claim.intended_citations.join(', ')}`);
+            }
+            return matches;
+          });
+          
+          if (claim.evidence.length < originalEvidenceCount) {
+            console.log(`[VALIDATION] Filtered ${originalEvidenceCount - claim.evidence.length} mismatched evidence entries for claim ${claim.index}`);
+          }
+        }
+      }
+    }
 
     return new Response(
       JSON.stringify({ result }),
