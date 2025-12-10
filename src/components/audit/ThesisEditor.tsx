@@ -45,6 +45,24 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
   const [viewerSearchText, setViewerSearchText] = useState<string | undefined>(undefined);
   const [copied, setCopied] = useState(false);
 
+  const getClaimColor = (claim: Claim, overallColor: string): 'green' | 'yellow' | 'red' | 'blue' => {
+    if (claim.common_knowledge) return 'green';
+    
+    const v = claim.verdict.toLowerCase();
+    if (v.includes('fully supported') || v.includes('well supported') || v.includes('supported by cited')) {
+      return 'green';
+    }
+    if (v.includes('partially') || v.includes('uncertain') || v.includes('some')) {
+      return 'yellow';
+    }
+    if (v.includes('no clear support') || v.includes('unsupported') || v.includes('not found')) {
+      return 'red';
+    }
+    
+    // Fall back to overall color for manual marks
+    return overallColor as 'green' | 'yellow' | 'red' | 'blue';
+  };
+
   // Build the full document text with claim positions
   const { fullText, claimPositions } = useMemo(() => {
     let text = '';
@@ -91,24 +109,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
     
     return { fullText: text, claimPositions: positions };
   }, [paragraphs]);
-
-  const getClaimColor = (claim: Claim, overallColor: string): 'green' | 'yellow' | 'red' | 'blue' => {
-    if (claim.common_knowledge) return 'green';
-    
-    const v = claim.verdict.toLowerCase();
-    if (v.includes('fully supported') || v.includes('well supported') || v.includes('supported by cited')) {
-      return 'green';
-    }
-    if (v.includes('partially') || v.includes('uncertain') || v.includes('some')) {
-      return 'yellow';
-    }
-    if (v.includes('no clear support') || v.includes('unsupported') || v.includes('not found')) {
-      return 'red';
-    }
-    
-    // Fall back to overall color for manual marks
-    return overallColor as 'green' | 'yellow' | 'red' | 'blue';
-  };
 
   // Render text with highlighted claims
   const renderHighlightedText = useCallback(() => {
