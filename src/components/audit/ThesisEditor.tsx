@@ -70,6 +70,7 @@ interface ClickableRegion {
   height: number;
   paragraphIndex: number;
   claimIndex: number | null; // null for blue paragraphs
+  globalClaimIndex: number | null; // index in allClaims array
   color: 'green' | 'yellow' | 'red' | 'blue';
 }
 
@@ -99,6 +100,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   
   // Store clickable regions for PDF highlights
   const [pdfClickableRegions, setPdfClickableRegions] = useState<ClickableRegion[]>([]);
+  const [hoveredRegion, setHoveredRegion] = useState<ClickableRegion | null>(null);
   
   // Helper to select a claim and clear blue paragraph selection
   const selectClaim = useCallback((idx: number) => {
@@ -312,7 +314,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     let currentLineY = -1;
     let currentLineText = '';
     let lineItems: any[] = [];
-    const lines: { text: string; items: any[]; y: number }[] = [];
+    const lines: { text: string; items: any[]; y: number; matched: boolean }[] = [];
     
     for (const item of textContent.items) {
       if (!item.str || item.str.trim() === '') continue;
@@ -323,7 +325,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       // If this is a new line (different Y position)
       if (Math.abs(y - currentLineY) > 5) {
         if (currentLineText.trim()) {
-          lines.push({ text: currentLineText.trim(), items: [...lineItems], y: currentLineY });
+          lines.push({ text: currentLineText.trim(), items: [...lineItems], y: currentLineY, matched: false });
         }
         currentLineY = y;
         currentLineText = item.str;
@@ -335,8 +337,16 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     }
     // Don't forget the last line
     if (currentLineText.trim()) {
-      lines.push({ text: currentLineText.trim(), items: [...lineItems], y: currentLineY });
+      lines.push({ text: currentLineText.trim(), items: [...lineItems], y: currentLineY, matched: false });
     }
+
+    // Extract words from paragraph for matching
+    const extractWords = (text: string): string[] => {
+      return normalizeText(text)
+        .split(/\s+/)
+        .filter(w => w.length > 2)
+        .map(w => w.replace(/[.,;:!?()]/g, ''));
+    };
 
     // For each paragraph, find matching lines and highlight them
     for (const p of paragraphs) {
@@ -345,25 +355,48 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       const color = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
       const fillColor = colorMap[color] || colorMap.blue;
       
-      // Find the claim index for this paragraph (first claim if any)
-      const claimIdx = allClaims.findIndex(c => c.paragraphIndex === p.index);
+      // Find the global claim index for this paragraph (first claim if any)
+      const globalClaimIdx = allClaims.findIndex(c => c.paragraphIndex === p.index);
       
-      // Get first ~100 chars of paragraph for matching
-      const paragraphStart = normalizeText(p.text).slice(0, 100);
-      const paragraphWords = paragraphStart.split(' ').filter(w => w.length > 3);
+      // Get ALL words from the paragraph (not just first 100 chars)
+      const paragraphWords = extractWords(p.text);
+      const normalizedParagraph = normalizeText(p.text);
+      
+      // Use a sliding window approach - check if 4+ consecutive words match
+      const checkLineMatch = (normalizedLine: string): boolean => {
+        if (normalizedLine.length < 10) return false;
+        
+        const lineWords = normalizedLine.split(/\s+/).filter(w => w.length > 2);
+        
+        // Check if line words appear consecutively in paragraph
+        for (let i = 0; i <= paragraphWords.length - 3; i++) {
+          const phraseToCheck = paragraphWords.slice(i, i + 4).join(' ');
+          if (normalizedLine.includes(phraseToCheck)) return true;
+        }
+        
+        // Also check reverse - if paragraph phrase appears in line
+        for (let i = 0; i <= lineWords.length - 3; i++) {
+          const phraseToCheck = lineWords.slice(i, i + 3).join(' ');
+          if (normalizedParagraph.includes(phraseToCheck) && phraseToCheck.length > 15) return true;
+        }
+        
+        // Fallback: count matching significant words
+        let matchCount = 0;
+        for (const word of lineWords) {
+          if (word.length > 4 && paragraphWords.includes(word)) matchCount++;
+        }
+        return matchCount >= Math.min(4, lineWords.length * 0.6);
+      };
       
       // Find lines that match this paragraph
       for (const line of lines) {
+        if (line.matched) continue; // Already matched to another paragraph
+        
         const normalizedLine = normalizeText(line.text);
         
-        // Check if line contains significant words from paragraph start
-        let matchCount = 0;
-        for (const word of paragraphWords.slice(0, 5)) {
-          if (normalizedLine.includes(word)) matchCount++;
-        }
-        
-        // If at least 3 words match, this line is likely part of the paragraph
-        if (matchCount >= 3 || paragraphStart.includes(normalizedLine.slice(0, 30))) {
+        if (checkLineMatch(normalizedLine)) {
+          line.matched = true;
+          
           // Calculate bounding box for entire line
           let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
           
@@ -398,7 +431,8 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
               width: maxX - minX,
               height: maxY - minY,
               paragraphIndex: p.index,
-              claimIndex: claimIdx >= 0 ? claimIdx : null,
+              claimIndex: p.result?.claims?.[0] ? 0 : null,
+              globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
               color,
             });
           }
@@ -423,9 +457,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       if (x >= region.x && x <= region.x + region.width &&
           y >= region.y && y <= region.y + region.height) {
         
-        if (region.claimIndex !== null) {
-          // Select the claim
-          selectClaim(region.claimIndex);
+        if (region.globalClaimIndex !== null) {
+          // Select the claim using global index
+          selectClaim(region.globalClaimIndex);
         } else {
           // It's a blue paragraph - find and select it
           const bluePara = blueParagraphs.find(bp => bp.paragraphIndex === region.paragraphIndex);
@@ -437,6 +471,33 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       }
     }
   }, [pdfClickableRegions, selectClaim, selectBlueParagraph, blueParagraphs]);
+
+  // Handle PDF canvas hover
+  const handlePdfCanvasMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!pdfCanvasRef.current) return;
+    
+    const rect = pdfCanvasRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // Find which region is being hovered
+    for (const region of pdfClickableRegions) {
+      if (x >= region.x && x <= region.x + region.width &&
+          y >= region.y && y <= region.y + region.height) {
+        if (hoveredRegion?.paragraphIndex !== region.paragraphIndex) {
+          setHoveredRegion(region);
+        }
+        return;
+      }
+    }
+    if (hoveredRegion) {
+      setHoveredRegion(null);
+    }
+  }, [pdfClickableRegions, hoveredRegion]);
+
+  const handlePdfCanvasLeave = useCallback(() => {
+    setHoveredRegion(null);
+  }, []);
 
   // Navigation
   const goToPrevClaim = useCallback(() => {
@@ -694,7 +755,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
                             <span className="text-xs text-muted-foreground">
-                              ¶{item.paragraphIndex + 1}
+                              Claim {idx + 1}
                             </span>
                             {isModified && (
                               <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 bg-orange-500/10 text-orange-600 border-orange-500/30">
@@ -732,7 +793,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                 
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-muted-foreground">
-                    Paragraph {currentClaim.paragraphIndex + 1}, Claim {currentClaim.claimIndex + 1}
+                    Claim {(selectedClaimIndex ?? 0) + 1} of {allClaims.length}
                   </span>
                   <VerdictBadge color={currentClaim.color} />
                   {currentClaimHistory && currentClaimHistory.versions.length > 0 && (
@@ -1180,12 +1241,36 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                     <span>Preparing PDF...</span>
                   </div>
                 ) : (
-                  <canvas 
-                    ref={pdfCanvasRef} 
-                    className="shadow-lg bg-background cursor-pointer"
-                    style={{ maxWidth: '100%', height: 'auto' }}
-                    onClick={handlePdfCanvasClick}
-                  />
+                  <div className="relative">
+                    <canvas 
+                      ref={pdfCanvasRef} 
+                      className="shadow-lg bg-background cursor-pointer"
+                      style={{ maxWidth: '100%', height: 'auto' }}
+                      onClick={handlePdfCanvasClick}
+                      onMouseMove={handlePdfCanvasMove}
+                      onMouseLeave={handlePdfCanvasLeave}
+                    />
+                    {/* Hover overlay */}
+                    {hoveredRegion && (
+                      <div
+                        className="absolute pointer-events-none border-2 rounded-sm transition-all duration-75"
+                        style={{
+                          left: hoveredRegion.x,
+                          top: hoveredRegion.y,
+                          width: hoveredRegion.width,
+                          height: hoveredRegion.height,
+                          borderColor: hoveredRegion.color === 'green' ? 'rgb(34, 197, 94)' :
+                                       hoveredRegion.color === 'yellow' ? 'rgb(250, 204, 21)' :
+                                       hoveredRegion.color === 'red' ? 'rgb(239, 68, 68)' :
+                                       'rgb(59, 130, 246)',
+                          backgroundColor: hoveredRegion.color === 'green' ? 'rgba(34, 197, 94, 0.15)' :
+                                           hoveredRegion.color === 'yellow' ? 'rgba(250, 204, 21, 0.2)' :
+                                           hoveredRegion.color === 'red' ? 'rgba(239, 68, 68, 0.15)' :
+                                           'rgba(59, 130, 246, 0.1)',
+                        }}
+                      />
+                    )}
+                  </div>
                 )}
               </div>
             </ScrollArea>
@@ -1210,7 +1295,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                     
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-muted-foreground">
-                        ¶{currentClaim.paragraphIndex + 1}
+                        Claim {(selectedClaimIndex ?? 0) + 1} of {allClaims.length}
                       </span>
                       <VerdictBadge color={currentClaim.color} />
                     </div>
