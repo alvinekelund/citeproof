@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Eye, AlertTriangle, Lightbulb, FileText, Wand2, Loader2, BookOpen, PenLine, Copy, Check, FileCheck, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Claim, Source } from "@/lib/types";
@@ -64,6 +64,12 @@ export function ClaimCard({ claim, sources, onOpenSource, onImplementRewrite, sh
     };
   } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Reset rewrite result when claim changes
+  useEffect(() => {
+    setRewriteResult(null);
+    setCopied(false);
+  }, [claim.text, claim.index]);
 
   const findSourceByLabel = (label: string): Source | undefined => {
     // Extract author name(s) and year from label like "(Noy & Zhang, 2023)" or "Noy and Zhang (2023)"
