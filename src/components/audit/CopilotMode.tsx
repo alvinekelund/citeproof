@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
-import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2, RotateCcw, Check, AlertTriangle, XCircle } from "lucide-react";
+import { Upload, FileText, Loader2, ChevronLeft, ChevronRight, Sparkles, BookOpen, Play, Square, CheckCircle2, FolderOpen, List, History, Trash2, AlertCircle, RefreshCw, CircleSlash, X, ChevronDown, ChevronUp, Link2, RotateCcw, Check, AlertTriangle, XCircle, FileEdit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { extractTextFromFile, splitIntoParagraphs, identifyThesisSections, ThesisSection, hasCitations } from "@/lib/pdf-parser";
 import { CheckResult as CheckResultType, Source } from "@/lib/types";
 import { CheckResult } from "./CheckResult";
+import { ThesisEditor } from "./ThesisEditor";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingDataAsync, getSessionMissingDataAsync, deleteSessionMissingDataAsync } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
@@ -97,6 +98,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [retryingParagraphs, setRetryingParagraphs] = useState<Set<number>>(new Set());
   const [currentBatchSize, setCurrentBatchSize] = useState(3);
   const [tokenUsage, setTokenUsage] = useState({ input: 0, output: 0 });
+  const [showEditor, setShowEditor] = useState(false);
 
   // Helper to analyze and deduplicate citations
   const analyzeAndDeduplicateCitations = useCallback(async (text: string, currentSources: Source[]) => {
@@ -1139,7 +1141,24 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setCurrentSessionId(null);
     setCitationAnalysis(null);
     setFullText('');
+    setShowEditor(false);
   };
+
+  // Handler for updating paragraph text from the editor
+  const updateParagraphText = async (index: number, newText: string) => {
+    const newParagraphs = paragraphs.map((p, i) => 
+      i === index ? { ...p, text: newText } : p
+    );
+    setParagraphs(newParagraphs);
+    
+    // Save to session
+    if (file) {
+      await saveSession(file.name, newParagraphs);
+    }
+  };
+
+  // Check if all paragraphs have been checked
+  const allChecked = checkedCount === paragraphs.length && paragraphs.length > 0;
 
   // Manual validation functions
   const markWithColor = async (index: number, color: 'blue' | 'green' | 'yellow' | 'red', summary: string) => {
@@ -1256,6 +1275,18 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     });
   };
 
+  // Show ThesisEditor when enabled
+  if (showEditor && paragraphs.length > 0) {
+    return (
+      <ThesisEditor
+        paragraphs={paragraphs}
+        sources={sources}
+        onBack={() => setShowEditor(false)}
+        onUpdateParagraph={updateParagraphText}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header with thesis info */}
@@ -1280,6 +1311,16 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         
         {file && (
           <div className="flex items-center gap-2">
+            {allChecked && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => setShowEditor(true)}
+              >
+                <FileEdit className="h-4 w-4 mr-1" />
+                Open Editor
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
