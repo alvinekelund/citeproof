@@ -62,6 +62,17 @@ interface RewriteHistoryEntry {
   versions: VersionEntry[];
 }
 
+// Clickable region for PDF highlights
+interface ClickableRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  paragraphIndex: number;
+  claimIndex: number | null; // null for blue paragraphs
+  color: 'green' | 'yellow' | 'red' | 'blue';
+}
+
 export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, thesisFilePath }: ThesisEditorProps) {
   const [selectedClaimIndex, setSelectedClaimIndex] = useState<number | null>(0);
   const [selectedBlueParagraph, setSelectedBlueParagraph] = useState<BlueParagraph | null>(null);
@@ -85,6 +96,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
   const [pdfTextContent, setPdfTextContent] = useState<Map<number, string>>(new Map());
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Store clickable regions for PDF highlights
+  const [pdfClickableRegions, setPdfClickableRegions] = useState<ClickableRegion[]>([]);
   
   // Helper to select a claim and clear blue paragraph selection
   const selectClaim = useCallback((idx: number) => {
@@ -291,6 +305,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       blue: 'rgba(59, 130, 246, 0.2)',
     };
 
+    // Collect clickable regions
+    const regions: ClickableRegion[] = [];
+
     // Group text items into lines for better matching
     let currentLineY = -1;
     let currentLineText = '';
@@ -328,6 +345,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       const color = p.result.overall_color as 'green' | 'yellow' | 'red' | 'blue';
       const fillColor = colorMap[color] || colorMap.blue;
       
+      // Find the claim index for this paragraph (first claim if any)
+      const claimIdx = allClaims.findIndex(c => c.paragraphIndex === p.index);
+      
       // Get first ~100 chars of paragraph for matching
       const paragraphStart = normalizeText(p.text).slice(0, 100);
       const paragraphWords = paragraphStart.split(' ').filter(w => w.length > 3);
@@ -344,6 +364,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
         
         // If at least 3 words match, this line is likely part of the paragraph
         if (matchCount >= 3 || paragraphStart.includes(normalizedLine.slice(0, 30))) {
+          // Calculate bounding box for entire line
+          let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
+          
           // Draw highlight for each text item in this line
           for (const item of line.items) {
             const transform = item.transform;
@@ -359,11 +382,61 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
             
             ctx.fillStyle = fillColor;
             ctx.fillRect(canvasX, canvasY - height, width * pdfScale, height + 4);
+            
+            // Track bounds for clickable region
+            minX = Math.min(minX, canvasX);
+            maxX = Math.max(maxX, canvasX + width * pdfScale);
+            minY = Math.min(minY, canvasY - height);
+            maxY = Math.max(maxY, canvasY + 4);
+          }
+          
+          // Add clickable region for this line
+          if (minX !== Infinity) {
+            regions.push({
+              x: minX,
+              y: minY,
+              width: maxX - minX,
+              height: maxY - minY,
+              paragraphIndex: p.index,
+              claimIndex: claimIdx >= 0 ? claimIdx : null,
+              color,
+            });
           }
         }
       }
     }
+    
+    // Store clickable regions
+    setPdfClickableRegions(regions);
   };
+
+  // Handle PDF canvas click
+  const handlePdfCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!pdfCanvasRef.current) return;
+    
+    const rect = pdfCanvasRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // Find which region was clicked
+    for (const region of pdfClickableRegions) {
+      if (x >= region.x && x <= region.x + region.width &&
+          y >= region.y && y <= region.y + region.height) {
+        
+        if (region.claimIndex !== null) {
+          // Select the claim
+          selectClaim(region.claimIndex);
+        } else {
+          // It's a blue paragraph - find and select it
+          const bluePara = blueParagraphs.find(bp => bp.paragraphIndex === region.paragraphIndex);
+          if (bluePara) {
+            selectBlueParagraph(bluePara);
+          }
+        }
+        return;
+      }
+    }
+  }, [pdfClickableRegions, selectClaim, selectBlueParagraph, blueParagraphs]);
 
   // Navigation
   const goToPrevClaim = useCallback(() => {
@@ -1109,8 +1182,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                 ) : (
                   <canvas 
                     ref={pdfCanvasRef} 
-                    className="shadow-lg bg-background"
+                    className="shadow-lg bg-background cursor-pointer"
                     style={{ maxWidth: '100%', height: 'auto' }}
+                    onClick={handlePdfCanvasClick}
                   />
                 )}
               </div>
