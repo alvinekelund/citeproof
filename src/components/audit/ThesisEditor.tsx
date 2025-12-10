@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
-import { ChevronLeft, ChevronRight, Copy, Check, AlertTriangle, CheckCircle, Undo2, FileText, List } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, Check, AlertTriangle, CheckCircle, Undo2, FileText, List, History, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -39,23 +39,34 @@ interface FlatClaim {
   overallColor: string;
 }
 
-// Track original state before rewrite
+// Track version history for rewrites
+interface VersionEntry {
+  text: string;
+  paragraphText: string;
+  timestamp: Date;
+}
+
 interface RewriteHistoryEntry {
-  originalClaimText: string;
-  originalParagraphText: string;
+  versions: VersionEntry[];
 }
 
 export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }: ThesisEditorProps) {
   const [selectedClaimIndex, setSelectedClaimIndex] = useState(0);
   const [rewriteHistory, setRewriteHistory] = useState<Map<string, RewriteHistoryEntry>>(new Map());
+  const [implementedClaims, setImplementedClaims] = useState<Set<string>>(new Set());
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerSource, setViewerSource] = useState<Source | null>(null);
   const [viewerPage, setViewerPage] = useState(1);
   const [viewerSearchText, setViewerSearchText] = useState<string | undefined>(undefined);
   const [copied, setCopied] = useState(false);
   const [viewMode, setViewMode] = useState<'claims' | 'document'>('claims');
+  const [historyOpen, setHistoryOpen] = useState(false);
 
-  const getClaimColor = useCallback((claim: Claim, overallColor: string): 'green' | 'yellow' | 'red' | 'blue' => {
+  const getClaimColor = useCallback((claim: Claim, overallColor: string, paragraphIndex: number, claimIndex: number): 'green' | 'yellow' | 'red' | 'blue' => {
+    // Check if this claim has been implemented (rewritten) - show as green
+    const key = `${paragraphIndex}-${claimIndex}`;
+    if (implementedClaims.has(key)) return 'green';
+    
     if (claim.common_knowledge) return 'green';
     
     const v = claim.verdict.toLowerCase();
@@ -70,7 +81,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
     }
     
     return overallColor as 'green' | 'yellow' | 'red' | 'blue';
-  }, []);
+  }, [implementedClaims]);
 
   // Flatten all claims from all checked paragraphs into a single list
   const allClaims: FlatClaim[] = useMemo(() => {
@@ -84,7 +95,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
             paragraphIndex: p.index,
             claimIndex: claimIdx,
             paragraphText: p.text,
-            color: getClaimColor(claim, p.result!.overall_color),
+            color: getClaimColor(claim, p.result!.overall_color, p.index, claimIdx),
             overallColor: p.result!.overall_color,
           });
         });
@@ -92,7 +103,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
     });
     
     return claims;
-  }, [paragraphs, getClaimColor]);
+  }, [paragraphs, getClaimColor, implementedClaims]);
 
   const currentClaim = allClaims[selectedClaimIndex];
   
@@ -142,17 +153,26 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
     
     const key = `${currentClaim.paragraphIndex}-${currentClaim.claimIndex}`;
     
-    // Store the original text before rewriting (only if not already stored)
-    if (!rewriteHistory.has(key)) {
-      setRewriteHistory(prev => {
-        const newMap = new Map(prev);
-        newMap.set(key, {
-          originalClaimText: currentClaim.claim.text,
-          originalParagraphText: currentClaim.paragraphText,
-        });
-        return newMap;
-      });
-    }
+    // Add current state to version history
+    setRewriteHistory(prev => {
+      const newMap = new Map(prev);
+      const existing = prev.get(key);
+      const newVersion: VersionEntry = {
+        text: currentClaim.claim.text,
+        paragraphText: currentClaim.paragraphText,
+        timestamp: new Date(),
+      };
+      
+      if (existing) {
+        newMap.set(key, { versions: [...existing.versions, newVersion] });
+      } else {
+        newMap.set(key, { versions: [newVersion] });
+      }
+      return newMap;
+    });
+    
+    // Mark claim as implemented (green)
+    setImplementedClaims(prev => new Set(prev).add(key));
     
     // Replace the claim text in the paragraph
     const newParagraphText = currentClaim.paragraphText.replace(
@@ -161,29 +181,49 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
     );
     
     onUpdateParagraph(currentClaim.paragraphIndex, newParagraphText);
-    toast({ title: "Rewrite implemented", description: "The text has been updated." });
-  }, [currentClaim, rewriteHistory, onUpdateParagraph]);
+    toast({ title: "Rewrite implemented", description: "The text has been updated and marked as resolved." });
+  }, [currentClaim, onUpdateParagraph]);
 
-  // Handle reverting a rewrite
-  const handleRevert = useCallback(() => {
+  // Handle reverting to a specific version
+  const handleRevertToVersion = useCallback((versionIndex: number) => {
     if (!currentClaim || !currentClaimKey) return;
     
     const historyEntry = rewriteHistory.get(currentClaimKey);
+    if (!historyEntry || !historyEntry.versions[versionIndex]) return;
     
-    if (historyEntry) {
-      // Restore the original paragraph text
-      onUpdateParagraph(currentClaim.paragraphIndex, historyEntry.originalParagraphText);
-      
-      // Remove from history
-      setRewriteHistory(prev => {
-        const newMap = new Map(prev);
+    const version = historyEntry.versions[versionIndex];
+    
+    // Restore that version's paragraph text
+    onUpdateParagraph(currentClaim.paragraphIndex, version.paragraphText);
+    
+    // Keep only versions up to (but not including) the one we reverted to
+    setRewriteHistory(prev => {
+      const newMap = new Map(prev);
+      if (versionIndex === 0) {
         newMap.delete(currentClaimKey);
-        return newMap;
+      } else {
+        newMap.set(currentClaimKey, { versions: historyEntry.versions.slice(0, versionIndex) });
+      }
+      return newMap;
+    });
+    
+    // If reverting to original (index 0), remove from implemented
+    if (versionIndex === 0) {
+      setImplementedClaims(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(currentClaimKey);
+        return newSet;
       });
-      
-      toast({ title: "Reverted", description: "Original text restored." });
     }
+    
+    setHistoryOpen(false);
+    toast({ title: "Reverted", description: `Restored to version from ${version.timestamp.toLocaleTimeString()}` });
   }, [currentClaim, currentClaimKey, rewriteHistory, onUpdateParagraph]);
+
+  // Handle reverting to original (convenience wrapper)
+  const handleRevert = useCallback(() => {
+    handleRevertToVersion(0);
+  }, [handleRevertToVersion]);
 
   // Open source PDF
   const handleOpenSource = useCallback((source: Source, page?: number, searchText?: string) => {
@@ -350,16 +390,27 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
                     Paragraph {currentClaim.paragraphIndex + 1}, Claim {currentClaim.claimIndex + 1}
                   </span>
                   <VerdictBadge color={currentClaim.color} />
-                  {currentClaimHistory && (
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={handleRevert}
-                      className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950"
-                    >
-                      <Undo2 className="h-4 w-4 mr-1" />
-                      Revert
-                    </Button>
+                  {currentClaimHistory && currentClaimHistory.versions.length > 0 && (
+                    <div className="flex items-center gap-1">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setHistoryOpen(!historyOpen)}
+                        className="text-blue-600 border-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950"
+                      >
+                        <History className="h-4 w-4 mr-1" />
+                        History ({currentClaimHistory.versions.length})
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={handleRevert}
+                        className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950"
+                      >
+                        <Undo2 className="h-4 w-4 mr-1" />
+                        Revert
+                      </Button>
+                    </div>
                   )}
                 </div>
                 
@@ -374,6 +425,51 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
                 </Button>
               </div>
             </Card>
+
+            {/* Version History Panel */}
+            {historyOpen && currentClaimHistory && currentClaimHistory.versions.length > 0 && (
+              <Card className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300 flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Version History
+                  </h4>
+                  <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(false)} className="h-6 text-xs">
+                    Close
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {currentClaimHistory.versions.map((version, idx) => (
+                    <div 
+                      key={idx} 
+                      className="flex items-start justify-between gap-2 p-2 bg-background rounded border"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="outline" className="text-[10px]">
+                            v{idx + 1}
+                          </Badge>
+                          <span className="text-[10px] text-muted-foreground">
+                            {version.timestamp.toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground line-clamp-2">
+                          {version.text.slice(0, 100)}...
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleRevertToVersion(idx)}
+                        className="h-7 text-xs flex-shrink-0"
+                      >
+                        Restore
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
 
             {/* Paragraph Context */}
             <Card className="p-4 bg-muted/30">
@@ -392,7 +488,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
               onOpenSource={handleOpenSource}
               onImplementRewrite={handleImplementRewrite}
               showImplementButton={true}
-              originalText={currentClaimHistory?.originalClaimText}
+              originalText={currentClaimHistory?.versions[0]?.text}
               onRevert={handleRevert}
             />
           </div>
@@ -407,7 +503,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
               <span className="text-xs text-muted-foreground">{paragraphs.length} paragraphs</span>
             </div>
             <ScrollArea className="h-[calc(100vh-280px)]">
-              <div className="p-6 space-y-1">
+              <div className="p-6 space-y-1 text-left">
                 {paragraphs.map((p, idx) => {
                   const paragraphClaims = allClaims.filter(c => c.paragraphIndex === p.index);
                   
@@ -514,16 +610,26 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
                         ¶{currentClaim.paragraphIndex + 1}
                       </span>
                       <VerdictBadge color={currentClaim.color} />
-                      {currentClaimHistory && (
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          onClick={handleRevert}
-                          className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950"
-                        >
-                          <Undo2 className="h-4 w-4 mr-1" />
-                          Revert
-                        </Button>
+                      {currentClaimHistory && currentClaimHistory.versions.length > 0 && (
+                        <div className="flex items-center gap-1">
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onClick={() => setHistoryOpen(!historyOpen)}
+                            className="text-blue-600 border-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950 h-7 text-xs"
+                          >
+                            <History className="h-3 w-3 mr-1" />
+                            {currentClaimHistory.versions.length}
+                          </Button>
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onClick={handleRevert}
+                            className="text-orange-600 border-orange-300 hover:bg-orange-50 dark:hover:bg-orange-950 h-7 text-xs"
+                          >
+                            <Undo2 className="h-3 w-3" />
+                          </Button>
+                        </div>
                       )}
                     </div>
                     
@@ -539,6 +645,51 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
                   </div>
                 </Card>
 
+                {/* Version History Panel */}
+                {historyOpen && currentClaimHistory && currentClaimHistory.versions.length > 0 && (
+                  <Card className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300 flex items-center gap-1">
+                        <Clock className="h-3 w-3" />
+                        Version History
+                      </h4>
+                      <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(false)} className="h-6 text-xs">
+                        Close
+                      </Button>
+                    </div>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {currentClaimHistory.versions.map((version, idx) => (
+                        <div 
+                          key={idx} 
+                          className="flex items-start justify-between gap-2 p-2 bg-background rounded border"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge variant="outline" className="text-[10px]">
+                                v{idx + 1}
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground">
+                                {version.timestamp.toLocaleTimeString()}
+                              </span>
+                            </div>
+                            <p className="text-xs text-muted-foreground line-clamp-2">
+                              {version.text.slice(0, 80)}...
+                            </p>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleRevertToVersion(idx)}
+                            className="h-6 text-xs flex-shrink-0"
+                          >
+                            Restore
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+
                 {/* Claim Card */}
                 <ClaimCard
                   claim={currentClaim.claim}
@@ -546,7 +697,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph }:
                   onOpenSource={handleOpenSource}
                   onImplementRewrite={handleImplementRewrite}
                   showImplementButton={true}
-                  originalText={currentClaimHistory?.originalClaimText}
+                  originalText={currentClaimHistory?.versions[0]?.text}
                   onRevert={handleRevert}
                 />
               </>
