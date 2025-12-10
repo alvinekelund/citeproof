@@ -83,3 +83,20 @@ export interface ParagraphCheck {
   created_at: string;
   thesis_paragraph_index?: number;
 }
+
+/**
+ * Hierarchical claim identifier for consistent referencing across views
+ * Format: "P.C" where P = paragraph display index, C = claim index within paragraph
+ */
+export interface ClaimIdentifier {
+  paragraphDisplayIndex: number; // 1-based, only counts paragraphs with claims
+  claimIndex: number;            // 1-based, claim within the paragraph
+  displayId: string;             // e.g., "1.1", "1.2", "2.1"
+}
+
+/**
+ * Generate a display ID for a claim
+ */
+export function generateClaimDisplayId(paragraphDisplayIndex: number, claimIndex: number): string {
+  return `${paragraphDisplayIndex}.${claimIndex}`;
+}

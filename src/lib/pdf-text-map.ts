@@ -5,7 +5,7 @@
  */
 
 import * as pdfjsLib from 'pdfjs-dist';
-import { normalizeText, getFirstNWords, getLastNWords, stringSimilarity } from './text-anchors';
+import { normalizeText, stringSimilarity } from './text-anchors';
 
 export interface PdfPageInfo {
   pageNumber: number;
@@ -152,11 +152,12 @@ export interface TextRegion {
   width: number;
   height: number;
   text: string;
+  charStart?: number; // Character offset in concatenated page text
+  charEnd?: number;
 }
 
 /**
- * Extract detailed text regions from a PDF page
- * Returns positioned text items for precise highlighting
+ * Extract detailed text regions from a PDF page with character offsets
  */
 export async function extractPageTextRegions(
   pdfDoc: pdfjsLib.PDFDocumentProxy,
@@ -166,6 +167,7 @@ export async function extractPageTextRegions(
   const page = await pdfDoc.getPage(pageNumber);
   const textContent = await page.getTextContent();
   const regions: TextRegion[] = [];
+  let charOffset = 0;
 
   for (const item of textContent.items as any[]) {
     if (!item.str || !item.str.trim()) continue;
@@ -188,68 +190,148 @@ export async function extractPageTextRegions(
       width,
       height: height + 2,
       text: item.str,
+      charStart: charOffset,
+      charEnd: charOffset + item.str.length,
     });
+
+    charOffset += item.str.length + 1; // +1 for space
   }
 
   return regions;
 }
 
 /**
- * Find text regions on a page that match a search string
- * Uses word-level matching with tolerance for line breaks
+ * Build concatenated page text from regions
+ */
+export function buildPageTextFromRegions(regions: TextRegion[]): string {
+  return regions.map(r => r.text).join(' ');
+}
+
+/**
+ * Find the character range where searchText best matches within pageText
+ * Uses sliding window with fuzzy matching for robustness
+ */
+export function findTextRange(
+  pageText: string,
+  searchText: string,
+  minSimilarity: number = 0.6
+): { start: number; end: number; similarity: number } | null {
+  const normalizedPage = normalizeText(pageText);
+  const normalizedSearch = normalizeText(searchText);
+  
+  if (normalizedSearch.length < 10) return null;
+  
+  // Try exact substring match first
+  const exactIndex = normalizedPage.indexOf(normalizedSearch);
+  if (exactIndex !== -1) {
+    return { start: exactIndex, end: exactIndex + normalizedSearch.length, similarity: 1.0 };
+  }
+  
+  // Try matching first few words to find approximate start
+  const searchWords = normalizedSearch.split(/\s+/);
+  const firstPhrase = searchWords.slice(0, Math.min(6, searchWords.length)).join(' ');
+  const lastPhrase = searchWords.slice(-Math.min(4, searchWords.length)).join(' ');
+  
+  let bestMatch: { start: number; end: number; similarity: number } | null = null;
+  
+  // Find where first phrase appears
+  let searchStart = 0;
+  while (searchStart < normalizedPage.length) {
+    const firstIdx = normalizedPage.indexOf(firstPhrase, searchStart);
+    if (firstIdx === -1) break;
+    
+    // Look for last phrase after the first phrase
+    const searchEndStart = firstIdx + firstPhrase.length;
+    const lastIdx = normalizedPage.indexOf(lastPhrase, searchEndStart);
+    
+    if (lastIdx !== -1) {
+      const matchEnd = lastIdx + lastPhrase.length;
+      const matchedText = normalizedPage.slice(firstIdx, matchEnd);
+      const similarity = stringSimilarity(matchedText, normalizedSearch);
+      
+      if (similarity >= minSimilarity) {
+        if (!bestMatch || similarity > bestMatch.similarity) {
+          bestMatch = { start: firstIdx, end: matchEnd, similarity };
+        }
+      }
+    }
+    
+    searchStart = firstIdx + 1;
+  }
+  
+  return bestMatch;
+}
+
+/**
+ * Find text regions that match a search string using character-level matching
+ * This is the core matching function - much more precise than word-based
  */
 export function findMatchingRegions(
   regions: TextRegion[],
   searchText: string,
-  startWordCount: number = 6,
-  endWordCount: number = 4
+  _startWordCount: number = 6,
+  _endWordCount: number = 4
 ): TextRegion[] {
-  if (regions.length === 0) return [];
+  if (regions.length === 0 || !searchText || searchText.length < 20) return [];
 
-  const normalizedSearch = normalizeText(searchText);
-  const searchWords = normalizedSearch.split(/\s+/);
+  // Build page text with character tracking
+  const pageText = buildPageTextFromRegions(regions);
   
-  // Get matching phrases
-  const firstWords = searchWords.slice(0, startWordCount).join(' ');
-  const lastWords = searchWords.slice(-endWordCount).join(' ');
-
-  // Build running text from regions to find matches
-  let runningText = '';
-  let startIndex = -1;
-  let endIndex = -1;
+  // Find the character range where the search text matches
+  const range = findTextRange(pageText, searchText, 0.5);
+  if (!range) return [];
+  
+  // Map character range back to regions
   const matchedRegions: TextRegion[] = [];
-
-  for (let i = 0; i < regions.length; i++) {
-    const regionText = normalizeText(regions[i].text);
-    runningText += (runningText ? ' ' : '') + regionText;
-
-    // Check for start match
-    if (startIndex === -1 && runningText.includes(firstWords)) {
-      startIndex = Math.max(0, i - startWordCount);
+  let charPos = 0;
+  
+  for (const region of regions) {
+    const regionEnd = charPos + region.text.length;
+    
+    // Check if this region overlaps with the matched range
+    const overlapsStart = charPos < range.end;
+    const overlapsEnd = regionEnd > range.start;
+    
+    if (overlapsStart && overlapsEnd) {
+      matchedRegions.push(region);
     }
-
-    // Check for end match after we've found the start
-    if (startIndex !== -1 && runningText.includes(lastWords)) {
-      endIndex = i;
-      break;
-    }
-
-    // Prevent running text from growing too large
-    if (runningText.length > 2000) {
-      if (startIndex === -1) {
-        runningText = runningText.slice(-500);
-      }
-    }
+    
+    charPos = regionEnd + 1; // +1 for space
   }
+  
+  return matchedRegions;
+}
 
-  // If we found a match range, collect those regions
-  if (startIndex !== -1) {
-    const actualEnd = endIndex !== -1 ? endIndex : Math.min(startIndex + 50, regions.length - 1);
-    for (let i = startIndex; i <= actualEnd; i++) {
-      matchedRegions.push(regions[i]);
-    }
+/**
+ * Find regions matching a specific claim within already-matched paragraph regions
+ */
+export function findClaimRegions(
+  paragraphRegions: TextRegion[],
+  claimText: string
+): TextRegion[] {
+  if (paragraphRegions.length === 0 || !claimText || claimText.length < 15) {
+    return paragraphRegions; // Return all paragraph regions as fallback
   }
-
+  
+  const pageText = buildPageTextFromRegions(paragraphRegions);
+  const range = findTextRange(pageText, claimText, 0.5);
+  
+  if (!range) return []; // No match found
+  
+  // Map to regions
+  const matchedRegions: TextRegion[] = [];
+  let charPos = 0;
+  
+  for (const region of paragraphRegions) {
+    const regionEnd = charPos + region.text.length;
+    
+    if (charPos < range.end && regionEnd > range.start) {
+      matchedRegions.push(region);
+    }
+    
+    charPos = regionEnd + 1;
+  }
+  
   return matchedRegions;
 }
 
@@ -273,7 +355,7 @@ export function mergeRegionsIntoBoxes(regions: TextRegion[]): TextRegion[] {
 
   // Merge each line into a single box
   const boxes: TextRegion[] = [];
-  for (const [y, lineRegions] of lineGroups) {
+  for (const [_, lineRegions] of lineGroups) {
     const sortedByX = lineRegions.sort((a, b) => a.x - b.x);
     
     let minX = Infinity;
