@@ -83,22 +83,45 @@ function getDistinctiveWords(text: string, minLength: number = 5): string[] {
 }
 
 // Fuzzy match with tolerance - STRICT matching to avoid false positives
-function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: number; end: number; confidence: number } | null {
-  // Apply PDF-specific normalization
-  const normalizedText = normalizePdfText(text).toLowerCase();
+// Returns positions in the ORIGINAL (non-normalized) text space
+function fuzzyMatch(originalText: string, search: string, tolerance = 0.15): { start: number; end: number; confidence: number } | null {
+  // Apply PDF-specific normalization for comparison
+  const normalizedText = normalizePdfText(originalText).toLowerCase();
   const normalizedSearch = normalizePdfText(search).toLowerCase();
+  
+  // Build mapping from normalized positions back to original positions
+  const normalizedToOriginal: number[] = [];
+  let normalizedIdx = 0;
+  for (let origIdx = 0; origIdx < originalText.length; origIdx++) {
+    const char = originalText[origIdx];
+    const normalizedChar = normalizePdfText(char).toLowerCase();
+    for (let j = 0; j < normalizedChar.length; j++) {
+      normalizedToOriginal[normalizedIdx] = origIdx;
+      normalizedIdx++;
+    }
+  }
+  
+  // Helper to convert normalized position to original
+  const toOriginal = (normPos: number, isEnd: boolean = false): number => {
+    if (normPos >= normalizedToOriginal.length) {
+      return originalText.length;
+    }
+    const origPos = normalizedToOriginal[normPos] ?? (isEnd ? originalText.length : 0);
+    // For end positions, include the full character
+    return isEnd ? Math.min(origPos + 1, originalText.length) : origPos;
+  };
   
   // For very short searches, require exact match
   if (normalizedSearch.length < 15) {
     const idx = normalizedText.indexOf(normalizedSearch);
-    if (idx !== -1) return { start: idx, end: idx + normalizedSearch.length, confidence: 1.0 };
+    if (idx !== -1) {
+      return { 
+        start: toOriginal(idx), 
+        end: toOriginal(idx + normalizedSearch.length, true), 
+        confidence: 1.0 
+      };
+    }
     return null;
-  }
-  
-  // Strategy 1: Try exact match first (highest confidence)
-  const exactIdx = normalizedText.indexOf(normalizedSearch);
-  if (exactIdx !== -1) {
-    return { start: exactIdx, end: exactIdx + normalizedSearch.length, confidence: 1.0 };
   }
   
   // Strategy 2: Try matching long prefixes ONLY (at least 50 chars for reliability)
@@ -108,8 +131,8 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
       const prefixIdx = normalizedText.indexOf(prefix);
       if (prefixIdx !== -1) {
         return { 
-          start: prefixIdx, 
-          end: Math.min(prefixIdx + normalizedSearch.length, normalizedText.length),
+          start: toOriginal(prefixIdx), 
+          end: toOriginal(Math.min(prefixIdx + normalizedSearch.length, normalizedText.length), true),
           confidence: 0.95 
         };
       }
@@ -127,12 +150,10 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
         // Check if MULTIPLE other distinctive words are nearby (within 300 chars)
         const context = normalizedText.slice(Math.max(0, wordIdx - 100), wordIdx + 300);
         let matchCount = 0;
-        const matchedWords: string[] = [];
         
         for (const sw of distinctiveSearchWords) {
           if (context.includes(sw)) {
             matchCount++;
-            matchedWords.push(sw);
           }
         }
         
@@ -140,8 +161,8 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
         const requiredMatches = Math.max(3, Math.ceil(distinctiveSearchWords.length * 0.6));
         if (matchCount >= requiredMatches) {
           return { 
-            start: Math.max(0, wordIdx - 50), 
-            end: Math.min(wordIdx + normalizedSearch.length, normalizedText.length),
+            start: toOriginal(Math.max(0, wordIdx - 50)), 
+            end: toOriginal(Math.min(wordIdx + normalizedSearch.length, normalizedText.length), true),
             confidence: 0.8 
           };
         }
@@ -159,7 +180,11 @@ function fuzzyMatch(text: string, search: string, tolerance = 0.15): { start: nu
       const window = normalizedText.slice(i, i + searchLen);
       const dist = levenshtein(window, normalizedSearch);
       if (dist <= maxDist) {
-        return { start: i, end: i + searchLen, confidence: 0.7 };
+        return { 
+          start: toOriginal(i), 
+          end: toOriginal(i + searchLen, true), 
+          confidence: 0.7 
+        };
       }
     }
   }
@@ -406,28 +431,13 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
       
       setHighlightNotFound(false);
       
-      // Map match positions to text items using normalized text
-      const normalizedFull = normalizePdfText(fullText).toLowerCase();
-      
-      // Find character positions in original text
-      let normalizedPos = 0;
-      const charToOriginal: number[] = [];
-      
-      for (let i = 0; i < fullText.length; i++) {
-        const char = fullText[i];
-        const normalizedChar = normalizePdfText(char).toLowerCase();
-        if (normalizedChar.length > 0) {
-          charToOriginal[normalizedPos] = i;
-          normalizedPos++;
-        }
-      }
-      
-      const origStart = charToOriginal[match.start] ?? 0;
-      const origEnd = charToOriginal[Math.min(match.end, charToOriginal.length - 1)] ?? fullText.length;
+      // fuzzyMatch now returns positions in original text space, so use directly
+      const origStart = match.start;
+      const origEnd = match.end;
       
       // Get item indices for the match
       const startItemIdx = pageText[origStart]?.itemIdx ?? 0;
-      const endItemIdx = pageText[Math.min(origEnd, pageText.length - 1)]?.itemIdx ?? textItems.length - 1;
+      const endItemIdx = pageText[Math.min(origEnd - 1, pageText.length - 1)]?.itemIdx ?? textItems.length - 1;
       
       // Collect rects
       const rects: { x: number; y: number; width: number; height: number }[] = [];
