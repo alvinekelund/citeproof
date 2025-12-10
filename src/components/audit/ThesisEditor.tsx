@@ -11,6 +11,7 @@ import { PdfViewerDialog } from "@/components/sources/PdfViewerDialog";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import * as pdfjsLib from 'pdfjs-dist';
 import { getFile } from "@/lib/client-storage";
 
@@ -430,12 +431,23 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                 <FileText className="h-3.5 w-3.5 mr-1" />
                 Full Text
               </TabsTrigger>
-              {thesisFilePath && (
-                <TabsTrigger value="pdf" className="h-7 px-2 text-xs">
-                  <File className="h-3.5 w-3.5 mr-1" />
-                  PDF
-                </TabsTrigger>
-              )}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <TabsTrigger value="pdf" className="h-7 px-2 text-xs" disabled={!thesisFilePath}>
+                        <File className="h-3.5 w-3.5 mr-1" />
+                        PDF
+                      </TabsTrigger>
+                    </span>
+                  </TooltipTrigger>
+                  {!thesisFilePath && (
+                    <TooltipContent>
+                      <p>PDF not available. Upload a PDF thesis file to use this view.</p>
+                    </TooltipContent>
+                  )}
+                </Tooltip>
+              </TooltipProvider>
             </TabsList>
           </Tabs>
           <div className="flex gap-1">
