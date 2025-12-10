@@ -472,7 +472,8 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
     setSearchProgress(0);
     setFoundPages([]);
     
-    const found: number[] = [];
+    // Track matches with their confidence scores
+    const matches: { pageNum: number; confidence: number }[] = [];
     
     try {
       for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
@@ -486,20 +487,38 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         const match = fuzzyMatch(pageText, searchFor);
         
         if (match) {
-          found.push(pageNum);
+          matches.push({ pageNum, confidence: match.confidence });
         }
       }
       
-      setFoundPages(found);
       setIsSearchingAllPages(false);
       
-      if (found.length > 0) {
+      if (matches.length > 0) {
+        // Sort by confidence descending and take the best match
+        matches.sort((a, b) => b.confidence - a.confidence);
+        const bestMatch = matches[0];
+        
+        // Only store the best match (or top matches with same confidence)
+        const bestConfidence = bestMatch.confidence;
+        const topMatches = matches
+          .filter(m => m.confidence >= bestConfidence * 0.95) // Within 5% of best
+          .map(m => m.pageNum);
+        
+        setFoundPages(topMatches);
         setCurrentFoundIndex(0);
-        goToPage(found[0]);
-        toast({
-          title: `Found on ${found.length} page${found.length > 1 ? 's' : ''}`,
-          description: found.length > 1 ? `Pages: ${found.slice(0, 5).join(', ')}${found.length > 5 ? '...' : ''}` : undefined,
-        });
+        goToPage(bestMatch.pageNum);
+        
+        if (topMatches.length === 1) {
+          toast({
+            title: "Found",
+            description: `Best match on page ${bestMatch.pageNum}`,
+          });
+        } else {
+          toast({
+            title: `Found ${topMatches.length} similar matches`,
+            description: `Best: page ${bestMatch.pageNum}`,
+          });
+        }
       } else {
         toast({
           title: "Not found",
