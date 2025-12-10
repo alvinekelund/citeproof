@@ -263,8 +263,23 @@ function chunkSentencesIntoPargrahs(sentences: string[], maxSize: number): strin
 function endsIncomplete(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
-  const lastChar = trimmed[trimmed.length - 1];
-  return !['.', '!', '?', '"', "'", ')', ']'].includes(lastChar);
+  
+  // Check for proper sentence-ending punctuation
+  // Allow closing quotes/parens after punctuation: ." .) ?)
+  const endPattern = /[.!?]["'\)]*$/;
+  if (endPattern.test(trimmed)) {
+    return false; // Ends with proper punctuation
+  }
+  
+  // Check if ends with a word (likely mid-sentence)
+  const lastWord = trimmed.split(/\s+/).pop() || '';
+  // Short words like "a", "the", "an", "as" are strong indicators of incomplete sentence
+  if (/^(a|an|the|as|or|and|but|in|on|to|of|for|is|are|was|were|be|been|being)$/i.test(lastWord)) {
+    return true;
+  }
+  
+  // Any text not ending in sentence-final punctuation is incomplete
+  return true;
 }
 
 export function splitIntoParagraphs(text: string): string[] {
@@ -315,11 +330,14 @@ export function splitIntoParagraphs(text: string): string[] {
       continue;
     }
     
-    // Check if paragraph ends incomplete and next paragraph continues
+    // Check if paragraph ends incomplete and should merge with next
     if (endsIncomplete(combined) && i + 1 < rawParagraphs.length) {
       const nextP = rawParagraphs[i + 1];
-      // If next paragraph starts with lowercase, likely a continuation
-      if (nextP && /^[a-z]/.test(nextP)) {
+      // Merge if:
+      // 1. Next paragraph starts with lowercase (continuation)
+      // 2. Or current ends with a short word like "a", "the", etc.
+      const endsWithShortWord = /\s(a|an|the|as|or|and|but|in|on|to|of|for|is|are|was|were|be|been|being)$/i.test(combined);
+      if (nextP && (/^[a-z]/.test(nextP) || endsWithShortWord)) {
         carryOver = combined;
         continue;
       }
