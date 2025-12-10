@@ -13,7 +13,8 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { login } = useAuth();
+  const [isSignup, setIsSignup] = useState(false);
+  const { login, signup } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -24,12 +25,20 @@ export default function Login() {
     // Small delay for UX
     await new Promise(r => setTimeout(r, 300));
 
-    const success = login(username, password);
-    
-    if (success) {
-      navigate('/');
+    if (isSignup) {
+      const result = signup(username, password);
+      if (result.success) {
+        navigate('/');
+      } else {
+        setError(result.error || 'Signup failed');
+      }
     } else {
-      setError('Invalid username or password');
+      const success = login(username, password);
+      if (success) {
+        navigate('/');
+      } else {
+        setError('Invalid username or password');
+      }
     }
     
     setIsLoading(false);
@@ -43,7 +52,9 @@ export default function Login() {
             <Lock className="h-6 w-6 text-primary" />
           </div>
           <CardTitle className="text-2xl font-serif">Thesis Source Checker</CardTitle>
-          <CardDescription>Sign in to access your research tools</CardDescription>
+          <CardDescription>
+            {isSignup ? 'Create a new account' : 'Sign in to access your research tools'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -89,8 +100,21 @@ export default function Login() {
             </div>
 
             <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? 'Signing in...' : 'Sign In'}
+              {isLoading ? (isSignup ? 'Creating account...' : 'Signing in...') : (isSignup ? 'Create Account' : 'Sign In')}
             </Button>
+            
+            <div className="text-center mt-4">
+              <button
+                type="button"
+                className="text-sm text-muted-foreground hover:text-primary underline"
+                onClick={() => {
+                  setIsSignup(!isSignup);
+                  setError('');
+                }}
+              >
+                {isSignup ? 'Already have an account? Sign in' : 'Need an account? Create one'}
+              </button>
+            </div>
           </form>
         </CardContent>
       </Card>
