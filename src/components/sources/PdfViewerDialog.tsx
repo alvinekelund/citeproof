@@ -165,48 +165,116 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         height: number;
       }>;
       
-      // Clean search text for matching
-      const searchWords = searchText!
-        .toLowerCase()
-        .replace(/[^\w\s]/g, '')
-        .split(/\s+/)
-        .filter(w => w.length > 3)
-        .slice(0, 8);
-      
-      if (searchWords.length === 0) {
+      if (!searchText || textItems.length === 0) {
         setHighlightRects([]);
         return;
       }
       
+      // Build a concatenated page text with position tracking
+      const pageText: { char: string; itemIdx: number; charIdx: number }[] = [];
+      for (let itemIdx = 0; itemIdx < textItems.length; itemIdx++) {
+        const item = textItems[itemIdx];
+        for (let charIdx = 0; charIdx < item.str.length; charIdx++) {
+          pageText.push({ char: item.str[charIdx], itemIdx, charIdx });
+        }
+        // Add space between items
+        pageText.push({ char: ' ', itemIdx, charIdx: item.str.length });
+      }
+      
+      const fullText = pageText.map(p => p.char).join('');
+      
+      // Normalize for fuzzy matching
+      const normalize = (s: string) => s.toLowerCase().replace(/[\s\-–—]+/g, ' ').replace(/[^\w\s]/g, '').trim();
+      const normalizedSearch = normalize(searchText);
+      const normalizedFull = normalize(fullText);
+      
+      // Try to find the best matching substring
+      let bestMatchStart = -1;
+      let bestMatchLength = 0;
+      let bestScore = 0;
+      
+      // Use sliding window to find best match
+      const searchWords = normalizedSearch.split(/\s+/).filter(w => w.length > 2);
+      const windowSize = Math.min(normalizedSearch.length + 100, normalizedFull.length);
+      
+      for (let start = 0; start <= normalizedFull.length - 20; start++) {
+        const window = normalizedFull.substring(start, start + windowSize);
+        let score = 0;
+        let consecutiveMatches = 0;
+        
+        for (const word of searchWords) {
+          const idx = window.indexOf(word);
+          if (idx !== -1 && idx < normalizedSearch.length * 1.5) {
+            score += word.length;
+            if (idx < 100) consecutiveMatches++;
+          }
+        }
+        
+        // Bonus for consecutive word matches near the start
+        score += consecutiveMatches * 10;
+        
+        if (score > bestScore && consecutiveMatches >= Math.min(3, searchWords.length)) {
+          bestScore = score;
+          bestMatchStart = start;
+          bestMatchLength = Math.min(normalizedSearch.length + 50, windowSize);
+        }
+      }
+      
+      if (bestMatchStart === -1) {
+        setHighlightRects([]);
+        return;
+      }
+      
+      // Map normalized positions back to original text positions
+      // Find text items that correspond to the matched region
+      let normalizedPos = 0;
+      let startItemIdx = -1;
+      let endItemIdx = -1;
+      
+      for (let i = 0; i < fullText.length; i++) {
+        const normChar = fullText[i].toLowerCase().replace(/[^\w\s]/g, '');
+        if (normChar && normChar !== ' ') {
+          if (normalizedPos === bestMatchStart && startItemIdx === -1) {
+            startItemIdx = pageText[i]?.itemIdx ?? -1;
+          }
+          if (normalizedPos >= bestMatchStart && normalizedPos < bestMatchStart + bestMatchLength) {
+            endItemIdx = pageText[i]?.itemIdx ?? endItemIdx;
+          }
+          normalizedPos++;
+        } else if (fullText[i] === ' ' || /\s/.test(fullText[i])) {
+          if (normalizedPos > 0) normalizedPos++; // Count spaces in normalized
+        }
+      }
+      
+      if (startItemIdx === -1) {
+        setHighlightRects([]);
+        return;
+      }
+      
+      // Collect rects for matched items
       const rects: { x: number; y: number; width: number; height: number }[] = [];
       
-      // Find text items that match search words
-      for (const item of textItems) {
-        const itemText = item.str.toLowerCase().replace(/[^\w\s]/g, '');
-        const matchCount = searchWords.filter(word => itemText.includes(word)).length;
+      for (let idx = startItemIdx; idx <= endItemIdx && idx < textItems.length; idx++) {
+        const item = textItems[idx];
+        if (!item.str.trim()) continue;
         
-        // Highlight if at least 2 words match or if it's a substantial partial match
-        if (matchCount >= 2 || (matchCount >= 1 && itemText.length > 20)) {
-          const [a, b, c, d, tx, ty] = item.transform;
-          
-          // Transform coordinates to viewport
-          const x = tx * viewport.scale;
-          const y = viewport.height - (ty * viewport.scale);
-          const width = item.width * viewport.scale;
-          const height = Math.abs(d) * viewport.scale * 1.2;
-          
-          rects.push({ x, y: y - height, width, height });
-        }
+        const [a, b, c, d, tx, ty] = item.transform;
+        const x = tx * viewport.scale;
+        const y = viewport.height - (ty * viewport.scale);
+        const width = item.width * viewport.scale;
+        const height = Math.abs(d) * viewport.scale * 1.2;
+        
+        rects.push({ x, y: y - height, width, height });
       }
       
       setHighlightRects(rects);
       
-      // Draw highlights on the overlay canvas
+      // Draw highlights
       if (highlightCanvasRef.current && rects.length > 0) {
         const ctx = highlightCanvasRef.current.getContext('2d');
         if (ctx) {
           ctx.clearRect(0, 0, highlightCanvasRef.current.width, highlightCanvasRef.current.height);
-          ctx.fillStyle = 'rgba(250, 204, 21, 0.35)'; // Yellow highlight
+          ctx.fillStyle = 'rgba(250, 204, 21, 0.35)';
           for (const rect of rects) {
             ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
           }
