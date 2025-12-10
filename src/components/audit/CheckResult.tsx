@@ -39,13 +39,7 @@ export function CheckResult({ result, paragraphText, sources }: CheckResultProps
         <p className="text-sm">{result.summary}</p>
       </div>
 
-      {/* Original paragraph */}
-      <div className="bg-card border rounded-lg p-4">
-        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
-          Analyzed Paragraph
-        </h4>
-        <p className="text-sm leading-relaxed">{paragraphText}</p>
-      </div>
+      {/* Note: paragraph text is already shown above in CopilotMode, no need to duplicate */}
 
       {/* Claims breakdown */}
       <div className="space-y-4">
