@@ -12,7 +12,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 interface InlinePdfViewerProps {
-  filePath: string;
+  filePath?: string;  // Path to file in IndexedDB
+  blobUrl?: string;   // Direct blob URL 
   searchText?: string;
   onClose?: () => void;
   highlightColor?: 'green' | 'yellow' | 'red' | 'blue';
@@ -45,7 +46,7 @@ function getHighlightColorRgba(color?: 'green' | 'yellow' | 'red' | 'blue'): str
   }
 }
 
-export function InlinePdfViewer({ filePath, searchText, onClose, highlightColor }: InlinePdfViewerProps) {
+export function InlinePdfViewer({ filePath, blobUrl, searchText, onClose, highlightColor }: InlinePdfViewerProps) {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
@@ -62,14 +63,16 @@ export function InlinePdfViewer({ filePath, searchText, onClose, highlightColor 
 
   // Load PDF on mount
   useEffect(() => {
-    loadPdf();
+    if (filePath || blobUrl) {
+      loadPdf();
+    }
     
     return () => {
       if (pdfDoc) {
         pdfDoc.destroy();
       }
     };
-  }, [filePath]);
+  }, [filePath, blobUrl]);
 
   // Re-render when page/scale/searchText changes
   useEffect(() => {
@@ -83,13 +86,27 @@ export function InlinePdfViewer({ filePath, searchText, onClose, highlightColor 
     setError(null);
     
     try {
-      const file = await getFile(filePath);
-      if (!file) {
-        setError("File not found");
+      let arrayBuffer: ArrayBuffer;
+      
+      if (blobUrl) {
+        // Load from blob URL directly
+        const response = await fetch(blobUrl);
+        arrayBuffer = await response.arrayBuffer();
+      } else if (filePath) {
+        // Load from IndexedDB
+        const file = await getFile(filePath);
+        if (!file) {
+          setError("File not found");
+          setIsLoading(false);
+          return;
+        }
+        arrayBuffer = await file.arrayBuffer();
+      } else {
+        setError("No file path or blob URL provided");
+        setIsLoading(false);
         return;
       }
       
-      const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       setPdfDoc(pdf);
       setTotalPages(pdf.numPages);
