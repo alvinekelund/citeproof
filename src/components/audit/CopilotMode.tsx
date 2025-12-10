@@ -1471,10 +1471,8 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       originalText?: string;
     }> = [];
     
-    let paragraphDisplayIndex = 0;
     paragraphs.forEach((p, pIdx) => {
       if (p.checked && p.result?.claims && p.result.claims.length > 0) {
-        paragraphDisplayIndex++;
         p.result.claims.forEach((claim, claimIdx) => {
           // Determine claim color
           let color: 'green' | 'yellow' | 'red' | 'blue' = 'yellow';
@@ -1490,13 +1488,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           }
           
           const modKey = `${pIdx}-${claimIdx}`;
+          // Use ACTUAL paragraph index (pIdx + 1) for consistency with CheckResult component
           claims.push({
             claim,
             paragraphIndex: pIdx,
             claimIndex: claimIdx,
             paragraphText: p.text,
             color,
-            displayId: `${paragraphDisplayIndex}.${claimIdx + 1}`,
+            displayId: `${pIdx + 1}.${claimIdx + 1}`,
             originalText: claimModifications.get(modKey),
           });
         });
