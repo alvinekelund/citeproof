@@ -57,45 +57,85 @@ export function ClaimCard({ claim, sources, onOpenSource }: ClaimCardProps) {
   const [copied, setCopied] = useState(false);
 
   const findSourceByLabel = (label: string): Source | undefined => {
-    const normalizedLabel = label.toLowerCase().replace(/[^\w\s,]/g, '').trim();
+    // Extract author name(s) and year from label like "(Noy & Zhang, 2023)" or "Noy and Zhang (2023)"
+    const yearMatch = label.match(/\b(19|20)\d{2}[a-z]?\b/);
+    const year = yearMatch ? parseInt(yearMatch[0].replace(/[a-z]/g, '')) : null;
     
-    return sources.find(s => {
-      if (s.in_text_label && s.in_text_label.toLowerCase() === label.toLowerCase()) {
-        return true;
-      }
+    // Extract author names - remove year and clean up
+    const authorPart = label
+      .replace(/\([^)]*\d{4}[^)]*\)/g, '') // Remove parenthetical year
+      .replace(/\b(19|20)\d{2}[a-z]?\b/g, '') // Remove standalone years
+      .replace(/[()]/g, '')
+      .replace(/\bet\s+al\.?\b/gi, '')
+      .replace(/[,&]/g, ' ')
+      .trim()
+      .toLowerCase();
+    
+    const authorNames = authorPart.split(/\s+/).filter(n => n.length > 2);
+    
+    // Score each source based on match quality
+    let bestMatch: { source: Source; score: number } | null = null;
+    
+    for (const source of sources) {
+      let score = 0;
       
-      if (s.in_text_label) {
-        const normalizedSourceLabel = s.in_text_label.toLowerCase().replace(/[^\w\s,]/g, '').trim();
-        if (normalizedSourceLabel.includes(normalizedLabel) || normalizedLabel.includes(normalizedSourceLabel)) {
-          return true;
+      // Year match is critical - must match if both have years
+      if (year && source.year) {
+        if (source.year === year) {
+          score += 50; // Strong boost for year match
+        } else {
+          continue; // Year mismatch - skip this source
         }
       }
       
-      const shorthandLower = s.shorthand_id.toLowerCase();
-      if (normalizedLabel.includes(shorthandLower.split('_')[0])) {
-        return true;
+      // Check in_text_label exact match (highest priority)
+      if (source.in_text_label) {
+        const sourceLabel = source.in_text_label.toLowerCase();
+        if (sourceLabel === label.toLowerCase() || 
+            sourceLabel.replace(/[()]/g, '') === label.toLowerCase().replace(/[()]/g, '')) {
+          score += 100;
+        }
       }
       
-      if (s.authors) {
-        const authorParts = s.authors.toLowerCase().split(/[,&\s]+/);
-        for (const part of authorParts) {
-          if (part.length > 3 && normalizedLabel.includes(part)) {
-            return true;
+      // Check author name matches
+      if (source.authors && authorNames.length > 0) {
+        const sourceAuthors = source.authors.toLowerCase();
+        let authorsMatched = 0;
+        
+        for (const name of authorNames) {
+          if (name.length > 2 && sourceAuthors.includes(name)) {
+            authorsMatched++;
+          }
+        }
+        
+        // Require at least one author name match
+        if (authorsMatched > 0) {
+          score += authorsMatched * 20;
+        }
+      }
+      
+      // Check in_text_label contains author names  
+      if (source.in_text_label && authorNames.length > 0) {
+        const sourceLabel = source.in_text_label.toLowerCase();
+        for (const name of authorNames) {
+          if (name.length > 2 && sourceLabel.includes(name)) {
+            score += 15;
           }
         }
       }
       
-      if (s.title) {
-        const titleParts = s.title.toLowerCase().split(/\s+/);
-        for (const part of titleParts) {
-          if (part.length > 4 && normalizedLabel.includes(part)) {
-            return true;
-          }
-        }
+      // Update best match
+      if (score > 0 && (!bestMatch || score > bestMatch.score)) {
+        bestMatch = { source, score };
       }
-      
-      return false;
-    });
+    }
+    
+    // Only return if we have a reasonable match (year + at least one author)
+    if (bestMatch && bestMatch.score >= 50) {
+      return bestMatch.source;
+    }
+    
+    return undefined;
   };
 
   const handleOpenSource = async (label: string, pageNumber: number, excerpt?: string) => {
