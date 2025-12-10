@@ -184,6 +184,38 @@
   }
 }
 
+/* PDF.js Text Layer - enables Ctrl+F and text selection */
+.text-layer {
+  position: absolute;
+  text-align: initial;
+  overflow: hidden;
+  opacity: 0.2;
+  line-height: 1.0;
+  -webkit-text-size-adjust: none;
+  -moz-text-size-adjust: none;
+  text-size-adjust: none;
+}
+
+.text-layer span,
+.text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.text-layer ::selection {
+  background: hsl(var(--verdict-yellow) / 0.5);
+}
+
+.text-layer .highlight {
+  margin: -1px;
+  padding: 1px;
+  background-color: hsl(var(--verdict-yellow) / 0.4);
+  border-radius: 4px;
+}
+
 @layer utilities {
   .text-balance {
     text-wrap: balance;
