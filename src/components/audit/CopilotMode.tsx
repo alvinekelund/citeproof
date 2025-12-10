@@ -968,14 +968,15 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     setIsBatchChecking(true);
     abortRef.current = false;
     setBatchProgress(0);
-    setCurrentBatchSize(2); // Start smaller to avoid TPM limits
+    setCurrentBatchSize(1); // Start with 1 to warm up
     setTokenUsage({ input: 0, output: 0 });
 
     const totalToCheck = uncheckedParagraphs.length;
     let completed = 0;
-    let batchSize = 2; // Start with 2 concurrent requests (reduced from 3)
+    let batchSize = 1; // Start with 1 for controlled ramp-up
     let consecutiveRateLimits = 0;
-    const BASE_DELAY_MS = 2000; // 2 second base delay between batches
+    const BASE_DELAY_MS = 3000; // 3 second base delay between batches
+    const WARMUP_PARAGRAPHS = 3; // First few paragraphs run slower
 
     // Process in batches with adaptive sizing and delays
     let i = 0;
@@ -1004,9 +1005,12 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
           setBatchProgress((completed / totalToCheck) * 100);
         }
         
-        // Delay between each paragraph to spread out TPM
+        // Longer delay between paragraphs during warmup period
+        const isWarmup = completed < WARMUP_PARAGRAPHS;
+        const delayBetweenParagraphs = isWarmup ? 3000 : 2000; // 3s warmup, 2s normal
+        
         if (!abortRef.current && batch.indexOf(paragraph) < batch.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5s between paragraphs
+          await new Promise(resolve => setTimeout(resolve, delayBetweenParagraphs));
         }
       }
 
@@ -1037,8 +1041,8 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         }
       } else {
         consecutiveRateLimits = 0;
-        // Gradually increase batch size if no rate limits (max 2)
-        if (batchSize < 2) {
+        // Gradually increase batch size after warmup (max 2)
+        if (completed >= WARMUP_PARAGRAPHS && batchSize < 2) {
           batchSize = 2;
         }
       }

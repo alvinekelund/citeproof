@@ -230,18 +230,20 @@ function splitBySentences(text: string): string[] {
   return sentences.filter(s => s.length > 0);
 }
 
-function chunkSentencesIntoPargrahs(sentences: string[], maxSize: number): string[] {
+function chunkSentencesIntoPargrahs(sentences: string[], maxSize: number, maxSentences: number = 4): string[] {
   const chunks: string[] = [];
   let currentChunk = '';
+  let sentenceCount = 0;
   
   for (const sentence of sentences) {
     const trimmedSentence = sentence.trim();
     if (!trimmedSentence) continue;
     
-    // If adding this sentence would exceed max size, save current chunk first
-    if (currentChunk && (currentChunk.length + trimmedSentence.length + 1) > maxSize) {
+    // If adding this sentence would exceed max size OR max sentence count, save current chunk first
+    if (currentChunk && ((currentChunk.length + trimmedSentence.length + 1) > maxSize || sentenceCount >= maxSentences)) {
       chunks.push(currentChunk.trim());
       currentChunk = '';
+      sentenceCount = 0;
     }
     
     // If a single sentence is longer than max size, we have to include it anyway
@@ -252,6 +254,7 @@ function chunkSentencesIntoPargrahs(sentences: string[], maxSize: number): strin
     }
     
     currentChunk = currentChunk ? currentChunk + ' ' + trimmedSentence : trimmedSentence;
+    sentenceCount++;
   }
   
   // Don't forget the last chunk
@@ -373,9 +376,9 @@ export function splitIntoParagraphs(text: string): string[] {
         result.push(combined);
       }
     } else {
-      // Paragraph is too long - split by sentences respecting max size
+      // Paragraph is too long - split by sentences respecting max size and max 4 sentences
       const sentences = splitBySentences(combined);
-      const chunks = chunkSentencesIntoPargrahs(sentences, MAX_CHUNK_SIZE);
+      const chunks = chunkSentencesIntoPargrahs(sentences, MAX_CHUNK_SIZE, 4);
       
       for (const chunk of chunks) {
         if (chunk.length >= MIN_CHUNK_SIZE) {
