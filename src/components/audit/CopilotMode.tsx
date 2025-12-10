@@ -15,6 +15,7 @@ import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { getSources, getSourcesWithText, createParagraphCheck, addPendingCitation, clearPendingCitations, saveSessionMissingDataAsync, getSessionMissingDataAsync, deleteSessionMissingDataAsync } from "@/lib/client-storage";
 import { supabase } from "@/integrations/supabase/client";
 import { analyzeCitations, CitationAnalysis, getMissingSources, parseCitationForPlaceholder, deduplicateCitations } from "@/lib/citation-detector";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   Select,
   SelectContent,
@@ -73,6 +74,7 @@ export interface CopilotModeHandle {
 
 export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   function CopilotMode({ onSourcesChange, onUsedSourcesChange, onUnmatchedCitationsChange }, ref) {
+  const { user } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [paragraphs, setParagraphs] = useState<ParagraphData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -155,19 +157,29 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   // Flag to track if we've already auto-loaded a session
   const hasAutoLoadedRef = useRef(false);
   
-  // Load sources and sessions on mount - auto-load most recent session
+  // Load sources and sessions on mount and when user changes
   useEffect(() => {
     setSources(getSources());
+    // Reset auto-load flag when user changes
+    hasAutoLoadedRef.current = false;
     loadSessions(true); // Auto-load most recent session
-  }, []);
+  }, [user?.username]);
 
   const loadSessions = async (autoLoadMostRecent = false) => {
     setLoadingSessions(true);
     try {
-      const { data, error } = await supabase
+      // Filter sessions by current user's username
+      let query = supabase
         .from('copilot_sessions')
         .select('*')
         .order('updated_at', { ascending: false });
+      
+      // Filter by username if user is logged in
+      if (user?.username) {
+        query = query.eq('username', user.username);
+      }
+      
+      const { data, error } = await query;
       
       if (error) throw error;
       
@@ -291,7 +303,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         
         if (error) throw error;
       } else {
-        // Create new session
+        // Create new session with username
         const { data, error } = await supabase
           .from('copilot_sessions')
           .insert({
@@ -299,6 +311,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             total_paragraphs: paragraphsData.length,
             checked_paragraphs: checkedCount,
             paragraphs_data: paragraphsData as any,
+            username: user?.username || null,
           })
           .select()
           .single();
