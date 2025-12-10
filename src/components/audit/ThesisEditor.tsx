@@ -338,7 +338,7 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
     }
   };
 
-  // Draw text overlays on the PDF using improved character-level matching
+  // Draw text overlays on the PDF - per-text-item precision for proper line-level highlighting
   const drawTextOverlays = async (
     ctx: CanvasRenderingContext2D, 
     viewport: pdfjsLib.PageViewport,
@@ -362,6 +362,9 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       return;
     }
 
+    // Track which regions have been highlighted to avoid double-highlighting
+    const highlightedRegionIndices = new Set<number>();
+
     // For each checked paragraph, try to find it on this page
     for (const p of paragraphs) {
       if (!p.checked || !p.result) continue;
@@ -372,10 +375,6 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
       const matchedRegions = findMatchingRegions(pageTextRegions, p.text);
       
       if (matchedRegions.length === 0) continue; // Paragraph not on this page
-      
-      // Get bounding box for the paragraph
-      const paragraphBox = getBoundingBox(matchedRegions);
-      if (!paragraphBox) continue;
       
       // If paragraph has claims, highlight each claim individually
       if (p.result.claims && p.result.claims.length > 0) {
@@ -394,13 +393,14 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
           const claimRegions = findClaimRegions(matchedRegions, claim.text);
           
           if (claimRegions.length > 0) {
-            // Draw highlight for each claim region
+            // Draw highlight for EACH individual text region (not bounding box)
+            // This gives line-level precision
             for (const region of claimRegions) {
               ctx.fillStyle = fillColor;
               ctx.fillRect(region.x, region.y, region.width, region.height);
             }
             
-            // Create clickable region for the claim
+            // Create a single clickable region using the overall bounding box
             const claimBox = getBoundingBox(claimRegions);
             if (claimBox) {
               regions.push({
@@ -415,26 +415,11 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
                 displayId,
               });
             }
-          } else {
-            // Fallback: use paragraph box for this claim (shouldn't happen often)
-            ctx.fillStyle = fillColor;
-            ctx.fillRect(paragraphBox.x, paragraphBox.y, paragraphBox.width, paragraphBox.height);
-            
-            regions.push({
-              x: paragraphBox.x - 2,
-              y: paragraphBox.y - 2,
-              width: paragraphBox.width + 4,
-              height: paragraphBox.height + 4,
-              paragraphIndex: p.index,
-              claimIndex: claimIdx,
-              globalClaimIndex: globalClaimIdx >= 0 ? globalClaimIdx : null,
-              color: claimColor,
-              displayId,
-            });
           }
+          // No fallback - if claim not found precisely, don't highlight it
         }
       } else {
-        // No claims - highlight whole paragraph as blue
+        // No claims - highlight individual regions (not full bounding box)
         const fillColor = colorMap[overallColor] || colorMap.blue;
         
         for (const region of matchedRegions) {
@@ -442,17 +427,20 @@ export function ThesisEditor({ paragraphs, sources, onBack, onUpdateParagraph, t
           ctx.fillRect(region.x, region.y, region.width, region.height);
         }
         
-        regions.push({
-          x: paragraphBox.x - 2,
-          y: paragraphBox.y - 2,
-          width: paragraphBox.width + 4,
-          height: paragraphBox.height + 4,
-          paragraphIndex: p.index,
-          claimIndex: null,
-          globalClaimIndex: null,
-          color: overallColor,
-          displayId: `P${p.index + 1}`,
-        });
+        const paragraphBox = getBoundingBox(matchedRegions);
+        if (paragraphBox) {
+          regions.push({
+            x: paragraphBox.x - 2,
+            y: paragraphBox.y - 2,
+            width: paragraphBox.width + 4,
+            height: paragraphBox.height + 4,
+            paragraphIndex: p.index,
+            claimIndex: null,
+            globalClaimIndex: null,
+            color: overallColor,
+            displayId: `P${p.index + 1}`,
+          });
+        }
       }
     }
     
