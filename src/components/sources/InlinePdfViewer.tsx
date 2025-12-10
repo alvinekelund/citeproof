@@ -74,26 +74,19 @@ export function InlinePdfViewer({ filePath, blobUrl, searchText, onClose, highli
     };
   }, [filePath, blobUrl]);
 
-  // Re-render when page/scale changes
+  // Re-render when page/scale/highlightColor changes
   useEffect(() => {
     if (pdfDoc) {
       renderPage(currentPage);
     }
-  }, [pdfDoc, currentPage, scale, highlightColor]);
+  }, [pdfDoc, currentPage, scale, highlightColor, searchText]);
 
   // When searchText changes, find the page with that text
   useEffect(() => {
     if (pdfDoc && searchText) {
       findPageWithText(pdfDoc, searchText);
     }
-  }, [searchText]);
-  
-  // Re-render when currentPage or searchText changes (for highlighting)
-  useEffect(() => {
-    if (pdfDoc) {
-      renderPage(currentPage);
-    }
-  }, [currentPage, searchText]);
+  }, [pdfDoc, searchText]);
 
   const loadPdf = async () => {
     setIsLoading(true);
