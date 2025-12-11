@@ -58,13 +58,14 @@ export function CheckResult({ result, paragraphText, sources, onClaimClick, para
       <div className={`p-4 rounded-lg border-2 ${
         result.overall_color === 'green' ? 'border-verdict-green bg-verdict-green-bg' :
         result.overall_color === 'yellow' ? 'border-verdict-yellow bg-verdict-yellow-bg' :
+        result.overall_color === 'blue' ? 'border-verdict-blue bg-verdict-blue-bg' :
         'border-verdict-red bg-verdict-red-bg'
       }`}>
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-lg">Analysis Complete</h3>
           <VerdictBadge color={result.overall_color} size="lg" />
         </div>
-        <p className="text-sm">{result.summary}</p>
+        <p className="text-sm">{result.summary || (result.overall_color === 'blue' ? 'No citations detected' : '')}</p>
       </div>
 
       {/* Note: paragraph text is already shown above in CopilotMode, no need to duplicate */}
