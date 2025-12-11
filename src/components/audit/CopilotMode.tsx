@@ -249,14 +249,16 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     
     // Restore PDF file from IndexedDB if available (for thesis viewer)
     const pdfFile = await getSessionPdf(session.id);
-    if (pdfFile) {
+    console.log('[CopilotMode] Loading PDF for session:', session.id, 'found:', !!pdfFile, 'name:', pdfFile?.name, 'type:', pdfFile?.type, 'size:', pdfFile?.size);
+    if (pdfFile && pdfFile.size > 0) {
       // CRITICAL: Store the actual File object in file state, not a placeholder
       setFile(pdfFile);
       const blobUrl = URL.createObjectURL(pdfFile);
       setThesisPdfPath(blobUrl);
-      console.log('[CopilotMode] Restored PDF from IndexedDB - stored as File object');
+      console.log('[CopilotMode] Restored PDF from IndexedDB - blobUrl:', blobUrl);
     } else {
       // Only use placeholder if no PDF available
+      console.log('[CopilotMode] No PDF found in IndexedDB for session:', session.id);
       setFile({ name: session.thesis_name } as File);
       setThesisPdfPath(null);
     }
@@ -335,7 +337,12 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     const textToSave = textContent || fullText;
     
     // Use provided pdfFile or fall back to current file state if it's a valid PDF File
-    const pdfToSave = pdfFile || (file instanceof File && file.type === 'application/pdf' ? file : undefined);
+    // Check both MIME type and file extension for robustness (IndexedDB-restored files may have quirks)
+    const isPdfFile = file instanceof File && file.size > 0 && 
+      (file.type === 'application/pdf' || file.name?.toLowerCase().endsWith('.pdf'));
+    const pdfToSave = pdfFile || (isPdfFile ? file : undefined);
+    
+    console.log('[CopilotMode] saveSession - file:', file?.name, 'type:', file instanceof File ? file.type : 'not a File', 'size:', file instanceof File ? file.size : 0, 'isPdf:', isPdfFile, 'pdfToSave:', pdfToSave?.name);
     
     try {
       let sessionId = currentSessionId;
