@@ -564,14 +564,6 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
 
   // Extract sources that are actually cited in a paragraph
   const getRelevantSources = (paragraphText: string, allSources: Source[]): Source[] => {
-    // Citation patterns to detect
-    const citationPatterns = [
-      // Parenthetical: (Author, Year) or (Author et al., Year)
-      /\(([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&|and)\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)?(?:\s+et\s+al\.?)?)[,\s]+(\d{4}[a-z]?)\)/gi,
-      // Narrative: Author (Year) or Author et al. (Year)
-      /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&|and)\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)?(?:\s+et\s+al\.?)?)\s*\((\d{4}[a-z]?)\)/gi,
-    ];
-    
     // Normalize for matching - extract core letters only
     const normalizeForKey = (str: string): string => {
       return str
@@ -587,17 +579,24 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
       return match ? match[1] : null;
     };
     
-    // Extract author-year pairs from paragraph - also capture full author text for better matching
+    // Extract author-year pairs from paragraph
     const detectedPairs = new Set<string>();
-    const detectedAuthors = new Set<string>(); // Just author names for fuzzy matching
+    const detectedAuthors = new Set<string>();
     const detectedYears = new Set<string>();
-    const rawCitations: { author: string; year: string }[] = []; // Keep original format
+    const rawCitations: { author: string; year: string }[] = [];
     
-    for (const pattern of citationPatterns) {
-      let match;
-      while ((match = pattern.exec(paragraphText)) !== null) {
+    // Helper to parse a single citation like "Author et al., 2023" or "Author & Zhang, 2023"
+    const parseSingleCitation = (citationText: string) => {
+      const singlePattern = /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&|and)\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)?(?:\s+et\s+al\.?)?)[,\s]+(\d{4}[a-z]?)/i;
+      const match = citationText.match(singlePattern);
+      if (match) {
         const rawAuthor = match[1].trim();
-        const authorPart = rawAuthor.replace(/\s+et\s+al\.?/gi, '').replace(/\s*[&]\s*.*$/, '').replace(/\s+and\s+.*$/i, '').trim();
+        // Extract first author surname only (remove "et al.", second author after "&" or "and")
+        const authorPart = rawAuthor
+          .replace(/\s+et\s+al\.?/gi, '')
+          .replace(/\s*[&]\s*.*$/, '')
+          .replace(/\s+and\s+.*$/i, '')
+          .trim();
         const year = match[2].replace(/[a-z]$/, '');
         const normalizedAuthor = normalizeForKey(authorPart);
         const key = `${normalizedAuthor}|${year}`;
@@ -605,6 +604,51 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         detectedAuthors.add(normalizedAuthor);
         detectedYears.add(year);
         rawCitations.push({ author: rawAuthor, year });
+        console.log(`[getRelevantSources] Parsed citation: "${citationText}" -> ${key}`);
+      }
+    };
+    
+    // First: Find all parenthetical citation groups and split by semicolon for compound citations
+    const parenPattern = /\(([^)]+)\)/g;
+    let parenMatch;
+    while ((parenMatch = parenPattern.exec(paragraphText)) !== null) {
+      const content = parenMatch[1];
+      // Check if it contains a year (likely a citation)
+      if (/\d{4}/.test(content)) {
+        // Split by semicolon for compound citations like "(Noy & Zhang, 2023; Brynjolfsson et al., 2023)"
+        const parts = content.split(/\s*;\s*/);
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (trimmed && /\d{4}/.test(trimmed)) {
+            parseSingleCitation(trimmed);
+          }
+        }
+      }
+    }
+    
+    // Second: Find narrative citations like "Author (2023)" or "Author et al. (2023)"
+    const narrativePattern = /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+(?:\s+(?:et\s+al\.?|&|and)\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'''-]+)?(?:\s+et\s+al\.?)?)\s*\((\d{4}[a-z]?)\)/gi;
+    let narrativeMatch;
+    while ((narrativeMatch = narrativePattern.exec(paragraphText)) !== null) {
+      const rawAuthor = narrativeMatch[1].trim();
+      const year = narrativeMatch[2].replace(/[a-z]$/, '');
+      // Check this isn't already inside parentheses (already handled above)
+      const beforeMatch = paragraphText.slice(Math.max(0, narrativeMatch.index - 1), narrativeMatch.index);
+      if (beforeMatch !== '(' && beforeMatch !== ';') {
+        const authorPart = rawAuthor
+          .replace(/\s+et\s+al\.?/gi, '')
+          .replace(/\s*[&]\s*.*$/, '')
+          .replace(/\s+and\s+.*$/i, '')
+          .trim();
+        const normalizedAuthor = normalizeForKey(authorPart);
+        const key = `${normalizedAuthor}|${year}`;
+        if (!detectedPairs.has(key)) {
+          detectedPairs.add(key);
+          detectedAuthors.add(normalizedAuthor);
+          detectedYears.add(year);
+          rawCitations.push({ author: rawAuthor, year });
+          console.log(`[getRelevantSources] Parsed narrative citation: "${rawAuthor} (${year})" -> ${key}`);
+        }
       }
     }
     
@@ -615,6 +659,13 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     
     console.log('[getRelevantSources] Detected citation pairs:', Array.from(detectedPairs));
     console.log('[getRelevantSources] Raw citations:', rawCitations);
+    console.log('[getRelevantSources] Available sources:', allSources.map(s => ({
+      id: s.id,
+      in_text_label: s.in_text_label,
+      authors: s.authors,
+      year: s.year,
+      hasText: !!s.extracted_text && s.extracted_text.length > 100,
+    })));
     
     // Match sources to detected citations
     const matchedSources: Source[] = [];
