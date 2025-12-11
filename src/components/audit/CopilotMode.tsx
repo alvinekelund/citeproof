@@ -110,6 +110,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [selectedClaimIdx, setSelectedClaimIdx] = useState<number | null>(null);
   const [matchedSourcesCollapsed, setMatchedSourcesCollapsed] = useState(false);
   const [showListInFullscreen, setShowListInFullscreen] = useState(false);
+  const [hideSkipped, setHideSkipped] = useState(false);
   
   // PDF viewer for source checkup
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
@@ -2114,7 +2115,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <Badge variant="outline">{checkableParagraphCount} to check</Badge>
-                <Badge variant="secondary">{blueCount} skipped</Badge>
+                <Badge 
+                  variant="secondary" 
+                  className={cn("cursor-pointer", hideSkipped && "opacity-50")}
+                  onClick={() => setHideSkipped(!hideSkipped)}
+                  title={hideSkipped ? "Show skipped paragraphs" : "Hide skipped paragraphs"}
+                >
+                  {blueCount} skipped {hideSkipped ? "(hidden)" : ""}
+                </Badge>
               </div>
               <div className="flex gap-2">
                 {!isBatchChecking ? (
@@ -2208,6 +2216,10 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             <ScrollArea className="h-[550px] border rounded-lg">
               <div className="p-2 space-y-1">
                 {paragraphs.map((p, i) => {
+                  // Hide skipped paragraphs if toggle is on
+                  if (hideSkipped && p.checked && p.result?.overall_color === 'blue') {
+                    return null;
+                  }
                   const isSection = p.sectionType === 'chapter' || p.sectionType === 'section';
                   
                   return (
@@ -2317,7 +2329,14 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
                     <Badge variant="outline">{checkableParagraphCount} to check</Badge>
-                    <Badge variant="secondary">{blueCount} skipped</Badge>
+                    <Badge 
+                      variant="secondary" 
+                      className={cn("cursor-pointer", hideSkipped && "opacity-50")}
+                      onClick={() => setHideSkipped(!hideSkipped)}
+                      title={hideSkipped ? "Show skipped paragraphs" : "Hide skipped paragraphs"}
+                    >
+                      {blueCount} skipped {hideSkipped ? "(hidden)" : ""}
+                    </Badge>
                   </div>
                   <div className="flex gap-3 text-sm">
                     {greenCount > 0 && <span className="text-verdict-green">{greenCount} ✓</span>}
@@ -2329,6 +2348,10 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                 <ScrollArea className="h-[calc(100vh-180px)] border rounded-lg">
                   <div className="p-2 space-y-1">
                     {paragraphs.map((p, i) => {
+                      // Hide skipped paragraphs if toggle is on
+                      if (hideSkipped && p.checked && p.result?.overall_color === 'blue') {
+                        return null;
+                      }
                       const isSection = p.sectionType === 'chapter' || p.sectionType === 'section';
                       
                       return (
