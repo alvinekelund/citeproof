@@ -334,8 +334,8 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     // Use provided textContent or fall back to current fullText state
     const textToSave = textContent || fullText;
     
-    // Track if this is a new session creation
-    const isNewSession = !currentSessionId;
+    // Use provided pdfFile or fall back to current file state if it's a valid PDF File
+    const pdfToSave = pdfFile || (file instanceof File && file.type === 'application/pdf' ? file : undefined);
     
     try {
       let sessionId = currentSessionId;
@@ -377,10 +377,10 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         await saveSessionMissingDataAsync({ sessionId, fullText: textToSave });
       }
       
-      // Save PDF file to IndexedDB for PDF overlay mode (only on new session creation)
-      if (sessionId && pdfFile && isNewSession) {
+      // Save PDF file to IndexedDB for PDF overlay mode (always save if we have a valid PDF)
+      if (sessionId && pdfToSave && pdfToSave instanceof File && pdfToSave.size > 0) {
         console.log('[CopilotMode] Saving PDF to IndexedDB for session:', sessionId);
-        await storeSessionPdf(sessionId, pdfFile);
+        await storeSessionPdf(sessionId, pdfToSave);
       }
       
       // Refresh sessions list
