@@ -726,13 +726,17 @@ export function deleteSessionMissingData(sessionId: string): void {
 // Store and retrieve PDF files associated with copilot sessions
 
 export async function storeSessionPdf(sessionId: string, file: File): Promise<void> {
+  console.log('[Storage] Storing session PDF:', sessionId, 'name:', file.name, 'type:', file.type, 'size:', file.size);
   const path = `session-pdf/${sessionId}`;
   await storeFile(path, file);
+  console.log('[Storage] Session PDF stored successfully:', sessionId);
 }
 
 export async function getSessionPdf(sessionId: string): Promise<File | null> {
   const path = `session-pdf/${sessionId}`;
-  return await getFile(path);
+  const file = await getFile(path);
+  console.log('[Storage] Getting session PDF:', sessionId, 'found:', !!file, 'name:', file?.name, 'type:', file?.type, 'size:', file?.size);
+  return file;
 }
 
 export async function deleteSessionPdf(sessionId: string): Promise<void> {
