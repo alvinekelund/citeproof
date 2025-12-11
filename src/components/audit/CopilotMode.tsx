@@ -1196,11 +1196,54 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
 
   const navigateParagraph = (direction: 'prev' | 'next') => {
     if (selectedIndex === null) return;
-    const newIndex = direction === 'next' ? selectedIndex + 1 : selectedIndex - 1;
-    if (newIndex >= 0 && newIndex < paragraphs.length) {
-      setSelectedIndex(newIndex);
+    
+    // If hideSkipped is on, skip blue paragraphs
+    if (hideSkipped) {
+      let newIndex = selectedIndex;
+      const step = direction === 'next' ? 1 : -1;
+      
+      do {
+        newIndex += step;
+      } while (
+        newIndex >= 0 && 
+        newIndex < paragraphs.length && 
+        paragraphs[newIndex].checked && 
+        paragraphs[newIndex].result?.overall_color === 'blue'
+      );
+      
+      if (newIndex >= 0 && newIndex < paragraphs.length) {
+        setSelectedIndex(newIndex);
+      }
+    } else {
+      const newIndex = direction === 'next' ? selectedIndex + 1 : selectedIndex - 1;
+      if (newIndex >= 0 && newIndex < paragraphs.length) {
+        setSelectedIndex(newIndex);
+      }
     }
   };
+  
+  // Check if there's a valid prev/next paragraph (accounting for hideSkipped)
+  const hasValidPrev = (() => {
+    if (selectedIndex === null || selectedIndex === 0) return false;
+    if (!hideSkipped) return true;
+    for (let i = selectedIndex - 1; i >= 0; i--) {
+      if (!(paragraphs[i].checked && paragraphs[i].result?.overall_color === 'blue')) {
+        return true;
+      }
+    }
+    return false;
+  })();
+  
+  const hasValidNext = (() => {
+    if (selectedIndex === null || selectedIndex === paragraphs.length - 1) return false;
+    if (!hideSkipped) return true;
+    for (let i = selectedIndex + 1; i < paragraphs.length; i++) {
+      if (!(paragraphs[i].checked && paragraphs[i].result?.overall_color === 'blue')) {
+        return true;
+      }
+    }
+    return false;
+  })();
 
   const getColorClass = (result?: CheckResultType) => {
     if (!result) return '';
@@ -2421,6 +2464,17 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                             Claims
                           </Button>
                         )}
+                        {/* Hide skipped toggle */}
+                        {blueCount > 0 && (
+                          <Button
+                            variant={hideSkipped ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => setHideSkipped(!hideSkipped)}
+                            title={hideSkipped ? "Show skipped paragraphs" : "Hide skipped paragraphs"}
+                          >
+                            {hideSkipped ? `Skipped hidden (${blueCount})` : `${blueCount} skipped`}
+                          </Button>
+                        )}
                       </div>
                       <div className="flex gap-2">
                         {/* View in thesis button - only in non-fullscreen */}
@@ -2452,7 +2506,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                           variant="outline"
                           size="sm"
                           onClick={() => navigateParagraph('prev')}
-                          disabled={selectedIndex === 0}
+                          disabled={!hasValidPrev}
                         >
                           <ChevronLeft className="h-4 w-4" />
                           Prev
@@ -2461,7 +2515,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
                           variant="outline"
                           size="sm"
                           onClick={() => navigateParagraph('next')}
-                          disabled={selectedIndex === paragraphs.length - 1}
+                          disabled={!hasValidNext}
                         >
                           Next
                           <ChevronRight className="h-4 w-4" />
