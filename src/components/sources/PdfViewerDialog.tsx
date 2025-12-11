@@ -22,7 +22,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 interface PdfViewerDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  filePath: string | null;
+  filePath: string | null;  // Path to file in IndexedDB OR a blob URL
   fileName: string;
   initialPage?: number;
   searchText?: string;
@@ -319,15 +319,30 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
     setPageInputValue(String(startPage));
     
     try {
-      const file = await getFile(filePath);
-      if (!file) {
-        setError("File not found. It may have been deleted.");
-        return;
-      }
+      let arrayBuffer: ArrayBuffer;
       
-      const arrayBuffer = await file.arrayBuffer();
-      const url = URL.createObjectURL(file);
-      setBlobUrl(url);
+      // Check if filePath is already a blob URL
+      if (filePath.startsWith('blob:')) {
+        // Load directly from blob URL
+        const response = await fetch(filePath);
+        if (!response.ok) {
+          setError("File not found. It may have been deleted.");
+          return;
+        }
+        arrayBuffer = await response.arrayBuffer();
+        setBlobUrl(filePath);
+      } else {
+        // Load from IndexedDB
+        const file = await getFile(filePath);
+        if (!file) {
+          setError("File not found. It may have been deleted.");
+          return;
+        }
+        
+        arrayBuffer = await file.arrayBuffer();
+        const url = URL.createObjectURL(file);
+        setBlobUrl(url);
+      }
       
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       setPdfDoc(pdf);
