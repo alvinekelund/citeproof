@@ -2746,7 +2746,8 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         <PdfViewerDialog
           open={thesisViewerOpen}
           onOpenChange={setThesisViewerOpen}
-          filePath={thesisPdfPath}
+          filePath={null}
+          blobUrl={thesisPdfPath}
           fileName={file?.name || "Thesis"}
           initialPage={1}
           searchText={thesisViewerSearchText}

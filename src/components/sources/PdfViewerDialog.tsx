@@ -23,6 +23,7 @@ interface PdfViewerDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   filePath: string | null;
+  blobUrl?: string | null; // Direct blob URL (alternative to filePath)
   fileName: string;
   initialPage?: number;
   searchText?: string;
@@ -234,7 +235,7 @@ function getHighlightColorRgba(color?: 'green' | 'yellow' | 'red' | 'blue'): str
   }
 }
 
-export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initialPage = 1, searchText, highlightColor }: PdfViewerDialogProps) {
+export function PdfViewerDialog({ open, onOpenChange, filePath, blobUrl: propBlobUrl, fileName, initialPage = 1, searchText, highlightColor }: PdfViewerDialogProps) {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(initialPage);
   const [totalPages, setTotalPages] = useState(0);
@@ -264,7 +265,7 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
 
   // Load PDF document
   useEffect(() => {
-    if (open && filePath) {
+    if (open && (filePath || propBlobUrl)) {
       loadPdf();
       hasAutoSearchedRef.current = false;
     }
@@ -274,7 +275,8 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         pdfDoc.destroy();
         setPdfDoc(null);
       }
-      if (blobUrl) {
+      if (blobUrl && !propBlobUrl) {
+        // Only revoke if we created it (not passed as prop)
         URL.revokeObjectURL(blobUrl);
         setBlobUrl(null);
       }
@@ -282,7 +284,7 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
         clearTimeout(autoSearchTimeoutRef.current);
       }
     };
-  }, [open, filePath]);
+  }, [open, filePath, propBlobUrl]);
 
   // Set initial page and reset state when dialog opens
   useEffect(() => {
@@ -310,7 +312,7 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
   }, [pdfDoc, currentPage, scale, highlightColor]);
 
   const loadPdf = async () => {
-    if (!filePath) return;
+    if (!filePath && !propBlobUrl) return;
     
     setIsLoading(true);
     setError(null);
@@ -319,15 +321,33 @@ export function PdfViewerDialog({ open, onOpenChange, filePath, fileName, initia
     setPageInputValue(String(startPage));
     
     try {
-      const file = await getFile(filePath);
-      if (!file) {
-        setError("File not found. It may have been deleted.");
+      let arrayBuffer: ArrayBuffer;
+      let url: string;
+      
+      if (propBlobUrl) {
+        // Load from provided blob URL directly
+        const response = await fetch(propBlobUrl);
+        if (!response.ok) {
+          setError("Failed to load PDF from URL.");
+          return;
+        }
+        arrayBuffer = await response.arrayBuffer();
+        url = propBlobUrl;
+        setBlobUrl(propBlobUrl);
+      } else if (filePath) {
+        // Load from IndexedDB using filePath
+        const file = await getFile(filePath);
+        if (!file) {
+          setError("File not found. It may have been deleted.");
+          return;
+        }
+        arrayBuffer = await file.arrayBuffer();
+        url = URL.createObjectURL(file);
+        setBlobUrl(url);
+      } else {
+        setError("No file path or URL provided.");
         return;
       }
-      
-      const arrayBuffer = await file.arrayBuffer();
-      const url = URL.createObjectURL(file);
-      setBlobUrl(url);
       
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       setPdfDoc(pdf);
