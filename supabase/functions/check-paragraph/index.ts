@@ -328,7 +328,86 @@ serve(async (req) => {
 
     console.log('Paragraph check complete:', result.overall_color);
     
-    // POST-PROCESS: Validate that evidence labels match intended_citations
+    // Build a map of source labels to their extracted text for validation
+    const sourceTextMap: Map<string, string> = new Map();
+    if (sources && sources.length > 0) {
+      for (const s of sources) {
+        const label = (s.in_text_label || s.shorthand_id || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const text = (s.extracted_text || '').toLowerCase();
+        if (label && text.length > 100) {
+          sourceTextMap.set(label, text);
+          // Also add without parentheses for flexible matching
+          sourceTextMap.set(label.replace(/[()]/g, '').trim(), text);
+        }
+      }
+    }
+    
+    // Helper function to check if excerpt exists in source text
+    const excerptExistsInSource = (excerpt: string, label: string): boolean => {
+      if (!excerpt || excerpt.length < 10) return false;
+      
+      const normalizedLabel = label.toLowerCase().replace(/\s+/g, ' ').trim();
+      const labelWithoutParens = normalizedLabel.replace(/[()]/g, '').trim();
+      
+      // Find the source text
+      let sourceText = sourceTextMap.get(normalizedLabel) || sourceTextMap.get(labelWithoutParens);
+      
+      // Try partial matching on label
+      if (!sourceText) {
+        for (const [key, text] of sourceTextMap.entries()) {
+          if (key.includes(labelWithoutParens) || labelWithoutParens.includes(key)) {
+            sourceText = text;
+            break;
+          }
+        }
+      }
+      
+      if (!sourceText) {
+        console.log(`[VALIDATION] No source text found for label: ${label}`);
+        return false;
+      }
+      
+      // Normalize excerpt for comparison
+      const normalizedExcerpt = excerpt.toLowerCase().replace(/\s+/g, ' ').trim();
+      
+      // Check if excerpt exists in source (with some flexibility for minor differences)
+      if (sourceText.includes(normalizedExcerpt)) {
+        return true;
+      }
+      
+      // Try with just key phrases (first 50 chars of excerpt)
+      const keyPhrase = normalizedExcerpt.substring(0, Math.min(50, normalizedExcerpt.length));
+      if (sourceText.includes(keyPhrase)) {
+        return true;
+      }
+      
+      // Try word-by-word matching (at least 80% of words must be present in sequence)
+      const excerptWords = normalizedExcerpt.split(/\s+/).filter(w => w.length > 3);
+      if (excerptWords.length < 5) return false;
+      
+      let matchedInSequence = 0;
+      let maxSequence = 0;
+      
+      for (const word of excerptWords) {
+        if (sourceText.includes(word)) {
+          matchedInSequence++;
+          maxSequence = Math.max(maxSequence, matchedInSequence);
+        } else {
+          matchedInSequence = 0;
+        }
+      }
+      
+      // Require at least 60% of significant words to match in some sequence
+      const matchRatio = maxSequence / excerptWords.length;
+      if (matchRatio >= 0.6) {
+        return true;
+      }
+      
+      console.log(`[VALIDATION] Excerpt not found in source. Match ratio: ${matchRatio.toFixed(2)}, Excerpt preview: "${normalizedExcerpt.substring(0, 100)}..."`);
+      return false;
+    };
+
+    // POST-PROCESS: Validate that evidence labels match intended_citations AND excerpts exist in source
     if (result.claims && Array.isArray(result.claims)) {
       for (const claim of result.claims) {
         if (claim.evidence && Array.isArray(claim.evidence) && claim.intended_citations && Array.isArray(claim.intended_citations)) {
@@ -336,24 +415,56 @@ serve(async (req) => {
           // Normalize citations for comparison (remove extra spaces, etc.)
           const normalizedCitations = claim.intended_citations.map((c: string) => c.toLowerCase().replace(/\s+/g, ' ').trim());
           
-          // Filter evidence to only include labels that match intended_citations
+          // Filter evidence to only include labels that match intended_citations AND have valid excerpts
           claim.evidence = claim.evidence.filter((ev: any) => {
             const normalizedLabel = (ev.label || '').toLowerCase().replace(/\s+/g, ' ').trim();
-            const matches = normalizedCitations.some((c: string) => 
+            const labelMatches = normalizedCitations.some((c: string) => 
               c === normalizedLabel || 
               c.includes(normalizedLabel.replace(/[()]/g, '')) ||
               normalizedLabel.includes(c.replace(/[()]/g, ''))
             );
-            if (!matches) {
+            
+            if (!labelMatches) {
               console.log(`[VALIDATION] Discarding evidence from "${ev.label}" - not in intended_citations: ${claim.intended_citations.join(', ')}`);
+              return false;
             }
-            return matches;
+            
+            // CRITICAL: Verify the excerpt actually exists in the source text
+            if (!excerptExistsInSource(ev.excerpt, ev.label)) {
+              console.log(`[VALIDATION] Discarding HALLUCINATED evidence from "${ev.label}" - excerpt not found in source text`);
+              return false;
+            }
+            
+            return true;
           });
           
-          if (claim.evidence.length < originalEvidenceCount) {
-            console.log(`[VALIDATION] Filtered ${originalEvidenceCount - claim.evidence.length} mismatched evidence entries for claim ${claim.index}`);
+          const discardedCount = originalEvidenceCount - claim.evidence.length;
+          if (discardedCount > 0) {
+            console.log(`[VALIDATION] Filtered ${discardedCount} invalid evidence entries for claim ${claim.index}`);
+            
+            // If all evidence was discarded, update the verdict
+            if (claim.evidence.length === 0 && originalEvidenceCount > 0) {
+              claim.verdict = "No verifiable support found in cited sources";
+              console.log(`[VALIDATION] Updated verdict for claim ${claim.index} - all evidence was hallucinated`);
+            }
           }
         }
+      }
+      
+      // Re-evaluate overall color if hallucinated evidence was removed
+      const hasUnsupportedClaims = result.claims.some((c: any) => 
+        c.verdict?.toLowerCase().includes('no') || 
+        c.verdict?.toLowerCase().includes('unsupported') ||
+        c.verdict?.toLowerCase().includes('not found')
+      );
+      const hasPartialClaims = result.claims.some((c: any) => 
+        c.verdict?.toLowerCase().includes('partial') || 
+        c.verdict?.toLowerCase().includes('uncertain')
+      );
+      
+      if (hasUnsupportedClaims && result.overall_color === 'green') {
+        result.overall_color = 'yellow';
+        console.log('[VALIDATION] Downgraded overall_color from green to yellow due to unsupported claims after hallucination check');
       }
     }
 
