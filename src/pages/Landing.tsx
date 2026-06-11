@@ -90,11 +90,11 @@ export default function Landing() {
         <div className="mx-auto max-w-6xl px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <ShieldCheck className="h-6 w-6 text-accent" />
-            <span className="font-serif text-xl font-semibold tracking-tight">Veracite</span>
+            <span className="font-serif text-xl font-semibold tracking-tight">Citeproof</span>
           </div>
           <nav className="flex items-center gap-2 sm:gap-4">
             <a
-              href="https://github.com/alvinekelund/veracite"
+              href="https://github.com/alvinekelund/citeproof"
               target="_blank"
               rel="noreferrer"
               className="hidden sm:inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -124,7 +124,7 @@ export default function Landing() {
               against the sources you actually cite.
             </h1>
             <p className="landing-rise text-lg text-muted-foreground leading-relaxed mb-8 max-w-xl" style={{ animationDelay: '180ms' }}>
-              Veracite breaks your paragraphs into atomic claims, searches the full
+              Citeproof breaks your paragraphs into atomic claims, searches the full
               text of your cited sources, and returns page-numbered evidence — with a
               verification layer that rejects any quote it cannot find verbatim in the source.
             </p>
@@ -135,7 +135,7 @@ export default function Landing() {
                 </Link>
               </Button>
               <Button asChild size="lg" variant="outline">
-                <a href="https://github.com/alvinekelund/veracite" target="_blank" rel="noreferrer">
+                <a href="https://github.com/alvinekelund/citeproof" target="_blank" rel="noreferrer">
                   Self-host it
                 </a>
               </Button>
@@ -217,7 +217,7 @@ export default function Landing() {
             Built for verifiability, not vibes
           </h2>
           <p className="text-muted-foreground text-lg mb-12 max-w-2xl">
-            Plagiarism checkers tell you what you copied. Veracite tells you whether
+            Plagiarism checkers tell you what you copied. Citeproof tells you whether
             what you wrote is actually supported by what you cite.
           </p>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-10 gap-y-12">
@@ -254,10 +254,10 @@ export default function Landing() {
       <footer className="border-t border-border/60">
         <div className="mx-auto max-w-6xl px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-muted-foreground">
           <span className="inline-flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-accent" /> Veracite
+            <ShieldCheck className="h-4 w-4 text-accent" /> Citeproof
           </span>
           <a
-            href="https://github.com/alvinekelund/veracite"
+            href="https://github.com/alvinekelund/citeproof"
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"

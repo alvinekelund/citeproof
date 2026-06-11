@@ -53,7 +53,7 @@ export default function Login() {
           <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
             <ShieldCheck className="h-6 w-6 text-primary" />
           </div>
-          <CardTitle className="text-2xl font-serif">Veracite</CardTitle>
+          <CardTitle className="text-2xl font-serif">Citeproof</CardTitle>
           <CardDescription>
             {isSignup ? 'Create an account to start verifying your thesis' : 'Sign in to your workspace'}
           </CardDescription>

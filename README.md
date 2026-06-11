@@ -1,14 +1,14 @@
-# Veracite
+# Citeproof
 
 **Every claim in your thesis, verified against the sources you actually cite.**
 
-Plagiarism checkers tell you what you copied. Veracite tells you whether what you *wrote* is actually supported by what you *cite*. Upload your source PDFs and your draft, and every paragraph is broken into atomic claims, checked against the **full text** of the sources it cites, and returned with quoted, page-numbered evidence — color-coded green, yellow, or red.
+Plagiarism checkers tell you what you copied. Citeproof tells you whether what you *wrote* is actually supported by what you *cite*. Upload your source PDFs and your draft, and every paragraph is broken into atomic claims, checked against the **full text** of the sources it cites, and returned with quoted, page-numbered evidence — color-coded green, yellow, or red.
 
 ![Landing page](docs/landing.png)
 
 ## Why this exists
 
-Supervisors and committees increasingly ask one question: *"Does this source really say that?"* Answering it by hand means re-reading every PDF for every sentence. LLMs can help, but a plain chatbot will happily invent a supporting quote. Veracite is built around one rule: **evidence that cannot be found verbatim in the source is rejected.**
+Supervisors and committees increasingly ask one question: *"Does this source really say that?"* Answering it by hand means re-reading every PDF for every sentence. LLMs can help, but a plain chatbot will happily invent a supporting quote. Citeproof is built around one rule: **evidence that cannot be found verbatim in the source is rejected.**
 
 ## How it works
 
@@ -59,8 +59,8 @@ supabase/functions/
 You need a [Supabase](https://supabase.com) project (free tier works) and a [Google AI Studio](https://aistudio.google.com) API key (free tier works).
 
 ```sh
-git clone https://github.com/alvinekelund/veracite
-cd veracite
+git clone https://github.com/alvinekelund/citeproof
+cd citeproof
 npm install
 
 # Point the app at your Supabase project
