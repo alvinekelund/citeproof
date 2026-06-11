@@ -1,7 +1,13 @@
 {
-  "name": "vite_react_shadcn_ts",
+  "name": "thesis-guardian",
+  "description": "Verify every claim in your thesis against the full text of the sources you cite — with hallucination-checked, page-numbered evidence.",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alvinekelund/thesis-guardian"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
