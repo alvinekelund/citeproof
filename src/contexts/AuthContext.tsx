@@ -1,107 +1,81 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 
-interface User {
+interface AuthUser {
+  id: string;
+  email: string;
+  /** Display name derived from the email local part. */
   username: string;
 }
 
+interface AuthResult {
+  success: boolean;
+  error?: string;
+  /** True when the project requires email confirmation before first login. */
+  needsConfirmation?: boolean;
+}
+
 interface AuthContextType {
-  user: User | null;
+  user: AuthUser | null;
   isAuthenticated: boolean;
-  login: (username: string, password: string) => boolean;
-  signup: (username: string, password: string) => { success: boolean; error?: string };
-  logout: () => void;
+  /** True while the persisted session is being restored on page load. */
+  loading: boolean;
+  login: (email: string, password: string) => Promise<AuthResult>;
+  signup: (email: string, password: string) => Promise<AuthResult>;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-// Original admin account
-const ADMIN_ACCOUNT = {
-  username: 'alvin',
-  password: 'REDACTED',
-};
-
-// Shared password for new account creation
-const SIGNUP_PASSWORD = 'slaybot';
-
-const AUTH_KEY = 'thesis-checker-auth';
-const ACCOUNTS_KEY = 'thesis-checker-accounts';
+function toAuthUser(sessionUser: { id: string; email?: string } | null | undefined): AuthUser | null {
+  if (!sessionUser?.email) return null;
+  return {
+    id: sessionUser.id,
+    email: sessionUser.email,
+    username: sessionUser.email.split('@')[0],
+  };
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check for existing session
-    const stored = localStorage.getItem(AUTH_KEY);
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        setUser(parsed);
-      } catch {
-        localStorage.removeItem(AUTH_KEY);
-      }
-    }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(toAuthUser(session?.user));
+      setLoading(false);
+    });
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(toAuthUser(session?.user));
+      setLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  // Get stored accounts
-  const getStoredAccounts = (): Record<string, string> => {
-    try {
-      const stored = localStorage.getItem(ACCOUNTS_KEY);
-      return stored ? JSON.parse(stored) : {};
-    } catch {
-      return {};
+  const login = async (email: string, password: string): Promise<AuthResult> => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      return { success: false, error: error.message };
     }
-  };
-
-  const login = (username: string, password: string): boolean => {
-    // Check admin account first
-    if (username === ADMIN_ACCOUNT.username && password === ADMIN_ACCOUNT.password) {
-      const userData = { username };
-      setUser(userData);
-      localStorage.setItem(AUTH_KEY, JSON.stringify(userData));
-      return true;
-    }
-    
-    // Check stored accounts
-    const accounts = getStoredAccounts();
-    if (accounts[username] === password) {
-      const userData = { username };
-      setUser(userData);
-      localStorage.setItem(AUTH_KEY, JSON.stringify(userData));
-      return true;
-    }
-    
-    return false;
-  };
-
-  const signup = (username: string, password: string): { success: boolean; error?: string } => {
-    if (password !== SIGNUP_PASSWORD) {
-      return { success: false, error: 'Invalid signup password' };
-    }
-    
-    if (username === ADMIN_ACCOUNT.username) {
-      return { success: false, error: 'Username already taken' };
-    }
-    
-    const accounts = getStoredAccounts();
-    if (accounts[username]) {
-      return { success: false, error: 'Username already exists' };
-    }
-    
-    // Store new account
-    accounts[username] = password;
-    localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-    
-    // Auto login
-    const userData = { username };
-    setUser(userData);
-    localStorage.setItem(AUTH_KEY, JSON.stringify(userData));
-    
     return { success: true };
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem(AUTH_KEY);
+  const signup = async (email: string, password: string): Promise<AuthResult> => {
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) {
+      return { success: false, error: error.message };
+    }
+    // No session means the project requires email confirmation first.
+    if (!data.session) {
+      return { success: true, needsConfirmation: true };
+    }
+    return { success: true };
+  };
+
+  const logout = async () => {
+    await supabase.auth.signOut();
   };
 
   return (
@@ -109,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         user,
         isAuthenticated: !!user,
+        loading,
         login,
         signup,
         logout,

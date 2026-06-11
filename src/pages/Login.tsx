@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Lock, User, AlertCircle } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Lock, Mail, AlertCircle, MailCheck, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,9 +9,10 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useAuth } from '@/contexts/AuthContext';
 
 export default function Login() {
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSignup, setIsSignup] = useState(false);
   const { login, signup } = useAuth();
@@ -20,27 +21,28 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setInfo('');
     setIsLoading(true);
 
-    // Small delay for UX
-    await new Promise(r => setTimeout(r, 300));
-
     if (isSignup) {
-      const result = signup(username, password);
-      if (result.success) {
-        navigate('/');
+      const result = await signup(email, password);
+      if (result.success && result.needsConfirmation) {
+        setInfo('Check your inbox — confirm your email address, then sign in.');
+        setIsSignup(false);
+      } else if (result.success) {
+        navigate('/app');
       } else {
         setError(result.error || 'Signup failed');
       }
     } else {
-      const success = login(username, password);
-      if (success) {
-        navigate('/');
+      const result = await login(email, password);
+      if (result.success) {
+        navigate('/app');
       } else {
-        setError('Invalid username or password');
+        setError(result.error || 'Invalid email or password');
       }
     }
-    
+
     setIsLoading(false);
   };
 
@@ -49,11 +51,11 @@ export default function Login() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <Lock className="h-6 w-6 text-primary" />
+            <ShieldCheck className="h-6 w-6 text-primary" />
           </div>
-          <CardTitle className="text-2xl font-serif">Thesis Source Checker</CardTitle>
+          <CardTitle className="text-2xl font-serif">Thesis Guardian</CardTitle>
           <CardDescription>
-            {isSignup ? 'Create a new account' : 'Sign in to access your research tools'}
+            {isSignup ? 'Create an account to start verifying your thesis' : 'Sign in to your workspace'}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -64,20 +66,26 @@ export default function Login() {
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-            
+            {info && (
+              <Alert>
+                <MailCheck className="h-4 w-4" />
+                <AlertDescription>{info}</AlertDescription>
+              </Alert>
+            )}
+
             <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
+              <Label htmlFor="email">Email</Label>
               <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  id="username"
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="Enter username"
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@university.edu"
                   className="pl-10"
                   required
-                  autoComplete="username"
+                  autoComplete="email"
                 />
               </div>
             </div>
@@ -91,10 +99,11 @@ export default function Login() {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter password"
+                  placeholder={isSignup ? 'At least 6 characters' : 'Enter password'}
                   className="pl-10"
                   required
-                  autoComplete="current-password"
+                  minLength={6}
+                  autoComplete={isSignup ? 'new-password' : 'current-password'}
                 />
               </div>
             </div>
@@ -102,18 +111,24 @@ export default function Login() {
             <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? (isSignup ? 'Creating account...' : 'Signing in...') : (isSignup ? 'Create Account' : 'Sign In')}
             </Button>
-            
-            <div className="text-center mt-4">
+
+            <div className="text-center mt-4 space-y-2">
               <button
                 type="button"
                 className="text-sm text-muted-foreground hover:text-primary underline"
                 onClick={() => {
                   setIsSignup(!isSignup);
                   setError('');
+                  setInfo('');
                 }}
               >
                 {isSignup ? 'Already have an account? Sign in' : 'Need an account? Create one'}
               </button>
+              <div>
+                <Link to="/" className="text-sm text-muted-foreground hover:text-primary underline">
+                  Back to home
+                </Link>
+              </div>
             </div>
           </form>
         </CardContent>

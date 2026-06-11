@@ -196,20 +196,20 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
     // Reset auto-load flag when user changes
     hasAutoLoadedRef.current = false;
     loadSessions(true); // Auto-load most recent session
-  }, [user?.username]);
+  }, [user?.id]);
 
   const loadSessions = async (autoLoadMostRecent = false) => {
     setLoadingSessions(true);
     try {
-      // Filter sessions by current user's username
+      // RLS already scopes sessions to the signed-in user; the explicit
+      // filter is defense-in-depth and keeps behavior correct in local dev.
       let query = supabase
         .from('copilot_sessions')
         .select('*')
         .order('updated_at', { ascending: false });
       
-      // Filter by username if user is logged in
-      if (user?.username) {
-        query = query.eq('username', user.username);
+      if (user?.id) {
+        query = query.eq('user_id', user.id);
       }
       
       const { data, error } = await query;
@@ -359,7 +359,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         
         if (error) throw error;
       } else {
-        // Create new session with username
+        // Create new session owned by the signed-in user
         const { data, error } = await supabase
           .from('copilot_sessions')
           .insert({
@@ -367,7 +367,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             total_paragraphs: paragraphsData.length,
             checked_paragraphs: checkedCount,
             paragraphs_data: paragraphsData as any,
-            username: user?.username || null,
+            user_id: user?.id || null,
           })
           .select()
           .single();

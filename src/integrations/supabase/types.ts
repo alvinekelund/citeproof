@@ -23,6 +23,7 @@ export type Database = {
           thesis_name: string
           total_paragraphs: number
           updated_at: string
+          user_id: string | null
           username: string | null
         }
         Insert: {
@@ -33,6 +34,7 @@ export type Database = {
           thesis_name: string
           total_paragraphs?: number
           updated_at?: string
+          user_id?: string | null
           username?: string | null
         }
         Update: {
@@ -43,6 +45,7 @@ export type Database = {
           thesis_name?: string
           total_paragraphs?: number
           updated_at?: string
+          user_id?: string | null
           username?: string | null
         }
         Relationships: []

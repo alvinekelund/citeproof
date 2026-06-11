@@ -37,9 +37,9 @@ serve(async (req) => {
       });
     }
 
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) {
-      console.error("LOVABLE_API_KEY not configured");
+    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
+    if (!GOOGLE_AI_API_KEY) {
+      console.error("GOOGLE_AI_API_KEY not configured");
       return new Response(JSON.stringify({ citations }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -76,71 +76,64 @@ Output:
 This means citations 1 and 2 are duplicates, and we keep citation 1 as the canonical form.
 Citations not in any group are unique.`;
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${GOOGLE_AI_API_KEY}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Identify duplicate citations:\n\n${citationList}` }
-        ],
-        tools: [
+        contents: [
           {
-            type: "function",
-            function: {
-              name: "identify_duplicates",
-              description: "Identify groups of duplicate citations",
-              parameters: {
-                type: "object",
-                properties: {
-                  groups: {
-                    type: "array",
-                    items: {
-                      type: "array",
-                      items: { type: "number" }
-                    },
-                    description: "Arrays of 1-based indices that are duplicates of each other"
-                  },
-                  canonical: {
-                    type: "array",
-                    items: { type: "number" },
-                    description: "For each group, the 1-based index of the preferred citation form"
-                  }
-                },
-                required: ["groups", "canonical"],
-                additionalProperties: false
-              }
-            }
+            parts: [
+              { text: systemPrompt + `\n\nIdentify duplicate citations:\n\n${citationList}` }
+            ]
           }
         ],
-        tool_choice: { type: "function", function: { name: "identify_duplicates" } }
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 2048,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "object",
+            properties: {
+              groups: {
+                type: "array",
+                items: {
+                  type: "array",
+                  items: { type: "number" }
+                },
+                description: "Arrays of 1-based indices that are duplicates of each other"
+              },
+              canonical: {
+                type: "array",
+                items: { type: "number" },
+                description: "For each group, the 1-based index of the preferred citation form"
+              }
+            },
+            required: ["groups", "canonical"]
+          }
+        }
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("AI gateway error:", response.status, errText);
+      console.error("Gemini API error:", response.status, errText);
       return new Response(JSON.stringify({ citations }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
     const data = await response.json();
-    console.log("AI response:", JSON.stringify(data));
 
-    // Parse tool call response
     let result: { groups: number[][], canonical: number[] } = { groups: [], canonical: [] };
-    
-    const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
-    if (toolCall?.function?.arguments) {
+
+    const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (jsonText) {
       try {
-        result = JSON.parse(toolCall.function.arguments);
+        result = JSON.parse(jsonText);
       } catch (e) {
-        console.error("Failed to parse tool call arguments:", e);
+        console.error("Failed to parse Gemini JSON response:", e);
       }
     }
 

@@ -55,8 +55,12 @@ export async function deleteSource(id: string): Promise<void> {
 
 // File upload
 export async function uploadFile(file: File, folder: string): Promise<string> {
+  // Files live under the owner's user id so storage RLS can scope writes per user.
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('You must be signed in to upload files');
+
   const filename = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-  const filePath = `${folder}/${filename}`;
+  const filePath = `${user.id}/${folder}/${filename}`;
   
   const { error } = await supabase.storage
     .from('thesis-files')

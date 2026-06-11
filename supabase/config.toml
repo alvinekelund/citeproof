@@ -32,19 +32,19 @@ double_confirm_changes = true
 enable_confirmations = false
 
 [functions.check-paragraph]
-verify_jwt = false
+verify_jwt = true
 
 [functions.suggest-label]
-verify_jwt = false
+verify_jwt = true
 
 [functions.parse-thesis]
-verify_jwt = false
+verify_jwt = true
 
 [functions.ai-chat]
-verify_jwt = false
+verify_jwt = true
 
 [functions.dedupe-citations]
-verify_jwt = false
+verify_jwt = true
 
 [functions.rewrite-claim]
-verify_jwt = false
+verify_jwt = true
