@@ -1,12 +1,12 @@
 {
-  "name": "thesis-guardian",
+  "name": "veracite",
   "description": "Verify every claim in your thesis against the full text of the sources you cite — with hallucination-checked, page-numbered evidence.",
   "private": true,
   "version": "1.0.0",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/alvinekelund/thesis-guardian"
+    "url": "https://github.com/alvinekelund/veracite"
   },
   "type": "module",
   "scripts": {

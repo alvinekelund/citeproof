@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const SYSTEM_PROMPT = `You are "Thesis Source Checker", an accurate and fair academic assistant that verifies whether a thesis paragraph is properly supported by its cited sources.
+const SYSTEM_PROMPT = `You are "Veracite", an accurate and fair academic assistant that verifies whether a thesis paragraph is properly supported by its cited sources.
 
 GENERAL PRINCIPLES
 - Your job is to accurately assess whether claims are supported by the provided sources.

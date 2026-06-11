@@ -30,7 +30,7 @@ export function AppLayout({ children, activeTab, onTabChange }: AppLayoutProps) 
                 <BookOpen className="h-5 w-5 text-primary-foreground" />
               </div>
               <div>
-                <h1 className="scholarly-heading text-xl font-bold">Thesis Source Checker</h1>
+                <h1 className="scholarly-heading text-xl font-bold">Veracite</h1>
                 <p className="text-xs text-muted-foreground">Academic verification assistant</p>
               </div>
             </div>
