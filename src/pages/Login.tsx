@@ -18,6 +18,24 @@ export default function Login() {
   const { login, signup } = useAuth();
   const navigate = useNavigate();
 
+  // A shared, read-along demo workspace. Only rendered when the host
+  // configures demo credentials, so self-hosters aren't forced to have one.
+  const demoEmail = import.meta.env.VITE_DEMO_EMAIL;
+  const demoPassword = import.meta.env.VITE_DEMO_PASSWORD;
+
+  const handleDemoLogin = async () => {
+    setError('');
+    setInfo('');
+    setIsLoading(true);
+    const result = await login(demoEmail, demoPassword);
+    if (result.success) {
+      navigate('/app');
+    } else {
+      setError(result.error || 'Demo login failed');
+    }
+    setIsLoading(false);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -111,6 +129,18 @@ export default function Login() {
             <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? (isSignup ? 'Creating account...' : 'Signing in...') : (isSignup ? 'Create Account' : 'Sign In')}
             </Button>
+
+            {demoEmail && demoPassword && !isSignup && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={isLoading}
+                onClick={handleDemoLogin}
+              >
+                Try the demo account
+              </Button>
+            )}
 
             <div className="text-center mt-4 space-y-2">
               <button
