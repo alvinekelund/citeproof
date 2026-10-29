@@ -54,28 +54,52 @@ supabase/functions/
   dedupe-citations/    AI-assisted citation deduplication
 ```
 
-## Self-hosting
+## Run it yourself
 
-You need a [Supabase](https://supabase.com) project (free tier works) and a [Google AI Studio](https://aistudio.google.com) API key (free tier works).
+You need Node 18 or newer and a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey) (the free tier is enough). The backend is [Supabase](https://supabase.com): run it on your own machine with Docker, or use a free hosted project. The migrations create the tables, row-level security policies and the storage bucket, so there is nothing to set up by hand.
+
+### On your machine (Docker)
 
 ```sh
 git clone https://github.com/alvinekelund/citeproof
 cd citeproof
 npm install
 
-# Point the app at your Supabase project
-cp .env.example .env   # fill in URL + anon key from Supabase Settings → API
+# Postgres, Auth, Storage and the edge runtime in Docker; applies the migrations
+npx supabase start
 
-# Apply the database schema and deploy the edge functions
+# Edge functions with your Gemini key (keep this terminal open)
+cp supabase/functions/.env.example supabase/functions/.env   # paste your key into it
+npx supabase functions serve --env-file supabase/functions/.env
+```
+
+In a second terminal:
+
+```sh
+cp .env.example .env
+# VITE_SUPABASE_URL             = the API URL printed by `supabase start` (http://127.0.0.1:54321)
+# VITE_SUPABASE_PUBLISHABLE_KEY = the publishable (anon) key printed by `supabase start`
+npm run dev   # http://localhost:8080
+```
+
+Open the app, choose **Create one**, and sign up with any email address. Local accounts need no email confirmation. `npx supabase status` prints the URL and keys again, and Supabase Studio runs at http://127.0.0.1:54323.
+
+### Hosted Supabase
+
+```sh
+cp .env.example .env   # URL + publishable (anon) key from Project Settings → API
 npx supabase link --project-ref <your-project-ref>
 npx supabase db push
 npx supabase secrets set GOOGLE_AI_API_KEY=<your-gemini-key>
 npx supabase functions deploy
-
-npm run dev            # http://localhost:8080
+npm run dev
 ```
 
-Enable email signups in Supabase under **Authentication → Providers → Email**. Everything else works out of the box: the migrations create the tables, row-level security policies, and the storage bucket.
+Hosted projects ask new users to confirm their email by default, and the app tells them to check their inbox. If you run Citeproof only for yourself, you can turn confirmation off under **Authentication → Sign In / Providers → Email**.
+
+To put the frontend online, `npm run build` writes a static site to `dist/` that any static host can serve (Vercel, Netlify, Cloudflare Pages). Set the two `VITE_SUPABASE_*` variables in the host's build settings and add the site's address under **Authentication → URL Configuration**.
+
+To show a **Try the demo account** button on the login page, create that account in Supabase Auth and set `VITE_DEMO_EMAIL` and `VITE_DEMO_PASSWORD` in `.env`. The password ships to the browser, so use a throwaway account.
 
 > **Note on storage privacy:** uploaded files are written to a per-user folder and only the owner can write there, but the bucket is public-read (paths are unguessable). For stricter confidentiality, flip the bucket to private and switch `getFileUrl` in `src/lib/supabase-helpers.ts` to signed URLs.
 

@@ -89,6 +89,8 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
   const [sources, setSources] = useState<Source[]>([]);
   const [showStructure, setShowStructure] = useState(true);
   const abortRef = useRef(false);
+  // Last non-retryable check error, so a batch where every check fails can say why
+  const lastCheckErrorRef = useRef<string | null>(null);
   
   // Session management
   const [sessions, setSessions] = useState<CopilotSession[]>([]);
@@ -896,8 +898,13 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         });
 
         if (error) {
-          const errorMessage = error.message || '';
-          
+          // supabase-js only says "non-2xx"; the status and the function's own message are on the response
+          const response: Response | undefined = (error as { context?: Response }).context;
+          const serverMessage: string | undefined = await response?.clone().json()
+            .then((body: { error?: string }) => body?.error)
+            .catch(() => undefined);
+          const errorMessage = [error.message, response?.status, serverMessage].filter(Boolean).join(' ');
+
           // Check for credit errors (non-retryable)
           if (errorMessage.includes('402') || errorMessage.includes('credits')) {
             toast({ 
@@ -933,8 +940,8 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
             }
             return { success: false, rateLimited: true };
           }
-          
-          throw error;
+
+          throw serverMessage ? new Error(serverMessage) : error;
         }
 
         if (data.error) {
@@ -1029,6 +1036,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
         console.error('Check error:', error);
         lastError = error;
         const msg = error?.message || '';
+        lastCheckErrorRef.current = msg;
         
         if (msg.includes('402')) {
           toast({ title: "AI Credits Exhausted", description: "Add credits in Settings → Workspace → Usage", variant: "destructive" });
@@ -1117,6 +1125,7 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
 
     const totalToCheck = uncheckedParagraphs.length;
     let completed = 0;
+    lastCheckErrorRef.current = null;
     let batchSize = 2; // Start with 2 for lite model
     let consecutiveRateLimits = 0;
     const BASE_DELAY_MS = 800; // 800ms between batches (reduced from 3000ms)
@@ -1213,7 +1222,11 @@ export const CopilotMode = forwardRef<CopilotModeHandle, CopilotModeProps>(
 
     setIsBatchChecking(false);
     if (!abortRef.current) {
-      toast({ title: "Batch check complete", description: `Checked ${completed} paragraphs` });
+      if (completed === 0 && lastCheckErrorRef.current) {
+        toast({ title: "Checks failed", description: lastCheckErrorRef.current, variant: "destructive" });
+      } else {
+        toast({ title: "Batch check complete", description: `Checked ${completed} paragraphs` });
+      }
     }
   };
 

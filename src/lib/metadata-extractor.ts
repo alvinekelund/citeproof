@@ -56,7 +56,7 @@ Return JSON:
 Return ONLY valid JSON, no explanation. Use null for fields you cannot determine.`;
 
   try {
-    // Use the Lovable AI gateway via edge function
+    // Gemini call goes through the ai-chat edge function so the key stays server-side
     const { data, error } = await supabase.functions.invoke('ai-chat', {
       body: { prompt }
     });

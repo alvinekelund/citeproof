@@ -27,3 +27,4 @@ dist-ssr
 # secrets — kept out of git (values in migration bundle)
 .env
 supabase/.temp/
+supabase/functions/.env

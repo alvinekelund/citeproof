@@ -271,7 +271,15 @@ serve(async (req) => {
         // Non-retryable error
         const errorText = await response.text();
         console.error('AI gateway error:', response.status, errorText);
-        
+
+        // Gemini answers a wrong or unauthorised key with 400 API_KEY_INVALID or 403
+        if (response.status === 403 || errorText.includes('API_KEY_INVALID') || errorText.includes('API key not valid')) {
+          return new Response(
+            JSON.stringify({ error: 'Gemini rejected the API key. Check GOOGLE_AI_API_KEY in your edge function secrets.' }),
+            { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
         if (response.status === 402) {
           return new Response(
             JSON.stringify({ error: 'AI credits exhausted. Please add credits in Settings → Workspace → Usage.' }),
